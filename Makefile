@@ -115,6 +115,7 @@ package: all
 	@copy /Y bootfiles\sb\grub-ubuntu.efi dist\bootfiles\sb\ >nul
 	@copy /Y bootfiles\sb\grub.cfg dist\bootfiles\sb\ >nul
 	@copy /Y THIRD_PARTY_LICENSES.txt dist\ >nul
+	@if exist third_party\ucrt\x64\*.dll copy /Y third_party\ucrt\x64\*.dll dist\ >nul
 	@if not exist dist\resources\themes\default\main mkdir dist\resources\themes\default\main
 	@copy /Y resources\themes\default\global.xml dist\resources\themes\default\ >nul
 	@copy /Y resources\themes\default\main\main.xml dist\resources\themes\default\main\ >nul
