@@ -60,6 +60,76 @@ skin/ resources/ version.json THIRD_PARTY_LICENSES.txt
 > Secure Boot 那条链**全部使用已签名的现成组件**（不绕过任何机制），因此无需用户注册密钥、
 > 无需关闭 Secure Boot；相关踩坑与对比见 `AGENTS.md` PIT-060/061/062/063/065/066。
 
+## 使用案例（命令行）
+
+> CLI 与 GUI 走**同一套 `app` 层代码**（`RunBackup` / `StageRestore`），行为一致。
+> CLI 已编入 `requireAdministrator` 清单：在管理员命令行 / 计划任务（最高权限）/ PsExec `-s` /
+> SCCM 下**全程静默不弹 UAC**（机房批量部署即用这条路）。
+
+先看清现场（只读，随时可用）：
+
+```cmd
+SysRecover.exe list      :: 磁盘/分区/文件系统/盘符/ESP/系统标记
+SysRecover.exe diag      :: 固件类型、Secure Boot 状态、启动项是否已装、wimlib 自检
+```
+
+### 案例 1 · 把当前系统备份成镜像（热备份）
+
+```cmd
+SysRecover.exe backup --dest D:\backup\win10-20260920.esd --source C:/ ^
+                      --compress recovery --verify --name "Win10 出厂态"
+```
+
+- `--source C:/`：**盘符根 + 正斜杠** → 触发热备（VSS 快照 + 排除清单）
+- `--compress`：`recovery`（.esd 最省）/ `maximum` / `fast`
+- `--verify`：写完立即校验；`--name`：子镜像名
+- 目标已存在需 `--yes` 覆盖，或用 `--append` 追加为同一 WIM 里的新子镜像
+- 辅助：`images --image <镜像>` 列子镜像；`verify --image <镜像>` 单独校验
+
+### 案例 2 · 还原一个万能镜像到 C 盘
+
+```cmd
+SysRecover.exe list                                       :: 先确认磁盘号/分区号
+SysRecover.exe restore --image D:\backup\wannei-win10.esd ^
+                       --disk 0 --part 3 --index 1 --yes
+```
+
+执行方式**自动二选一**：
+
+| 情形 | 行为 |
+|---|---|
+| 目标是**正在运行的系统盘** | 暂存任务 → **重启**进内置救援层 → 格式化 + 应用 + 修引导 → 自动重启回新系统 |
+| 目标**未被占用**（在 **PE** 里、或还原到**非系统盘**） | **就地还原**：格式化 + 应用 + `bcdboot` → **完成，不重启** |
+
+- 安全四检查（目标是 ESP / BitLocker / 恢复分区 / 镜像在目标分区内）**任一命中即拒绝**（退出码 4）
+- 不自动修引导：`--no-repair-boot`；指定子镜像：`--index N`
+- 退出码：`0` 成功 / `2` 参数错 / `3` 需管理员 / `4` 危险目标被拒 / `5` 镜像校验失败 / `6` 取消
+
+### 案例 3 · 给已有镜像做"无人参与的静默还原"入口
+
+**思路**：把还原任务**暂存**下来（并装好常驻引导模块），之后由**开机菜单选择**或**单次启动**
+触发，全自动完成还原，**不需要任何人点确认**。
+
+```cmd
+:: 1)（推荐）先用 GUI 的「安装启动还原」装一次常驻引导模块 —— 开机启动菜单里就会多出该入口
+::    （UEFI：写固件启动项；BIOS：BCD 实模式启动扇区条目）
+
+:: 2) 暂存一次静默还原：安检 → 镜像可用性校验 → 写契约 → 刷新引导层 → 设单次启动
+SysRecover.exe restore --image D:\backup\wannei-win10.esd --disk 0 --part 3 --index 1 --yes
+
+:: 3) 重启（这之后无需任何操作）
+shutdown /r /t 0
+```
+
+- **单次语义**：那条"单次启动"用完即消，平时开机照常进 Windows ✓
+- **常驻语义（UEFI）**：`安装启动还原` 写入的**固件启动项**挂在 `BootOrder` 末尾，
+  开机启动菜单里随时能选到；而任务契约 `restore-task.conf` 留在**数据盘**（不被格式化），
+  所以**之后再选它还会再还原一次** —— 这就是"菜单里常驻的一键还原" ✓
+- ⚠️ **BIOS 下不常驻**：救援文件（`grldr`/`grldr.mbr`/`menu.lst`）随目标分区一起被格式化，
+  所以那条菜单项**只对当次有效**；要常驻请用 UEFI（或把救援文件放到不被格式化的分区，当前未实现）
+- GUI 勾上 **`静默模式`** 后**全程无任何对话框**（机房批量正为此设计）
+- 等价做法：双击 GUI → 选镜像 → 选目标分区 → 勾「静默模式」→ 开始恢复系统
+
 ## 许可
 
 - 本产品自身代码**未静态链接任何 GPL 组件、未修改任何第三方源码**（`libwim-15.dll` 为
