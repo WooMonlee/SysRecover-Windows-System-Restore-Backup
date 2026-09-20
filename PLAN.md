@@ -208,3 +208,55 @@ tar.gz，可直接解包）组装：
 - **待补：服务器 RAID 真机验收**（驱动已入包 26 个、QEMU 加载通过 ✓，缺真机阵列卡场景）。
 - **主体工作已完成**：BIOS/MBR、UEFI/GPT、UEFI+Secure Boot（零注册）、Win7 宿主（含跨版本还原）
   均已实测通过；后续以**兼容性测试与打磨**为主。
+- **待决：Secure Boot 双签 shim**（`Microsoft Corporation UEFI CA 2011` 已于 2026-06-26/27 到期）。
+  现状与备选 B/C 的完整核实记录见 **§11**。
+
+---
+
+## 11. Secure Boot 证书过渡（CA2011 → CA2023）：现状与备选（2026-09-20 记录）
+
+**现状 A（保持不动，无需动作）**：我们的 Secure Boot 链为
+`固件 → shimx64.efi（微软签）→ grubx64.efi（Canonical 签）→ vmlinuz（Canonical 签）+ 我们的 initramfs`。
+实测（直接解析 PE 证书表）：`bootfiles/sb/shimx64.efi` **只有一条签名** —— 签发者
+`Microsoft Windows UEFI Driver Publisher`、颁证者 `Microsoft Corporation UEFI CA 2011`，
+全文件搜不到任何 CA2023 字样 → **CA2011 单签**（链上其余文件均为 Canonical 签名，与微软 CA 无关）。
+
+**背景**：CA2011 已于 **2026-06-26/27 到期**，但**到期不影响启动** —— 固件按 `db`/`dbx` 成员判定信任，
+**不检查有效期**，故信任 CA2011 的固件上一切照旧。真正的风险只有两个：
+1. **2026 年新出厂、固件 `db` 仅含 CA2023** 的机器 → 我们的 CA2011 单签 shim **起不来**；
+2. 微软自 2026-06 起只能用 CA2023 签新 shim → 未来的 shim 安全修复无法覆盖只信任 CA2011 的固件。
+
+**已核实的可下载情况**（国内源，均**不需要梯子**）：
+
+| 发行版 | 版本 | 签名 | 来源 |
+|---|---|---|---|
+| Ubuntu | `shim-signed 1.59+15.8-0ubuntu2` | **CA2011 单签** | 清华/中科大/官方 archive.ubuntu.com 三处一致 —— Canonical 尚未发布双签版 |
+| Fedora 43 | `shim-x64-15.8-3` | **CA2011 单签** | 清华 |
+| **AlmaLinux 10**（RHEL 10 重建）| `shim-x64 16.1-4` | **CA2011 + CA2023 双签** ✓ | 阿里云 `almalinux/10/BaseOS/x86_64/os/Packages/` |
+
+**关键约束**：shim 只信任**它自己发行版**内嵌的证书（Alma 的 shim 里是 AlmaLinux 证书，不含 Canonical 的）
+→ **不能只替换 shim 这一个文件**，必须把 GRUB 与内核一并换成同一发行版的签名件。
+
+### 备选 B：整链换 AlmaLinux（新老固件通吃）
+- **内容**：`shimx64.efi` + `grubx64.efi` + `vmlinuz` + 内核模块 `.ko` 全部改用 AlmaLinux 的签名件；
+  **initramfs 仍是我们自己的**（UEFI 规则：initrd 从不校验）。
+- **好处**：仅信任 CA2011 的老固件 + 只信 CA2023 的新固件 **都能启动**。
+- **代价**：① `tools/build-ubuntu-rescue.py` 需按 Alma 的内核模块打包方式再适配一次（量级≈当初
+  Alpine→Ubuntu 那次，数小时）；② 链上文件来源变为 Alma，SBOM（AGENTS.md §14）需同步更新。
+- **触发条件**：把「2026 新硬件（仅 CA2023 固件）兼容」列为硬指标时启动。
+- **资源**：`https://mirrors.aliyun.com/almalinux/10/BaseOS/x86_64/os/Packages/`（`shim-x64-16.1-4` 已实测双签 ✓）。
+
+### 备选 C：等 Canonical 发布双签 shim（最小改动、零代码）
+- 一旦 `shim-signed` 出现**双签**版本（同时含 CA2011 + CA2023），只需替换 `bootfiles/sb/shimx64.efi`
+  一个文件，**代码零改动**（`ZJ_SB_MODE=grub` 链不变）。
+- **风险**：Canonical 公文称 2026 Q4 起更新将要求 CA2023；若他们只发 **2023-only** 版，
+  会**打死仅信任 CA2011 的老固件** → 必须确认是**双签**才能采用。
+- **验收方法（已有）**：解析 PE 证书表，期望两条签名（`#1 → CA2011`、`#2 → Microsoft UEFI CA 2023`）。
+- **监测点**：`pool/main/s/shim-signed/`（国内源与官方同步），出现新版本即验证。
+
+> 未采纳的加固思路 **D**：安装时读固件 `db`（`GetFirmwareEnvironmentVariable("db")` + 解析
+> `EFI_SIGNATURE_LIST`）探测其信任哪张 CA，按结果决定部署哪条链 —— 产品上最稳，但有额外开发量。
+
+> **测试环境提醒**：QEMU/VMware 虚拟机的 NVRAM 在**创建时**快照 → 老 VM 的 `db` 只含 CA2011，
+> 「新硬件只信 CA2023」的失败场景**在现有 VM 上复现不出来**；要复现需新建 VM / 用新版 OVMF 固件模板，
+> 或手动把 CA2023 灌进 VM 的 `db`。
