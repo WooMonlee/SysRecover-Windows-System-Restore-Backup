@@ -1,4 +1,4 @@
-# uefi-ubuntu-smoke.ps1 - Validate the "variant D" rescue chain (Secure Boot OFF).
+﻿# uefi-ubuntu-smoke.ps1 - Validate the "variant D" rescue chain (Secure Boot OFF).
 #
 # Chain: OVMF Shell -> shimx64.efi -> grubx64.efi (Canonical-signed Ubuntu GRUB)
 #        -> grub.cfg -> Canonical-signed Ubuntu kernel + OUR initramfs

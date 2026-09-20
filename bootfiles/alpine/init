@@ -83,7 +83,7 @@ for m in \
     smartpqi aacraid hpsa arcmsr pm80xx mvsas isci \
     virtio virtio_ring virtio_pci virtio_blk virtio_scsi vmw_pvscsi \
     ufshcd-core ufshcd-pci mmc_core sdhci sdhci-pci sdhci-acpi \
-    dm-mod dm-raid raid0 raid1 raid10 raid456 linear multipath \
+    dm-mod raid0 raid1 raid10 linear multipath \
     usbcore xhci-hcd xhci-pci ehci-hcd ehci-pci ohci-hcd ohci-pci uhci-hcd \
     usbhid hid hid-generic atkbd \
     usb-storage uas sd_mod sg sr_mod ses \
