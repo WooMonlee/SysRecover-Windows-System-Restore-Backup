@@ -239,20 +239,28 @@ class CSkinEditUI : public CEditUI {
 public:
     CSkinEditUI()
         : m_px(14), m_bold(false), m_fontApplied(false), m_bUnderline(false),
-          m_dwLineColor(0xFFC9D6F2) {}
+          m_dropHooked(false), m_dwLineColor(0xFFC9D6F2) {}
 
     LPCTSTR GetClass() const override { return _T("SkinEdit"); }
     void SetAttribute(LPCTSTR pstrName, LPCTSTR pstrValue) override;
     void SetPos(RECT rc, bool bNeedInvalidate = true) override;
     bool DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopControl) override;
+    void DoEvent(TEventUI& event) override;
 
 private:
     void ApplyNativeFont();
+    // 原生 EDIT 子窗口只接受文件拖放还不够（默认 WndProc 会吞掉 WM_DROPFILES），
+    // 这里给它挂一个子类过程，把 WM_DROPFILES 原样转投给顶层窗口统一处理。
+    void EnsureDropTarget();
+    static LRESULT CALLBACK DropSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam,
+                                             LPARAM lParam, UINT_PTR uIdSubclass,
+                                             DWORD_PTR dwRefData);
 
     int   m_px;
     bool  m_bold;
     bool  m_fontApplied;
     bool  m_bUnderline;      // 只画最下方一根横线（无外框）
+    bool  m_dropHooked;      // 原生 EDIT 已登记为拖放目标并挂好子类
     DWORD m_dwLineColor;     // 下划线颜色
 };
 

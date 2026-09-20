@@ -45,6 +45,7 @@ private:
     void PopulatePartitions();
     void BrowseWimFile();
     void BrowseSaveFile();
+    void HandleDroppedFiles(WPARAM wParam);  // WM_DROPFILES：拖入的镜像填进第一步
     void LoadWimImages(const std::wstring& path);
     void StartRestore();   // UI 校验 + 确认 → StartRestoreAsync
     void StartBackup();    // UI 校验 + 确认 → StartBackupAsync

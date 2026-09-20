@@ -32,18 +32,37 @@ bool IsDir(const std::wstring& path) {
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
 }
 
+// 覆盖复制：目标文件若已存在且带只读/隐藏/系统属性（\bootmgr 天生带 Hidden+System，
+// 又由 CopyFile 从源继承），直接 CopyFileW 会被拒（ERROR_ACCESS_DENIED=5）→ 于是
+// **第一次装成功、第二次起必失败**（与 grub.cpp 的 menu.lst 同一个坑）。先归零属性。
+// 失败必须留痕：否则只表现为上一层的 "bootfix INCOMPLETE"，根本排不出是哪个文件。
+bool ForceCopy(const std::wstring& src, const std::wstring& dst,
+               std::string& log) {
+    SetFileAttributesW(dst.c_str(), FILE_ATTRIBUTE_NORMAL);
+    if (CopyFileW(src.c_str(), dst.c_str(), FALSE))
+        return true;
+    log += "copy FAIL " + W2U(src) + " (err=" +
+           std::to_string(GetLastError()) + ")\n";
+    return false;
+}
+
 // 递归复制目录（只做文件与子目录；不处理 ACL，引导文件不需要）。
 // skipBcd=true 时跳过 BCD/BCD.LOG*（运行中被锁，另用 bcdedit /export 生成）。
 bool CopyTree(const std::wstring& src, const std::wstring& dst,
               std::string& log, bool skipBcd) {
-    if (!IsDir(src))
+    if (!IsDir(src)) {
+        log += "copy tree FAIL " + W2U(src) + " (not a dir)\n";
         return false;
+    }
     CreateDirectoryW(dst.c_str(), nullptr);
     WIN32_FIND_DATAW fd;
     std::wstring pat = src + L"\\*";
     HANDLE h = FindFirstFileW(pat.c_str(), &fd);
-    if (h == INVALID_HANDLE_VALUE)
+    if (h == INVALID_HANDLE_VALUE) {
+        log += "copy tree FAIL " + W2U(src) + " (err=" +
+               std::to_string(GetLastError()) + ")\n";
         return false;
+    }
     bool ok = true;
     do {
         if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0)
@@ -56,9 +75,7 @@ bool CopyTree(const std::wstring& src, const std::wstring& dst,
                                _wcsnicmp(fd.cFileName, L"BCD.LOG", 7) == 0)) {
             // 运行中的 Windows 把 BCD 当注册表 hive 挂着（HKLM\BCD00000000），
             // 文件被独占 → CopyFile 必失败。跳过，稍后用 bcdedit /export 生成。
-        } else if (!CopyFileW(s.c_str(), d.c_str(), FALSE)) {
-            log += "copy FAIL " + W2U(s) + " (err=" +
-                   std::to_string(GetLastError()) + ")\n";
+        } else if (!ForceCopy(s, d, log)) {
             ok = false;
         }
     } while (FindNextFileW(h, &fd));
@@ -106,8 +123,9 @@ bool PrepareBootFixFiles(const std::wstring& recoveryDir, std::string& log) {
 
     bool ok = true;
     if (Exists(sysRoot + L"bootmgr")) {
-        ok &= CopyFileW((sysRoot + L"bootmgr").c_str(),
-                        (bf + L"\\bootmgr").c_str(), FALSE) != 0;
+        // 必须走 ForceCopy：\bootmgr 带 Hidden+System，第二次部署时直接
+        // CopyFileW 覆盖已被拒（旧的静默失败 → "bootfix INCOMPLETE"）。
+        ok &= ForceCopy(sysRoot + L"bootmgr", bf + L"\\bootmgr", log);
     } else {
         log += "no \\bootmgr\n";
         ok = false;

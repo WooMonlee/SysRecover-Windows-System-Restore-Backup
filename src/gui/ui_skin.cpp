@@ -4,6 +4,7 @@
 // 注意：<gdiplus.h> 必须在 StdAfx.h 之前（duilib 的 StdAfx 把 min/max 定义成
 // 函数宏，会污染 GDI+ 头）。
 #include <windows.h>
+#include <commctrl.h>
 #include <gdiplus.h>
 #include <math.h>
 #include <stdlib.h>
@@ -737,6 +738,48 @@ void CSkinEditUI::ApplyNativeFont() {
 void CSkinEditUI::SetPos(RECT rc, bool bNeedInvalidate) {
     CEditUI::SetPos(rc, bNeedInvalidate);
     ApplyNativeFont();
+}
+
+void CSkinEditUI::DoEvent(TEventUI& event) {
+    CEditUI::DoEvent(event);
+    // 原生 EDIT 子窗口是「获得焦点/点击时才创建」的（UIEdit.cpp:301/317），
+    // 所以每次事件后兜一次：它一出现就登记为拖放目标并挂子类过程。
+    EnsureDropTarget();
+}
+
+void CSkinEditUI::EnsureDropTarget() {
+    if (m_dropHooked) return;
+    HWND hEdit = GetNativeEditHWND();
+    if (!hEdit) return;
+    ::SetWindowSubclass(hEdit, &CSkinEditUI::DropSubclassProc, (UINT_PTR)this,
+                        (DWORD_PTR)this);
+    ::DragAcceptFiles(hEdit, TRUE);
+    // 本进程是管理员权限（高完整性），源（资源管理器）是普通权限 → 必须给
+    // 这个原生子窗口也放行拖放消息，否则 UIPI 直接拦下，拖上去没反应。
+    ::ChangeWindowMessageFilterEx(hEdit, WM_DROPFILES, MSGFLT_ALLOW, nullptr);
+    ::ChangeWindowMessageFilterEx(hEdit, WM_COPYDATA, MSGFLT_ALLOW, nullptr);
+    ::ChangeWindowMessageFilterEx(hEdit, 0x0049, MSGFLT_ALLOW, nullptr);
+    m_dropHooked = true;
+}
+
+LRESULT CALLBACK CSkinEditUI::DropSubclassProc(HWND hWnd, UINT uMsg,
+                                               WPARAM wParam, LPARAM lParam,
+                                               UINT_PTR uIdSubclass,
+                                               DWORD_PTR dwRefData) {
+    if (uMsg == WM_DROPFILES) {
+        // 不在原生 EDIT 里处理：原样转投给顶层窗口（CMainForm 统一处理，
+        // 由它 DragQueryFile + DragFinish 释放这个 HDROP）。
+        HWND hTop = hWnd;
+        while (::GetParent(hTop)) hTop = ::GetParent(hTop);
+        ::PostMessageW(hTop, WM_DROPFILES, wParam, 0);
+        return 0;
+    }
+    if (uMsg == WM_NCDESTROY) {
+        ::RemoveWindowSubclass(hWnd, &CSkinEditUI::DropSubclassProc, uIdSubclass);
+        CSkinEditUI* self = reinterpret_cast<CSkinEditUI*>(dwRefData);
+        if (self) self->m_dropHooked = false;
+    }
+    return ::DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
 
 bool CSkinEditUI::DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopControl) {

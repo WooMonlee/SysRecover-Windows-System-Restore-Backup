@@ -3,6 +3,7 @@
 #include "main_form.h"
 
 #include <shobjidl.h>
+#include <shellapi.h>
 
 #include "gui/ui_skin.h"
 #include "gui/confirm_dlg.h"
@@ -85,6 +86,16 @@ void CMainForm::InitWindow() {
     LogInit(logsDir);
     ProgressInit(logsDir);
     LogInfo("GUI InitWindow");
+    // 支持把 .esd/.wim 直接拖进窗口（第一步的输入框）。原生 EDIT 子窗口由
+    // CSkinEditUI 转投到这里（见 ui_skin.cpp::EnsureDropTarget），窗口空白处
+    // 则由本窗口直接接收。
+    ::DragAcceptFiles(m_hWnd, TRUE);
+    // 本 exe 是 requireAdministrator（高完整性），而拖放源「资源管理器」是
+    // 普通权限 → UIPI 会拦下拖放相关消息，表现为「拖进去没反应」。按微软
+    // 官方做法放行这三个消息（0x0049 = WM_COPYGLOBALDATA，OLE 拖放用）。
+    ::ChangeWindowMessageFilterEx(m_hWnd, WM_DROPFILES, MSGFLT_ALLOW, nullptr);
+    ::ChangeWindowMessageFilterEx(m_hWnd, WM_COPYDATA, MSGFLT_ALLOW, nullptr);
+    ::ChangeWindowMessageFilterEx(m_hWnd, 0x0049, MSGFLT_ALLOW, nullptr);
     PopulatePartitions();
     ApplyModeUi();
     RefreshBootMenuBtn();
@@ -110,6 +121,10 @@ LRESULT CMainForm::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
     if (msg == WM_SR_QUERY_BUSY) {
         // 新实例问「你在忙吗」——忙则不让它关掉本进程（见 instance_dlg.cpp）。
         return m_busy ? 1 : 0;
+    }
+    if (msg == WM_DROPFILES) {
+        HandleDroppedFiles(wParam);
+        return 0;
     }
     if (msg == WM_DESTROY) {
         // 关键：经典 Duilib 的 WindowImplBase 销毁窗口后**不会**结束消息循环
@@ -464,6 +479,44 @@ void CMainForm::BrowseSaveFile() {
     }
     pDlg->Release();
     UpdateMainAction();
+}
+
+// WM_DROPFILES：把拖进来的 .esd/.wim 填到第一步输入框并立即解析子镜像。
+void CMainForm::HandleDroppedFiles(WPARAM wParam) {
+    if (m_busy) return;
+    HDROP hDrop = reinterpret_cast<HDROP>(wParam);
+    UINT n = ::DragQueryFileW(hDrop, 0xFFFFFFFF, nullptr, 0);
+    if (n == 0) { ::DragFinish(hDrop); return; }
+    std::wstring dropped;
+    {
+        UINT len = ::DragQueryFileW(hDrop, 0, nullptr, 0);  // 长度不含结尾 0
+        if (len > 0) {
+            std::vector<wchar_t> buf((size_t)len + 1, 0);
+            ::DragQueryFileW(hDrop, 0, buf.data(), len + 1);
+            dropped = buf.data();
+        }
+    }
+    ::DragFinish(hDrop);
+    if (dropped.empty()) return;
+    // 只认镜像后缀：拖错文件时给明确提示，不静默失败
+    std::wstring ext =
+        dropped.size() >= 4 ? dropped.substr(dropped.size() - 4) : L"";
+    for (auto& c : ext) c = (wchar_t)towlower(c);
+    if (ext != L".esd" && ext != L".wim") {
+        SetStatus(L"只支持拖入 .esd / .wim 镜像文件");
+        return;
+    }
+    m_wimPath = dropped;
+    CEditUI* pEdit =
+        static_cast<CEditUI*>(m_PaintManager.FindControl(_T("ImagePath")));
+    if (pEdit) pEdit->SetText(m_wimPath.c_str());
+    if (m_backupMode) {
+        SetStatus(L"备份保存至：" + m_wimPath);
+        UpdateMainAction();
+    } else {
+        LoadWimImages(m_wimPath);  // 内部设 m_imageOk 并刷新主按钮
+        SetStatus(L"已载入镜像：" + m_wimPath);
+    }
 }
 
 void CMainForm::LoadWimImages(const std::wstring& path) {

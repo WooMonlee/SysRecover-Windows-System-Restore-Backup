@@ -97,6 +97,12 @@ mnt_dev(){
 # Windows 侧会把 software_dir 设成数据盘 <数据盘>\ZJRESTORE（同样保留）。
 ZJRDIR=ZJRESTORE
 SOFTWARE_DIR=$(get_task software_dir)
+# 回退：conf 没找到时 get_task 会退回读 _zjresy*.log，而日志里只有 software_path
+# （exe 全路径）→ 取它所在目录当软件目录（否则日志落不到 <软件目录>/logs/）。
+if [ -z "$SOFTWARE_DIR" ]; then
+    _sp=$(get_task software_path)
+    [ -n "$_sp" ] && SOFTWARE_DIR=$(echo "$_sp" | sed 's|\\[^\\]*$||')
+fi
 SD_REL=$(echo "$SOFTWARE_DIR" | cut -d: -f2- | tr '\\' '/' | sed 's|^/*||')
 SOFT_MNT=""
 find_soft_dir(){

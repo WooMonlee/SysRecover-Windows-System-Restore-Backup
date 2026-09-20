@@ -13,8 +13,9 @@ inline const wchar_t* RecoveryGuid() {
 // 条目是否存在（ASCII GUID 匹配，不受代码页影响）。
 bool BcdEntryExists(const std::wstring& guid);
 
-// 创建实模式启动扇区条目：device partition=X: + path \grldr.mbr + displayorder。
-// 已存在则直接返回 true。
+// 创建/刷新实模式启动扇区条目：device partition=X: + path \grldr.mbr + displayorder。
+// **条目已存在时也会重设 device/path**（幂等自愈）：防止换机/换盘符/旧布局残留
+// 造成"文件在新盘、entry 指旧盘"→ bootmgr 0xc000000F。
 bool BcdCreateBootsector(const std::wstring& guid, const std::wstring& desc,
                          wchar_t driveLetter, std::string& log);
 
