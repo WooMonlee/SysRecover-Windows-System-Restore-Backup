@@ -26,7 +26,7 @@ Windows 系统备份 / 一键还原工具。**CLI 优先**（`SysRecover.exe`）
 | UEFI / GPT（Secure Boot 关闭） | ✅ |
 | UEFI / GPT + **Secure Boot 开启** | ✅ **零注册、零交互** |
 | WinPE / 还原到非系统盘 | ✅ 就地还原（不重启） |
-| Windows 7 / 10 / 11 | ✅（Win7 需 UCRT，见「已知事项」） |
+| Windows 7 / 10 / 11 | ✅（Win7 装 VC++ 运行库后正常；**已实测 Win7 宿主还原 Win10 镜像并正常启动**） |
 
 ## 构建
 
@@ -141,9 +141,11 @@ shutdown /r /t 0
 ## 已知事项 / 待完善
 
 - **Windows 7** 需要 UCRT：`libwim-15.dll` 与我们的 exe 都依赖 `api-ms-win-crt-*`（Win10 内置、
-  Win7 没有）。**机制已就绪**：把 Windows SDK 的 `Redist\ucrt\DLLs\x64\`（`ucrtbase.dll` +
-  `api-ms-win-crt-*.dll`，约 1.5MB）拷进 `third_party/ucrt/x64/`，`make package` 会自动复制到
-  `dist/` 与 exe 同目录（微软官方支持的本地部署方式）。取法与授权见 `third_party/ucrt/README.txt`。
+  Win7 没有）。**2026-09-20 实测**：在那台 Win7 上装 **VC++ 2015-2022 x64 运行库**（或
+  `Windows6.1-KB2999226-x64.msu`）后运行正常，**并已用它还原 Win10 镜像、正常启动** ✓。
+  **机制已就绪**：把 UCRT 的 `ucrtbase.dll` + `api-ms-win-crt-*.dll`（约 1.5MB）拷进
+  `third_party/ucrt/x64/`，`make package` 会自动复制到 `dist/` 与 exe 同目录（微软官方支持的
+  本地部署方式）。取法与授权见 `third_party/ucrt/README.txt`。
 - **服务器 RAID 驱动**（`vmd`/`megaraid`/老 `mpt*`/`isci`）在 Ubuntu 的 `linux-modules-extra`
   里，需挑子集补进 initramfs（基础包已覆盖 NVMe/AHCI/virtio/USB）。
 - `ZJ_ENABLE_MOK_PATH`（备选线：我们签名的 UKI + MOK 注册）默认**不编译、不随包**，

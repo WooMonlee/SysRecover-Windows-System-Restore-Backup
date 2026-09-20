@@ -16,16 +16,23 @@ SysRecover —— Windows 7 需要的 Universal CRT（UCRT）运行库
 
 所以：**把这些 DLL 放到本目录（x64/），`make package` 会自动拷到 dist/ 与 exe 同目录。**
 
-怎么取（二选一）
-----------------
-① 装了 Visual Studio / Windows SDK 的机器：
-   把 `C:\Program Files (x86)\Windows Kits\10\Redist\ucrt\DLLs\x64\` 下的
-   **全部 .dll**（`ucrtbase.dll` + 约 40 个 `api-ms-win-crt-*.dll` / `api-ms-win-*.dll`）
-   拷到本目录的 `x64/` 子目录。
+怎么取（三选一，推荐 ① 或 ②）
+------------------------------
+① **最快（已实测）**：在一台 Win7 x64 上装
+   `Windows6.1-KB2999226-x64.msu`（来自官方 `WindowsUCRT.zip`，下载页 id=48234）
+   或 **VC++ 2015-2022 x64 运行库**（https://aka.ms/vs/17/release/vc_redist.x64.exe），
+   装完 C:\Windows\System32 里就有真文件了，把下面两类全拷到本目录 `x64/`：
+       C:\Windows\System32\ucrtbase.dll
+       C:\Windows\System32\api-ms-win-crt-*.dll
+   （内容与 SDK 里的 Redist 一致）
 
-② 没装 SDK：官方下载页 id=48234（Windows 10 Universal C Runtime）的 `WindowsUCRT.zip`，
-   安装 `Windows6.1-KB2999226-x64.msu` 后，从系统里取（或从 MSI 安装日志定位）。
-   ⚠️ 直接用 7-Zip 解 MSU 只能拿到 CBS 的 **PA30 容器**（magic `PA30`），解不出 DLL。
+② 装了 Visual Studio / Windows SDK 的机器：
+   把 `C:\Program Files (x86)\Windows Kits\10\Redist\ucrt\DLLs\x64\` 下的
+   **全部 .dll** 拷到本目录的 `x64/` 子目录（微软建议"整套带上"）。
+
+③ 官方下载页 id=48234 的 `WindowsUCRT.zip`（含各系统 MSU）。
+   ⚠️ 注意：直接用 7-Zip 解 MSU 只能拿到 CBS 的 **PA30 容器**（magic `PA30`），解不出 DLL；
+   必须先**安装**该 MSU，再从 System32 取（即方法 ①）。
 
 授权
 ----
