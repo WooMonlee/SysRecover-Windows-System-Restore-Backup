@@ -65,6 +65,12 @@
 
 版本号：SemVer `x.y.z` + Windows VERSIONINFO + git tag 三处同源；`version` 命令与 `_zjresy*.log` 的 `software_version` 字段同步。
 
+> **架构：目前只出 x64**（2026-09-20 用户实测：32 位 Win7 上 exe 直接起不来，系统层面拒绝、程序内无法提示）。
+> 要出 x86 需三样：① 另装 **i686-w64-mingw32** 工具链；② 官方 **32 位 `libwim-15.dll`**
+> （wimlib 同时发布 `windows-i686` / `windows-x86_64` 包）；③ Makefile 加 `ARCH=x86` 分支。
+> **救援层与宿主位数无关**（Linux 侧照旧）；但 **UEFI 引导资产是 x64**（`shimx64.efi` + 64 位内核），
+> 32 位 UEFI（IA32）需另找 `shimia32.efi` + 32 位内核 —— 极少见，32 位机器基本都走 **BIOS + GRUB4DOS** ✓。
+
 ---
 
 ## 4. 项目结构（CLI 优先）
