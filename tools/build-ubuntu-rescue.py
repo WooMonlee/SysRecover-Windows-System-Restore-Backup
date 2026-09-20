@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """build-ubuntu-rescue.py — 用 **Canonical 签名的 Ubuntu 内核 + 模块** 重建救援层。
 
 用途（PIT-066 变体 D）：Secure Boot 开启时，`shim（微软签名）→ Canonical 签名的
@@ -34,7 +34,24 @@ DEBS = [
     ('modules',
      'http://archive.ubuntu.com/ubuntu/pool/main/l/linux/'
      'linux-modules-6.8.0-31-generic_6.8.0-31.31_amd64.deb'),
+    # -extra 里是**服务器/阵列卡**驱动（基础包不含），维修店的主战场。
+    # 只挑需要的 24 个（约 1.2MB），不是整包（108MB）。
+    ('extra',
+     'http://archive.ubuntu.com/ubuntu/pool/main/l/linux/'
+     'linux-modules-extra-6.8.0-31-generic_6.8.0-31.31_amd64.deb'),
 ]
+
+# 从 -extra 里额外补入的模块（按文件名前缀匹配；依赖闭包会自动补齐）
+EXTRA_MODULES = [
+    'vmd',                                    # Intel VROC / RSTe（"PE 里找不到盘"第一大原因）
+    'megaraid', 'megaraid_sas',               # 老 MegaRAID / SAS
+    'isci', 'pm80xx', 'mvsas', 'smartpqi',    # Intel SCU / PMC / Marvell / Microchip
+    'hpsa', 'arcmsr',                         # HP Smart Array / Areca
+    'snic', 'libfc', 'libfcoe', 'bnx2fc', 'fnic', 'csiostor', 'be2iscsi',
+    '3w-9xxx', 'advansys', 'atp870u', 'dmx3191d', 'esp_scsi', 'imm',
+    'initio', 'sym53c8xx', 'wd719x',          # 老 SCSI HBA（老服务器/工控机）
+]
+
 
 
 def log(m):
@@ -91,7 +108,8 @@ def ensure_ubuntu(ubu):
             extract_deb(deb, out)
             open(os.path.join(out, '.done'), 'w').close()
     return (os.path.join(ubu, 'kernel', 'boot', 'vmlinuz-' + KVER),
-            os.path.join(ubu, 'modules', 'lib', 'modules', KVER))
+            os.path.join(ubu, 'modules', 'lib', 'modules', KVER),
+            os.path.join(ubu, 'extra', 'lib', 'modules', KVER))
 
 
 def depends_of(raw):
@@ -104,30 +122,59 @@ def depends_of(raw):
     return [d for d in s.split(',') if d]
 
 
-def stage_ubuntu_modules(zj, src_root):
-    """把 Ubuntu 全量模块装进 initramfs：.ko.zst → .ko.gz（busybox modprobe 支持
-    gzip，已验证），并生成 modules.dep（Ubuntu 的模块包不含它，安装时才 depmod）。"""
+def stage_ubuntu_modules(zj, src_root, extra_root):
+    """把 Ubuntu 模块装进 initramfs：基础包全量 + `-extra` 里的服务器/阵列卡子集。
+    `.ko.zst` → `.ko.gz`（busybox modprobe 支持 gzip，已验证），并生成 modules.dep
+    （Ubuntu 的模块包不含它，安装时才 depmod）。"""
     dst = os.path.join(zj.STG, 'lib', 'modules', KVER)
     os.makedirs(dst, exist_ok=True)
-    rels, deps, name2rel, n = [], {}, {}, 0
+    rels, deps, name2rel = [], {}, {}
+
+    def write_module(path, rel):
+        outrel = rel[:-len('.zst')] + '.gz'
+        raw = subprocess.run([ZSTD, '-d', '-c', path],
+                             capture_output=True, check=True).stdout
+        deps[outrel] = depends_of(raw)
+        name2rel[os.path.basename(rel)[:-len('.ko.zst')]] = outrel
+        tgt = os.path.join(dst, outrel)
+        os.makedirs(os.path.dirname(tgt), exist_ok=True)
+        with gzip.open(tgt, 'wb', compresslevel=9) as g:
+            g.write(raw)
+        zj.MODES[outrel] = 0o644
+        rels.append(outrel)
+        return outrel
+
+    # 1) 基础包：全量（999 个）
     for dp, _dn, fns in os.walk(src_root):
         for f in fns:
-            if not f.endswith('.ko.zst'):
-                continue
-            p = os.path.join(dp, f)
-            rel = os.path.relpath(p, src_root).replace(os.sep, '/')
-            outrel = rel[:-len('.zst')] + '.gz'
-            raw = subprocess.run([ZSTD, '-d', '-c', p],
-                                 capture_output=True, check=True).stdout
-            deps[outrel] = depends_of(raw)
-            name2rel[os.path.basename(rel)[:-len('.ko.zst')]] = outrel
-            tgt = os.path.join(dst, outrel)
-            os.makedirs(os.path.dirname(tgt), exist_ok=True)
-            with gzip.open(tgt, 'wb', compresslevel=9) as g:
-                g.write(raw)
-            zj.MODES[outrel] = 0o644
-            rels.append(outrel)
-            n += 1
+            if f.endswith('.ko.zst'):
+                p = os.path.join(dp, f)
+                write_module(p, os.path.relpath(p, src_root)
+                             .replace(os.sep, '/'))
+    nbase = len(rels)
+
+    # 2) -extra：只挑 EXTRA_MODULES（按 depends 递归补它们的额外依赖）
+    extra_files = {}
+    for dp, _dn, fns in os.walk(extra_root):
+        for f in fns:
+            if f.endswith('.ko.zst'):
+                extra_files[f[:-len('.ko.zst')]] = os.path.join(dp, f)
+    queue, seen, nadd = list(EXTRA_MODULES), set(), 0
+    while queue:
+        name = queue.pop()
+        if name in seen or name in name2rel:
+            continue
+        seen.add(name)
+        p = extra_files.get(name)
+        if not p:
+            log('  (extra: %s not found)' % name)
+            continue
+        outrel = write_module(p, os.path.relpath(p, extra_root)
+                              .replace(os.sep, '/'))
+        nadd += 1
+        queue.extend(deps.get(outrel, []))
+    log('ubuntu modules: base %d + extra %d' % (nbase, nadd))
+
     # modules.dep: "<模块路径>: <依赖模块路径...>"（依赖里是内建的会被丢掉）
     # ⚠️ 必须用**二进制**写：Python 在 Windows 上文本模式会把 \n 变成 \r\n，
     #    而 busybox 的 modprobe 解析出来会带上 \r → "module X not found in
@@ -144,14 +191,13 @@ def stage_ubuntu_modules(zj, src_root):
         if os.path.exists(s):
             shutil.copy2(s, os.path.join(dst, extra))
             zj.MODES['lib/modules/%s/%s' % (KVER, extra)] = 0o644
-    log('ubuntu modules: %d -> .ko.gz + modules.dep' % n)
 
 
 def main():
     zj = load_alpine_builder()
     ubu = os.path.join(zj.DL, 'ubuntu')
     os.makedirs(ubu, exist_ok=True)
-    kernel, mod_root = ensure_ubuntu(ubu)
+    kernel, mod_root, extra_root = ensure_ubuntu(ubu)
 
     if os.path.isdir(zj.STG):
         shutil.rmtree(zj.STG)
@@ -175,7 +221,7 @@ def main():
     log('userland: %d apks' % len(zj.APKS))
 
     # 2) Ubuntu 签名模块（全量）
-    stage_ubuntu_modules(zj, mod_root)
+    stage_ubuntu_modules(zj, mod_root, extra_root)
 
     # 3) 我们的脚本与引导代码块（与 Alpine 版一致）
     for d in ('proc', 'sys', 'dev', 'tmp', 'mnt'):
