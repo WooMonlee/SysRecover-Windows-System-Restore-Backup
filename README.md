@@ -71,8 +71,9 @@ skin/ resources/ version.json THIRD_PARTY_LICENSES.txt
 ## 已知事项 / 待完善
 
 - **Windows 7** 需要 UCRT：`libwim-15.dll` 与我们的 exe 都依赖 `api-ms-win-crt-*`（Win10 内置、
-  Win7 没有）。修法：把 Windows SDK 的 `Redist\ucrt\DLLs\x64\`（`ucrtbase.dll` +
-  `api-ms-win-crt-*.dll`，约 1.5MB）随包带上。
+  Win7 没有）。**机制已就绪**：把 Windows SDK 的 `Redist\ucrt\DLLs\x64\`（`ucrtbase.dll` +
+  `api-ms-win-crt-*.dll`，约 1.5MB）拷进 `third_party/ucrt/x64/`，`make package` 会自动复制到
+  `dist/` 与 exe 同目录（微软官方支持的本地部署方式）。取法与授权见 `third_party/ucrt/README.txt`。
 - **服务器 RAID 驱动**（`vmd`/`megaraid`/老 `mpt*`/`isci`）在 Ubuntu 的 `linux-modules-extra`
   里，需挑子集补进 initramfs（基础包已覆盖 NVMe/AHCI/virtio/USB）。
 - `ZJ_ENABLE_MOK_PATH`（备选线：我们签名的 UKI + MOK 注册）默认**不编译、不随包**，
