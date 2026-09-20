@@ -13,6 +13,8 @@
 
 #include "StdAfx.h"
 
+#include "../common/version.h"  // SYSRECOVER_VERSION_W（标题栏副标题的唯一来源）
+
 using namespace DuiLib;
 
 namespace ui_skin {
@@ -197,7 +199,7 @@ public:
 // ────────────────────────────────────────────────────────────
 class CTitleLabelUI : public CLabelUI {
 public:
-    CTitleLabelUI() : m_subPx(13), m_px(19) {}
+    CTitleLabelUI() : m_sub(SYSRECOVER_VERSION_W), m_subPx(13), m_px(19) {}
 
     LPCTSTR GetClass() const override { return _T("TitleLabel"); }
     void SetAttribute(LPCTSTR pstrName, LPCTSTR pstrValue) override;

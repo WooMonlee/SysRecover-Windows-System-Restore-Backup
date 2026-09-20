@@ -13,6 +13,8 @@ CC       = gcc
 AR       = ar
 # 构建脚本用的 Python（PATH 上的 python 可能是 Microsoft Store 占位符，不可用）
 PYTHON   ?= D:/Prog/ProgIDE/Python/Python313/python.exe
+# 版本号唯一来源 = src/common/version.h（用 tools/version.py 读写；每个问题修完 --bump）
+VERSION  := $(shell $(PYTHON) tools/version.py)
 CXXFLAGS = -O2 -std=c++17 -Wall -Wextra -D_WIN32_WINNT=0x0601 -DUNICODE -D_UNICODE
 INCLUDES = -Ithird_party/wimlib -Isrc
 LDFLAGS  = -static -mconsole
@@ -70,7 +72,11 @@ cli: $(CLI_OUT)
 
 build/app/%.o: src/%.cpp
 	@if not exist build\app\$(subst /,\,$(dir $*)) mkdir build\app\$(subst /,\,$(dir $*))
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -MMD -MP -c $< -o $@
+
+# 头文件依赖（-MMD 生成的 .d）：改了 src/common/version.h 等头文件后能自动重编
+# 受影响的对象，否则「改了版本号、编译出来还是旧号」（版本号规则的隐形坑）。
+-include $(APP_OBJS:.o=.d)
 
 $(APP_LIB): $(APP_OBJS)
 	$(AR) rcs $@ $(APP_OBJS)
@@ -78,7 +84,7 @@ $(APP_LIB): $(APP_OBJS)
 $(CLI_RC_OBJ): $(CLI_RC) src/cli/SysRecover.manifest
 	$(WINDRES) -I src/cli $< -o $@
 
-$(CLI_OUT): $(CLI_MAIN) $(CLI_RC_OBJ) $(APP_LIB) third_party/wimlib/libwim-15.dll
+$(CLI_OUT): $(CLI_MAIN) $(CLI_RC_OBJ) $(APP_LIB) third_party/wimlib/libwim-15.dll src/common/version.h
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(CLI_MAIN) $(CLI_RC_OBJ) $(APP_LIB) -o $(CLI_OUT) $(LDFLAGS) $(LDLIBS)
 
 build/duilib:
@@ -94,7 +100,7 @@ gui: $(DUI_LIB) $(APP_LIB) $(GUI_OUT)
 $(GUI_RC_OBJ): $(GUI_RC) src/gui/SysRecoverUI.manifest
 	$(WINDRES) -I src/gui $< -o $@
 
-$(GUI_OUT): $(GUI_SRC) $(GUI_RC_OBJ) $(DUI_LIB) $(APP_LIB)
+$(GUI_OUT): $(GUI_SRC) $(GUI_RC_OBJ) $(DUI_LIB) $(APP_LIB) src/common/version.h
 	$(CXX) $(GUI_FLAGS) $(GUI_INCLUDES) $(GUI_SRC) $(GUI_RC_OBJ) $(APP_LIB) $(DUI_LIB) -o $(GUI_OUT) -static -mwindows $(GUI_LDLIBS) -Lthird_party/wimlib -l:libwim-15.dll
 
 clean:
@@ -123,7 +129,7 @@ package: all
 	@copy /Y skin\main.xml dist\skin\ >nul
 	@copy /Y skin\instance.xml dist\skin\ >nul
 	@copy /Y skin\confirm.xml dist\skin\ >nul
-	@echo {"name":"SysRecover","version":"0.1.0"} > dist\version.json
+	@echo {"name":"SysRecover","version":"$(VERSION)"} > dist\version.json
 	@dir dist\SysRecover.exe dist\SysRecoverUI.exe dist\libwim-15.dll
 
 .PHONY: all cli gui clean package

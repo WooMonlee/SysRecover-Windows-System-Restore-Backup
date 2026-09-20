@@ -5,6 +5,32 @@
 
 ---
 
+## 版本号规则（自 0.1.3 起生效）
+
+**格式**：`主.次.修订`（SemVer 风格）——`主`/`次` **由人指定**，`修订` **每解决一个问题自动 +1**。
+
+| 谁动 | 什么时候 | 怎么动 |
+|---|---|---|
+| **修订号**（第 3 位）| **每解决一个问题**（一个 bug / 一个明确的缺陷修复）就 +1，多个问题连续修就连续 +1 | `python tools/version.py --bump` |
+| **次版本号**（第 2 位）| 由**用户/负责人**指定：一批功能做完、口径变化 | `python tools/version.py --set 0.2.0` |
+| **主版本号**（第 1 位）| 由**用户/负责人**指定：架构/契约不兼容的大改动（如跨层契约破坏性变更） | `python tools/version.py --set 1.0.0` |
+
+**唯一来源**：`src/common/version.h` 的 `SYSRECOVER_VERSION`。改它一处，下列各处自动跟随，**不允许各自写死**：
+
+| 位置 | 如何跟随 |
+|---|---|
+| CLI `version` / `diag` 输出 | 直接用宏（`src/cli/main.cpp`）|
+| `_zjresy*.log` 的 `software_version` | 直接用宏（`src/boot/task.cpp`）|
+| GUI 标题栏副标题 `vX.Y.Z` | `CTitleLabelUI` 用 `SYSRECOVER_VERSION_W` 初始化（`skin/main.xml` 不再写版本号）|
+| `dist/version.json` | `Makefile` 调 `tools/version.py` 生成 |
+| 发布 tag | 打 tag 时手工对齐：`vX.Y.Z` |
+
+**约定**：① 每修完一个问题、**提交前**跑 `--bump`（一次提交 = 一次修订号递增，除非该提交纯属文档/重构）；② `SYSRECOVER_CONTRACT_VERSION`（跨层契约版本）**另计**，仅当 `restore-task.conf` / `progress.json` / `_zjresy*.log` 字段变化时才动，且必须双端同步发版；③ 对外发布时必须三处同源：`version.h`、`dist/version.json`、git tag。
+
+**例**：本次（2026-09-20 换机测试）修掉换机蓝屏（BCD 残留旧设备）、`menu.lst` 第二次部署失败、`bootfix\bootmgr` 第二次覆盖失败 → `0.1.0 → 0.1.3`。
+
+---
+
 ## 0. 资产继承（从 SysRestore C# 原型复用，不重验）
 
 | 资产 | 状态 | 说明 |

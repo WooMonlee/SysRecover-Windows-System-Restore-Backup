@@ -68,7 +68,10 @@
 | 输出物 | `SysRecover.exe` + `libwim-15.dll` + `boot/{vmlinuz,initramfs,restore.sh,grldr,grldr.mbr,menu.lst模板}` + `version.json` + SHA256 |
 | 门禁 | 体积检查（见 PLAN.md §1 体积目标 < 10 MB）+ `objdump -p` / `x86_64-w64-mingw32-objdump` 或 Dependencies 零依赖检查 + `diag` 自检通过 |
 
-版本号：SemVer `x.y.z` + Windows VERSIONINFO + git tag 三处同源；`version` 命令与 `_zjresy*.log` 的 `software_version` 字段同步。
+版本号：SemVer `主.次.修订` —— **唯一来源 `src/common/version.h`**（`SYSRECOVER_VERSION`），
+`version` 命令、`_zjresy*.log` 的 `software_version`、GUI 标题栏副标题、`dist/version.json` 全部由它派生。
+**规则见 `PLAN.md`「版本号规则」**：主/次版本**由用户指定**（`python tools/version.py --set X.Y.Z`），
+**修订号每解决一个问题 +1**（提交前跑 `python tools/version.py --bump`）。发布时与 git tag `vX.Y.Z` 对齐。
 
 > **架构：目前只出 x64**（2026-09-20 用户实测：32 位 Win7 上 exe 直接起不来，系统层面拒绝、程序内无法提示）。
 > 要出 x86 需三样：① 另装 **i686-w64-mingw32** 工具链；② 官方 **32 位 `libwim-15.dll`**
