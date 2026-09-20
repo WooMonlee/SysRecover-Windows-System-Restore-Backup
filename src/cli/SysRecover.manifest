@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- SysRecover CLI 应用程序清单：唯一目的 = 启动即请求管理员权限。
+
+     与 GUI 的 SysRecoverUI.manifest 同法（见 AGENTS.md PIT-018），
+     刻意【不】声明 dpiAware / Common-Controls —— 本程序是 -mconsole
+     控制台程序，没有自绘控件以外的 GUI 元素，多加只会平白改变行为。
+
+     关于「机房批量 / 静默执行」（本清单的实际动机）：
+       - 以管理员身份运行（管理员命令行、计划任务勾选"最高权限"、PsExec -s、
+         SCCM/域推送）时，进程已是高完整性 → **不弹 UAC，全程静默** ✅
+       - 仅当从**普通用户**命令行/双击启动时，Windows 才弹一次 UAC。这是操作
+         系统的安全边界，任何提权途径（含 ShellExecuteW runas 自提升）都一样
+         会弹，程序侧无法绕过。
+       - 用本清单而非 ShellExecuteW(L"runas") 自提升的好处：**单进程**，不发生
+         "重启自己"，因此不需要把命令行参数搬运回去、不会把工作目录变成
+         System32、退出码也是本进程真实退出码（脚本 `&&` 判断可靠）。 -->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity type="win32" name="SysRecover.CLI" version="0.1.0.0" processorArchitecture="*"/>
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+</assembly>

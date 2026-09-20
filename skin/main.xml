@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SysRecover 主窗口（经典 Duilib，1:1 对齐老项目 MainWindow.xaml / 界面1.png）。
+     几何值 = 对 界面1.png 的逐像素实测（绝对坐标 - 2，即面板内部坐标系）。
+     ★ 2026-09-17：整窗宽度由 870 收窄到 745（-125）：所有「靠右锚定」的元素
+       右边界与左边界各 -125，靠左元素不动。见 docs/ui-design.md §6 与
+       src/gui/ui_skin.cpp、src/gui/main_form.cpp ApplyModeUi()。
+
+     经典 Duilib 语义提醒（与 nim_duilib / WPF 不同，详见 AGENTS.md §13）：
+       1) float 子控件：pos="left,top,right,bottom"（后两个是右下角坐标，不是宽高）
+       2) 控件级圆角用 borderround="cx,cy"（椭圆直径 = 2×半径），roundcorner 只认 <Window>
+       3) inset 是「给子元素的内边距」，不是外边距
+       4) Button/Combo 无图回退：DoPaint 继承自 CControlUI，靠 bkcolor/border 才看得见
+       5) 字体必须用 <Font id=N> 声明，font="N" 才有意义（自绘控件不走这套） -->
+<Window size="745,410" caption="0,0,0,52" roundcorner="24,24" mininfo="745,410">
+  <Font id="1" name="Microsoft YaHei UI" size="14" />
+  <Font id="2" name="Microsoft YaHei UI" size="15" />
+
+  <!-- 最外层 #EEF1F6 = 窗口圆角处的露底色（1px 环） -->
+  <VerticalLayout bkcolor="#FFEEF1F6" inset="1,1,1,1">
+
+    <!-- 面板：#FFFFFF + 1px #DFE5EE 边框 + 圆角 12（borderround = 直径 24） -->
+    <VerticalLayout name="Panel" bkcolor="#FFFFFFFF" bordersize="1" bordercolor="#FFE1E7EF" borderround="24,24" inset="1,1,1,1">
+      <!-- Content：浮动定位原点（绝对 (2,2)，尺寸 741x406） -->
+      <VerticalLayout name="Content">
+
+        <!-- ══════ 顶栏（蓝色渐变，高 52） ══════ -->
+        <TopBar float="true" pos="0,0,741,52" />
+
+        <TabOption   name="ModeRestore" float="true" pos="17,2,159,44"  text="文件→系统" icon="restore" group="true" selected="true" bold="true" />
+        <TabOption   name="ModeBackup"  float="true" pos="174,2,316,44" text="系统→文件" icon="backup"  group="true" bold="true" />
+        <TitleLabel  float="true" pos="316,0,618,52" text="知鉴一键还原" sub="v0.1" />
+
+        <WinBtn name="MinBtn"   float="true" pos="618,0,658,51" glyph="min" />
+        <WinBtn name="MaxBtn"   float="true" pos="659,0,699,51" glyph="max" />
+        <WinBtn name="CloseBtn" float="true" pos="700,0,740,51" glyph="close" />
+
+        <!-- ══════ 第一步卡片（白卡，y64..140） ══════ -->
+        <VerticalLayout name="Card1" float="true" pos="16,64,725,140" bkcolor="#FFFFFFFF" bordersize="1" bordercolor="#FFF4F6F9" borderround="20,20" />
+        <SkinLabel name="Step1Badge" float="true" pos="30,88,92,111" text="第一步" bkcolor="#FFE08A2E" borderround="8,8" color="#FFFFFFFF" fontsize="13" align="center" />
+        <SkinButton name="BrowseBtn" float="true" pos="100,77,240,115" text="浏览系统镜像文件" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFEEF1F6" borderround="14,14" textcolor="#FF1B2432" />
+        <SkinEdit   name="ImagePath" float="true" pos="249,77,710,115" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFC9D6F2" borderround="16,16" textcolor="#FF1B2432" nativebkcolor="#FFFFFFFF" textpadding="10,9,10,9" />
+        <SkinLabel name="NoteLabel" float="true" pos="112,118,232,132" text="镜像说明：" color="#FF5F6C80" fontsize="13" align="right" />
+
+        <!-- ══════ 第二步卡片（蓝卡，y149..284） ══════ -->
+        <VerticalLayout name="Card2" float="true" pos="16,149,725,284" bkcolor="#FFF0F5FF" bordersize="1" bordercolor="#FFF8F8FB" borderround="20,20" />
+        <SkinLabel name="Step2Badge" float="true" pos="30,160,92,183" text="第二步" bkcolor="#FFE08A2E" borderround="8,8" color="#FFFFFFFF" fontsize="13" align="center" />
+        <SkinLabel name="PartTitle" float="true" pos="102,164,300,182" text="系统安装位置" color="#FF1B2432" fontsize="13" />
+        <SkinLabel name="PartHint"  float="true" pos="189,164,575,182" text="选择要安装恢复镜像的目标分区（移动盘已隐藏）" color="#FF5F6C80" fontsize="13" />
+
+        <!-- 表头带 #E8EFFB（y191..222）+ 四列表头 -->
+        <Control   name="TableHead" float="true" pos="33,191,710,223" bkcolor="#FFE8EFFB" />
+        <SkinLabel name="Th1" float="true" pos="87,191,180,223"  text="盘符•系统类型" color="#FF5F6C80" fontsize="13" bold="true" />
+        <SkinLabel name="Th2" float="true" pos="292,191,360,223" text="磁盘"           color="#FF5F6C80" fontsize="13" bold="true" />
+        <SkinLabel name="Th3" float="true" pos="399,191,440,223" text="分区"           color="#FF5F6C80" fontsize="13" bold="true" />
+        <SkinLabel name="Th4" float="true" pos="472,191,570,223" text="容量 · 可用"    color="#FF5F6C80" fontsize="13" bold="true" />
+
+        <Combo name="PartitionBox" float="true" pos="33,228,710,271" bkcolor="#FFFFFFFF" bordersize="1" bordercolor="#FFC9D6F2" borderround="16,16" textpadding="0,0,0,0" />
+        <SkinLabel name="PartLoadingText" float="true" pos="45,240,300,258" text="正在读取分区信息……" color="#FF98A2B3" fontsize="13" visible="false" />
+
+        <!-- ══════ 第三步行（无卡片，y293..332） ══════ -->
+        <SkinLabel name="Step3Badge" float="true" pos="30,301,92,324" text="第三步" bkcolor="#FFE08A2E" borderround="8,8" color="#FFFFFFFF" fontsize="13" align="center" />
+        <SkinButton name="MainAction" float="true" pos="117,293,237,332" text="开始恢复系统" fontsize="16" bold="true" bkcolor="#FFE2E6EE" bordercolor="#FFE4E8EF" borderround="12,12" textcolor="#FF9AA3B2" enabled="false" />
+        <GlyphCheck name="Silent" float="true" pos="420,302,520,326" text="静默模式" />
+        <SkinLabel name="FormatLabel" float="true" pos="350,302,388,326" text="格式：" color="#FF1B2432" fontsize="13" align="right" visible="false" />
+        <Combo name="FormatBox" float="true" pos="388,294,510,332" bkcolor="#FFFFFFFF" bordersize="1" bordercolor="#FFC9D6F2" borderround="16,16" textpadding="0,0,0,0" visible="false">
+          <TextItem text=".esd(慢速小体积)" height="30" />
+          <TextItem text=".wim(正常大小)" height="30" />
+          <TextItem text=".wim(高速大体积)" height="30" />
+        </Combo>
+        <SkinButton name="RepairBootBtn" float="true" pos="530,296,612,329" text="清除引导项" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFE7ECF2" borderround="14,14" textcolor="#FF1B2432" />
+        <SkinButton name="BootMenuBtn"   float="true" pos="618,296,706,329" text="安装启动还原" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFE7ECF2" borderround="14,14" textcolor="#FF1B2432" />
+
+        <!-- ══════ 状态栏（分隔线 1px + #FAFBFE，y370..405） ══════ -->
+        <Control float="true" pos="0,370,741,371" bkcolor="#FFEEF1F6" />
+        <Control float="true" pos="0,371,741,406" bkcolor="#FFFAFBFE" />
+        <SkinLabel name="StatusText" float="true" pos="17,371,196,406" text="执行进度" color="#FF5F6C80" fontsize="13" />
+        <RoundProgress name="Progress" float="true" pos="200,385,672,392" value="0" />
+        <SkinLabel name="PercentText" float="true" pos="676,371,723,406" text="" color="#FF5F6C80" fontsize="13" align="right" />
+
+        <!-- 备份模式备注输入（还原模式隐藏） -->
+        <SkinEdit name="NoteInput" float="true" pos="249,116,710,136" fontsize="14" bordercolor="#FFC9D6F2" underline="true" textcolor="#FF1B2432" nativebkcolor="#FFFFFFFF" textpadding="10,5,10,5" visible="false" />
+
+        <!-- 子镜像下拉（还原模式显示在备注行）：无外框，只在下方留一根待输入横线
+             （老图实测「镜像说明：」文字在 y120..131，其右侧无输入框；
+               横线收在第一步卡片内：卡片底边 y142，此处底线 y137） -->
+        <Combo name="ImageIndexBox" float="true" pos="249,116,710,136" textpadding="0,0,0,0" />
+        <Control float="true" pos="249,135,710,136" bkcolor="#FFC9D6F2" />
+        <SkinLabel name="NoteText" float="true" pos="560,118,710,132" text="" color="#FF5F6C80" fontsize="13" />
+
+      </VerticalLayout>
+    </VerticalLayout>
+  </VerticalLayout>
+</Window>

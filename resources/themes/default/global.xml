@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SysRecover 全局资源（骨架阶段最小集） -->
+<Global>
+  <Theme name="Default" type="base" style="light" version="2.0"/>
+  <DefaultFontFamilyNames value="微软雅黑,宋体"/>
+  <Font id="system_14" name="system" size="14"/>
+  <Font id="system_16" name="system" size="16"/>
+  <Font id="system_20b" name="system" size="20" bold="true"/>
+  <ThemeColor name="text_default" value="#FF1B2432" type="text" category="text_color" role="neutral" fixed="true"/>
+  <ThemeColor name="text_secondary" value="#FF5F6C80" type="text" category="text_color" role="neutral" fixed="true"/>
+</Global>

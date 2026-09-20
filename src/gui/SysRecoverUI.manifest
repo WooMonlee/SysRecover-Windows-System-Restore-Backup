@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- SysRecoverUI 应用程序清单：唯一目的 = 启动即请求管理员权限。
+     备份/还原核心功能（枚举分区、写 BCD/引导、wimlib 挂载）全部需要管理员，
+     因此双击 exe 时由 Windows 加载器直接弹一次 UAC（requireAdministrator）。
+
+     刻意【不】声明其他项：
+       - 不加 Common-Controls v6 依赖：本项目 GUI 全是 Duilib 自绘控件，只有
+         SkinEdit 内部那个原生 EDIT 子窗口受影响，加了会平白改变它的外观。
+       - 不加 dpiAware / dpiAwareness：会把界面从当前的 DPI 虚拟化切成真实
+         DPI 渲染，等于顺带改了高 DPI 表现（本次需求与 DPI 无关，见
+         docs/ui-design.md §6.3）。
+     即：与原 exe（RT_MANIFEST 为空）相比，本文件只引入「提权」这一处行为差异。 -->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity type="win32" name="SysRecover.UI" version="0.1.0.0" processorArchitecture="*"/>
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+</assembly>

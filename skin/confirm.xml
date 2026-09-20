@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 还原确认框（非静默模式，见 src/gui/confirm_dlg.cpp）。
+     尺寸 420x196，无系统外框 + 圆角（同 main.xml，由 SetWindowRgn 裁）。
+     坐标同 main.xml：嵌套 inset 后 Content.m_rcItem = (2,2,...)，XML 坐标 +2 = 屏幕坐标。
+     两个按钮：「退出」白底灰边、「退出并重启」accent 蓝底白字（默认项）。 -->
+<Window size="420,196" caption="0,0,0,44" roundcorner="24,24" mininfo="420,196">
+  <Font id="1" name="Microsoft YaHei UI" size="14" />
+  <VerticalLayout bkcolor="#FFEEF1F6" inset="1,1,1,1">
+    <VerticalLayout name="Panel" bkcolor="#FFFFFFFF" bordersize="1" bordercolor="#FFE1E7EF" borderround="24,24" inset="1,1,1,1">
+      <VerticalLayout name="Content">
+        <Control float="true" pos="0,0,416,44" bkcolor="#FFF7F9FC" />
+        <SkinLabel name="DlgTitle" float="true" pos="22,12,300,38" text="确认还原" fontsize="15" bold="true" color="#FF1B2432" />
+        <WinBtn name="DlgClose" float="true" pos="372,2,414,42" glyph="close" />
+        <SkinLabel name="DlgMsg1" float="true" pos="22,56,398,78" text="" fontsize="13" color="#FF5F6C80" />
+        <SkinLabel name="DlgMsg2" float="true" pos="22,78,398,100" text="" fontsize="13" color="#FF5F6C80" />
+        <SkinLabel name="DlgMsg3" float="true" pos="22,100,398,122" text="" fontsize="13" color="#FF5F6C80" />
+        <SkinButton name="BtnExit"   float="true" pos="106,140,232,178" text="退出不重启" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFE4E8EF" borderround="14,14" textcolor="#FF1B2432" />
+        <SkinButton name="BtnReboot" float="true" pos="242,140,398,178" text="重启后还原" fontsize="14" bkcolor="#FF8CA0DE" bordercolor="#FF8CA0DE" borderround="14,14" textcolor="#FFFFFFFF" />
+      </VerticalLayout>
+    </VerticalLayout>
+  </VerticalLayout>
+</Window>

@@ -1,0 +1,46 @@
+# 构建产物（make package 可重建）
+dist/
+*.o
+*.d
+*.a
+# BIOS/MBR 里程碑快照（含整份源码+dist 副本，103MB；要入库就删掉这行）
+BIOS版OK/
+# build/duilib.mk 是构建清单（Makefile include 依赖），须入库
+
+# QEMU 测试台产物：脚本/README 入库，虚拟盘/下载/日志/解包产物一律不入库
+# （base/drill.raw 2GB、testdisk.raw 512MB，直接 add 会撑爆仓库）
+tools/vmtest/base/
+tools/vmtest/dl/
+tools/vmtest/logs/
+tools/vmtest/stage/
+tools/vmtest/drill-images/
+tools/vmtest/__pycache__/
+tools/vmtest/**/__pycache__/
+
+# 本机会话/截图产物
+.claude/
+tools/ui/*.png
+tools/ui/out/
+
+# 调研原始 PDF（正文已转 ESD备份还原工具调研.txt 入库，避免重复二进制）
+ESD备份还原工具调研.pdf
+
+# MOK 签名私钥（不能入库；丢了老客户的 MOK 就换不了新签名）
+keys/
+
+# 构建工具下载（osslsigncode 等，用时自动下，不入库）
+tools/sb/dl/
+# 本机日志拷贝（排查用）
+log/
+
+# 第三方源码：只保留**实际编译**的部分；演示程序/归档/未采用的库留在本机、不入库
+third_party/nim_duilib-main/
+third_party/nim_duilib-main.zip
+third_party/duilib-master.zip
+third_party/duilib-master/*Demo/
+third_party/duilib-master/ScrCapture/
+third_party/duilib-master/FileTree/
+third_party/duilib-master/bin/
+third_party/duilib-master/doc/
+third_party/duilib-master/TestApp1/
+
