@@ -14,6 +14,10 @@ namespace sysrecover {
 namespace {
 
 bool WriteTextFile(const std::wstring& path, const std::string& utf8) {
+    // 已存在的 menu.lst 带 Hidden+System 属性 —— 这种文件用 CREATE_ALWAYS 打开会
+    // 直接被拒（实测 ERROR_ACCESS_DENIED=5），于是"第一次装成功、第二次起必失败"
+    // （PIT-037 的同一个坑，CopyOne 早已处理，这里当时漏了）。先归零属性再写。
+    SetFileAttributesW(path.c_str(), FILE_ATTRIBUTE_NORMAL);
     HANDLE h =
         CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                     FILE_ATTRIBUTE_NORMAL, nullptr);
