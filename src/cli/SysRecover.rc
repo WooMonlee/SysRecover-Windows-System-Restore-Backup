@@ -1,0 +1,4 @@
+/* SysRecover.rc —— CLI 的提权清单资源脚本（由 windres 编译）。
+   与 GUI 的 SysRecoverUI.rc 同法：RT_MANIFEST(24) 的 id 必须是 1
+   （CREATEPROCESS_MANIFEST_RESOURCE_ID），否则加载器不读、UAC 不弹。 */
+1 24 "SysRecover.manifest"

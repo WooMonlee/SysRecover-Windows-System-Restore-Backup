@@ -1,0 +1,10 @@
+/* SysRecoverUI.rc —— 把提权清单编进 exe 的资源脚本（由 windres 编译）。
+
+   只做一件事：把 SysRecoverUI.manifest 以 RT_MANIFEST(24) / id=1 的形式嵌入。
+   id 必须是 1（= CREATEPROCESS_MANIFEST_RESOURCE_ID），写成别的值加载器不会读，
+   UAC 也就不会弹。数值 24 是 RT_MANIFEST，不 #include <winuser.h> 以免引入
+   版本相关的宏差异。
+
+   注意：本 GUI 原先 RT_MANIFEST 为空（MinGW GCC 14 起不再自动链接
+   default-manifest.o），所以这里只需嵌入这一份，不会与默认清单冲突。 */
+1 24 "SysRecoverUI.manifest"

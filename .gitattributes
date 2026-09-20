@@ -1,0 +1,30 @@
+# 换行符策略：shell 脚本必须是 LF（CRLF 会让 shebang/脚本在内核里跑不起来），
+# 这也是"救援层脚本克隆后能用"的前提。
+* text=auto
+*.sh        text eol=lf
+*.cpp       text eol=lf
+*.h         text eol=lf
+*.c         text eol=lf
+*.md        text eol=lf
+*.py        text eol=lf
+*.ps1       text eol=crlf
+*.bat       text eol=crlf
+Makefile    text eol=lf
+
+# 二进制（不做换行转换）
+*.dll       binary
+*.exe       binary
+*.gz        binary
+*.zst       binary
+*.bin       binary
+*.efi       binary
+*.cpio      binary
+*.zip       binary
+*.pdf       binary
+*.png       binary
+*.ico       binary
+*.lib       binary
+*.o         binary
+*.a         binary
+bootfiles/alpine/init text eol=lf
+
