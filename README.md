@@ -1,81 +1,146 @@
 # SysRecover（知鉴一键还原 · 单机版）
 
-Windows 系统备份 / 一键还原工具。**CLI 优先**（`SysRecover.exe`），另有 GUI（`SysRecoverUI.exe`），
-双 exe 共享同一套 `SysRecoverCore` 代码；**零运行时依赖**、Release x64、体积目标 < 10 MB。
+> 版本 `0.1.4`｜**仅 64 位（x64）**｜Windows 7 / 10 / 11 / WinPE｜发布包 ≈55 MB（其中 93% 是救援层）
+> 许可：自有代码 + 第三方组件「单独分发」，清单与全文见 `THIRD_PARTY_LICENSES.txt`
+
+一句话：**把 Windows 系统备份成一个镜像文件，需要的时候一键还原回去。**
+
+备份/还原这类工具街上不少，所以我们把话说在前面：**这个项目是怎么做的、做到了哪一步、
+哪儿还不行**，下面全写清楚，不夸张。
 
 > ⚠️ 本仓库是**独立产品（单机版）**。早期的 `WooMonlee/OnekeyRestore`（C# + VHDX 多点秒还原）
-> 是**另一个产品**，两边的设计与实现分开推进、文档不混用。
+> 是**另一个产品**，两边设计与实现分开推进、文档不混用。
 >
 > 👋 **第一次进来先看 [`docs/11-接手指南（读我优先）`](docs/11-接手指南（读我优先）.md)** ——
-> 现状（已验证 / 待验证）、下一步优先级、文档地图，以及"AI 环境丢了怎么续上"。
-> 想先了解产品本身，再读 [`docs/00-项目简介（给协作者）`](docs/00-项目简介（给协作者）.md)。
+> 现状（已验证/待验证）、下一步优先级、文档地图；想先了解产品再看 [`docs/00-项目简介`](docs/00-项目简介（给协作者）.md)。
 
-## 它怎么工作
+---
 
-1. **备份**：在 Windows 里热备（VSS 快照）系统分区为 WIM/ESD。
-2. **还原**：选镜像 + 目标分区 → 自动二选一：
-   - **就地还原**（目标分区没被占用：在 PE 里、或还原到非系统盘）→ 格式化 + `libwim` 应用 +
-     `bcdboot` 修引导，**不重启**；
-   - **重启还原**（还原正在运行的系统盘）→ 暂存任务 → 重启进内置 Linux 救援层 →
-     格式化 + 应用镜像 + 修复引导 → 自动重启回新系统。
+## 一、它是什么，以及它**不是**什么
 
-## 环境支持（均已实测）
+**是**：系统备份（热备 VSS）→ 系统还原（选镜像 + 选目标分区 → 一键回滚）。
 
-| 环境 | 状态 |
+**不是**（先把边界划清楚，免得各位拿它去干别的活）：
+
+| 不做 | 说明 |
 |---|---|
-| BIOS / MBR | ✅ |
-| UEFI / GPT（Secure Boot 关闭） | ✅ |
-| UEFI / GPT + **Secure Boot 开启** | ✅ **零注册、零交互** |
-| WinPE / 还原到非系统盘 | ✅ 就地还原（不重启） |
-| Windows 7 / 10 / 11 | ✅（Win7 装 VC++ 运行库后正常；**已实测 Win7 宿主还原 Win10 镜像并正常启动**） |
-| **架构** | **仅 64 位（x64）** —— 32 位 Windows / 32 位 PE 上 exe **根本起不来**（系统报"不是有效的 Win32 应用程序"，程序内无法提示）；需要时另出 x86 版，见「已知事项」 |
+| 分区管理 / 调整分区 / 克隆磁盘 | 我们不做磁盘工具，只处理"把系统写回去"这件事 |
+| 数据恢复 | 不做 |
+| **多点还原 / 差分秒还原** | 这条产品线**没有**，也不打算加（那是另一个产品线的事） |
+| 32 位系统 | 目前**只出 x64**（32 位系统上 exe 会被系统直接拒绝，程序内无法提示；见「已知限制」） |
 
-## 构建
+---
 
-```bash
-mingw32-make -f Makefile all        # CLI + GUI
-mingw32-make -f Makefile package    # 再部署 bootfiles/皮肤 + 许可声明到 dist/
-mingw32-make -f Makefile clean
+## 二、为什么还要再写一个
+
+因为实际干活时会碰上这几件事，而很多工具在这几件事上会翻车：
+
+1. **阵列卡 / 服务器机器上，救援环境认不到硬盘** —— 很多 PE 的驱动覆盖不到 RAID 卡。
+   → 我们的救援层是完整 Linux 内核 + **1025 个存储模块**（`megaraid_sas`/`mpt3sas`/`isci`/`vmd`/`hpsa`/
+   `aacraid`/`arcmsr`/`virtio_scsi`… 都在），阵列卡机器上照样能干活。
+2. **还得准备 U 盘 / PE 启动盘** —— 多一道工序，也多一个出错的地方。
+   → 救援层**内置在软件里**，部署一次，之后一条链走到底。
+3. **Secure Boot 机器上要进 BIOS 关安全启动**（部分同类工具就是这样要求的）。
+   → 我们走**微软签名链**（下面 §4 详述），用户**不用关、也不用注册任何密钥**。
+4. **还原"成功"了但开不了机** —— 万能镜像缺引导文件、NTFS 引导区不全、BCD 里还写着旧盘符……
+   → 这些**我们替用户做完了**（§5）。
+5. **拿到一个上次没写完的半截镜像，还原到一半黑屏。**
+   → 我们**先校验再动手**，镜像不完整**直接拒绝**，不给你"赌一把"的机会。
+
+---
+
+## 三、怎么工作的
+
+```
+┌─────────── Windows 侧（SysRecover.exe / SysRecoverUI.exe）──────────┐
+│  list / diag   看现场（只读）                                        │
+│  backup        VSS 热备 → 写 WIM/ESD（先写 <目标>.tmp，成功才改名）  │
+│  restore       安全四检查 → 镜像可用性校验 → 二选一：                │
+│                   ├─ 就地还原：格式化 + apply + bcdboot → 不重启      │
+│                   └─ 重启还原：暂存任务 + 配引导 → 重启              │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               ↓ 重启（仅"还原系统盘"这条路）
+┌──────────── 内置 Linux 救援层（vmlinuz + initramfs + restore 脚本）─┐
+│  加载存储模块 → 找目标分区与镜像 → 格式化 → apply → 修引导 → 重启   │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-- 工具链：**MinGW-w64 GCC 14.2**（路径写死在 `Makefile` 头部，其余全相对路径）
-- 救援层组装：`tools/build-ubuntu-rescue.py`（**Ubuntu 签名内核 + 签名模块** + Alpine 用户态）
-- 回归测试：`tools/vmtest/*.ps1`（见 `tools/vmtest/README.md`）
+- CLI 与 GUI **共用同一套 `app` 层代码**，行为一致（不是两套实现）。
+- 救援层的日志会写到**软件目录的 `logs/`**（成功也保留），出问题让用户把那个文件夹发回来即可。
 
-## 发布包（`dist/`，约 54 MB）
+---
 
-```
-SysRecover.exe / SysRecoverUI.exe / libwim-15.dll
-bootfiles/{grldr, grldr.mbr, vmlinuz-zjrestore, initramfs-zjrestore.cpio.gz, zjrestore-lite.sh}
-bootfiles/sb/{shimx64.efi, grub-ubuntu.efi, grub.cfg}     # Secure Boot 链
-skin/ resources/ version.json THIRD_PARTY_LICENSES.txt
-```
+## 四、三条引导链（细节见 [`AGENTS.md` §7](AGENTS.md)）
 
-## 引导设计（细节见 AGENTS.md §7）
-
-| 环境 | 链 |
+| 固件/模式 | 链路 |
 |---|---|
-| BIOS/MBR | `MBR → bootmgr → BCD(bootsector \grldr.mbr) → \grldr → \menu.lst → 内核 + initramfs` |
-| UEFI（SB 关） | `固件启动项 Boot####（NVRAM）直启内核`，命令行走 OptionalData |
-| UEFI + SB 开 | `固件 → shimx64.efi（微软签名）→ grubx64.efi（Canonical 签名的 GRUB）→ Canonical 签名的 Ubuntu 内核 + 我们的 initramfs` |
+| **BIOS / MBR** | `MBR → bootmgr → BCD（实模式启动扇区 → \grldr.mbr）→ \grldr → \menu.lst → 内核 + initramfs` |
+| **UEFI（Secure Boot 关）** | 直接写**固件启动项**（NVRAM `Boot####`），由固件加载内核，命令行走 `OptionalData` |
+| **UEFI + Secure Boot 开** | `固件 → shimx64.efi（微软签名）→ grubx64.efi（Canonical 签名的 GRUB）→ Canonical 签名的 Ubuntu 内核 + 我们的 initramfs` |
 
-> Secure Boot 那条链**全部使用已签名的现成组件**（不绕过任何机制），因此无需用户注册密钥、
-> 无需关闭 Secure Boot；相关踩坑与对比见 `AGENTS.md` PIT-060/061/062/063/065/066。
+关于最后一条：它**没有绕过任何机制** —— 链上每个可执行文件都有合法签名，和 Ubuntu 正常开机走的是同一条路。
+所以**不需要用户注册 MOK、也不需要关闭 Secure Boot**。
 
-## 使用案例（命令行）
+---
 
-> CLI 与 GUI 走**同一套 `app` 层代码**（`RunBackup` / `StageRestore`），行为一致。
-> CLI 已编入 `requireAdministrator` 清单：在管理员命令行 / 计划任务（最高权限）/ PsExec `-s` /
-> SCCM 下**全程静默不弹 UAC**（机房批量部署即用这条路）。
+## 五、可靠性设计（为什么它不容易把事办砸）
 
-先看清现场（只读，随时可用）：
+| 机制 | 做法 |
+|---|---|
+| **写镜像不怕中断** | 先写 `<目标>.tmp`，成功才改名；中断只会留下临时文件，**原镜像不受影响** |
+| **不接受坏镜像** | 动手前检查镜像是否"写入完成"（带 `WRITE_IN_PROGRESS` 标志/完整性不过 → 拒绝） |
+| **不会抹错盘** | 四元素校验（GUID/磁盘序列号/偏移/大小）；**还原四检查**：目标是 ESP、BitLocker、恢复分区、或镜像文件就在目标分区内 → **任一命中直接拒绝**（退出码 4） |
+| **不碰 MBR** | 只格式化目标分区；救援文件放目标分区；**数据盘根目录零新增** |
+| **还原后能开机** | 写回完整 NTFS 引导区（扇区 0 的 426B + 扇区 1..8）；补 `\bootmgr` + `C:\Boot\BCD`；BCD 用 `device boot`（与盘符/磁盘号无关） |
+| **任务能中止**（`0.1.4`） | 备份/还原中点关闭 → 可选「终止并退出」，1 秒内收手，并删掉未写完的临时文件 |
+
+---
+
+## 六、支持矩阵（**实测过的**和**没测的**分开写）
+
+| 场景 | 状态 |
+|---|---|
+| BIOS / MBR 全链还原 | ✅ 2026-09-19 实测（用户真机/VM） |
+| UEFI / GPT 全链还原（Secure Boot 关） | ✅ 2026-09-19 实测 |
+| UEFI / GPT + **Secure Boot 开**（零注册零交互） | ✅ 2026-09-19 实测 |
+| 热备份（VSS）→ 还原后正常进系统 | ✅ 2026-09-19 实测 |
+| **Win7 宿主**（装 VC++ 运行库后）运行工具 | ✅ 2026-09-20 实测 |
+| **Win7 宿主还原 Win10 镜像**（跨系统版本） | ✅ 2026-09-20 实测，还原后正常启动 |
+| 阵列卡/RAID 驱动入包（26 个） | ✅ 2026-09-20 QEMU 实测加载成功（**真机待验**） |
+| QEMU 自动回归（6 项：UEFI 起救援、屏显、PBR 探针、全流程演练…）| ✅ 见 [`docs/07`](docs/07-测试矩阵与回归记录.md) |
+| **PE / 非系统盘「就地还原」（不重启）** | 🚧 **待实测**（代码已就绪，验收清单见 [`docs/09`](docs/09-PE直装验收清单.md)） |
+| **忙时关闭「终止并退出」**（`0.1.4`） | 🚧 **待实测** |
+| 服务器 RAID **真机**、Win7 **零安装** | 🚧 待验（机制已就绪） |
+| 32 位系统 | ✗ 不支持（评估见 [`docs/08`](docs/08-32位支持评估（待实施）.md)） |
+
+> 表里写 🚧 的，就**别当它已经能用** —— 这是我们自己定的规矩：没真跑通不写 ✅。
+
+---
+
+## 七、上手：普通用户（GUI）
+
+1. 解压发布包，**双击 `SysRecoverUI.exe`**（会弹一次 UAC，因为要读写分区/引导）。
+2. **备份**：切到「系统→文件」→ 选保存位置 → 点「开始备份系统」。
+3. **还原**：切到「文件→系统」→ 选镜像（也可以**直接把 .esd/.wim 拖进窗口**）→ 选目标分区 →
+   点「开始恢复系统」→ 选「退出并重启」→ 之后全自动，最后自动回到新系统。
+   - 想批量/无人值守就勾上 **`静默模式`**：全程无对话框，直接干完。
+
+---
+
+## 八、命令行用法
+
+> CLI 与 GUI 共用同一套 `app` 层代码，行为一致。
+> CLI 也编入了 `requireAdministrator` 清单：在**管理员命令行 / 计划任务（最高权限）/ PsExec `-s` / SCCM**
+> 这类上下文里本就处于高完整性，**全程静默不弹 UAC**（机房批量部署走的就是这条路）。
+
+先看现场（只读，随时能用）：
 
 ```cmd
 SysRecover.exe list      :: 磁盘/分区/文件系统/盘符/ESP/系统标记
 SysRecover.exe diag      :: 固件类型、Secure Boot 状态、启动项是否已装、wimlib 自检
 ```
 
-### 案例 1 · 把当前系统备份成镜像（热备份）
+### 案例 1 · 把当前系统热备成镜像
 
 ```cmd
 SysRecover.exe backup --dest D:\backup\win10-20260920.esd --source C:/ ^
@@ -84,14 +149,14 @@ SysRecover.exe backup --dest D:\backup\win10-20260920.esd --source C:/ ^
 
 - `--source C:/`：**盘符根 + 正斜杠** → 触发热备（VSS 快照 + 排除清单）
 - `--compress`：`recovery`（.esd 最省）/ `maximum` / `fast`
-- `--verify`：写完立即校验；`--name`：子镜像名
+- `--verify` 写完立即校验；`--name` 指定子镜像名
 - 目标已存在需 `--yes` 覆盖，或用 `--append` 追加为同一 WIM 里的新子镜像
-- 辅助：`images --image <镜像>` 列子镜像；`verify --image <镜像>` 单独校验
+- 辅助命令：`images --image <镜像>` 列子镜像；`verify --image <镜像>` 单独校验
 
 ### 案例 2 · 还原一个万能镜像到 C 盘
 
 ```cmd
-SysRecover.exe list                                       :: 先确认磁盘号/分区号
+SysRecover.exe list                                     :: 先确认磁盘号/分区号
 SysRecover.exe restore --image D:\backup\wannei-win10.esd ^
                        --disk 0 --part 3 --index 1 --yes
 ```
@@ -103,52 +168,86 @@ SysRecover.exe restore --image D:\backup\wannei-win10.esd ^
 | 目标是**正在运行的系统盘** | 暂存任务 → **重启**进内置救援层 → 格式化 + 应用 + 修引导 → 自动重启回新系统 |
 | 目标**未被占用**（在 **PE** 里、或还原到**非系统盘**） | **就地还原**：格式化 + 应用 + `bcdboot` → **完成，不重启** |
 
-- 安全四检查（目标是 ESP / BitLocker / 恢复分区 / 镜像在目标分区内）**任一命中即拒绝**（退出码 4）
-- 不自动修引导：`--no-repair-boot`；指定子镜像：`--index N`
-- 退出码：`0` 成功 / `2` 参数错 / `3` 需管理员 / `4` 危险目标被拒 / `5` 镜像校验失败 / `6` 取消
+- `--no-repair-boot` 不自动修引导；`--index N` 指定子镜像
+- 退出码：`0` 成功 / `1` 通用失败 / `2` 参数错 / `3` 需管理员 / `4` 危险目标被拒 / `5` 镜像校验失败 / `6` 取消
 
-### 案例 3 · 给已有镜像做"无人参与的静默还原"入口
+### 案例 3 · 做"无人参与的静默还原"入口
 
-**思路**：把还原任务**暂存**下来（并装好常驻引导模块），之后由**开机菜单选择**或**单次启动**
-触发，全自动完成还原，**不需要任何人点确认**。
+思路：把还原任务**暂存**下来（并装好常驻引导模块），之后由**开机菜单**或**单次启动**触发，全自动完成。
 
 ```cmd
-:: 1)（推荐）先用 GUI 的「安装启动还原」装一次常驻引导模块 —— 开机启动菜单里就会多出该入口
+:: 1)（推荐）先用 GUI 的「安装启动还原」装一次常驻引导模块
 ::    （UEFI：写固件启动项；BIOS：BCD 实模式启动扇区条目）
 
 :: 2) 暂存一次静默还原：安检 → 镜像可用性校验 → 写契约 → 刷新引导层 → 设单次启动
 SysRecover.exe restore --image D:\backup\wannei-win10.esd --disk 0 --part 3 --index 1 --yes
 
-:: 3) 重启（这之后无需任何操作）
+:: 3) 重启（此后无需任何操作）
 shutdown /r /t 0
 ```
 
-- **单次语义**：那条"单次启动"用完即消，平时开机照常进 Windows ✓
-- **常驻语义（UEFI）**：`安装启动还原` 写入的**固件启动项**挂在 `BootOrder` 末尾，
-  开机启动菜单里随时能选到；而任务契约 `restore-task.conf` 留在**数据盘**（不被格式化），
-  所以**之后再选它还会再还原一次** —— 这就是"菜单里常驻的一键还原" ✓
-- ⚠️ **BIOS 下不常驻**：救援文件（`grldr`/`grldr.mbr`/`menu.lst`）随目标分区一起被格式化，
-  所以那条菜单项**只对当次有效**；要常驻请用 UEFI（或把救援文件放到不被格式化的分区，当前未实现）
-- GUI 勾上 **`静默模式`** 后**全程无任何对话框**（机房批量正为此设计）
-- 等价做法：双击 GUI → 选镜像 → 选目标分区 → 勾「静默模式」→ 开始恢复系统
+- **单次语义**：那条"单次启动"用完即消，平时开机照常进 Windows。
+- **常驻语义（UEFI）**：固件启动项挂在 `BootOrder` 末尾，开机启动菜单里随时能选；
+  任务契约放在**数据盘**（不被格式化），所以之后再选它还会再还原一次 —— 就是"菜单里常驻的一键还原"。
+- ⚠️ **BIOS 下不常驻**：救援文件随目标分区一起被格式化，那条菜单项**只对当次有效**；要常驻请用 UEFI。
 
-## 许可
+---
 
-- 本产品自身代码**未静态链接任何 GPL 组件、未修改任何第三方源码**（`libwim-15.dll` 为
-  LGPL 动态链接，其余为「单独分发」的聚合），因此不受 copyleft 的衍生作品条款约束。
-  **是否开源为待决事项**，与合规无关。
-- 第三方组件清单、用法与许可全文：`THIRD_PARTY_LICENSES.txt`（随包分发）。
-- 构建期工具（MinGW-w64、osslsigncode、QEMU/OVMF、mtools）**不随产品分发**。
+## 九、构建（给想自己编的人）
 
-## 已知事项 / 待完善
+```bash
+mingw32-make -f Makefile all        # CLI + GUI
+mingw32-make -f Makefile package    # 再部署 bootfiles/皮肤/许可到 dist/
+mingw32-make -f Makefile clean
+```
 
-- **Windows 7** 需要 UCRT：`libwim-15.dll` 与我们的 exe 都依赖 `api-ms-win-crt-*`（Win10 内置、
-  Win7 没有）。**2026-09-20 实测**：在那台 Win7 上装 **VC++ 2015-2022 x64 运行库**（或
-  `Windows6.1-KB2999226-x64.msu`）后运行正常，**并已用它还原 Win10 镜像、正常启动** ✓。
-  **机制已就绪**：把 UCRT 的 `ucrtbase.dll` + `api-ms-win-crt-*.dll`（约 1.5MB）拷进
-  `third_party/ucrt/x64/`，`make package` 会自动复制到 `dist/` 与 exe 同目录（微软官方支持的
-  本地部署方式）。取法与授权见 `third_party/ucrt/README.txt`。
-- **服务器 RAID 驱动**（`vmd`/`megaraid`/老 `mpt*`/`isci`）在 Ubuntu 的 `linux-modules-extra`
-  里，需挑子集补进 initramfs（基础包已覆盖 NVMe/AHCI/virtio/USB）。
-- `ZJ_ENABLE_MOK_PATH`（备选线：我们签名的 UKI + MOK 注册）默认**不编译、不随包**，
-  `src/boot/uefi.cpp` 里改成 1 即可启用。
+- 工具链：**MinGW-w64 GCC 14.2**（路径写死在 `Makefile` 头部，其余全相对路径）
+- 救援层组装：`tools/build-ubuntu-rescue.py`（**Ubuntu 签名内核 + 签名模块** + Alpine 用户态）
+- 回归测试：`tools/vmtest/*.ps1`（清单见 [`docs/07`](docs/07-测试矩阵与回归记录.md)）
+- 换机器/换环境：见 [`docs/10-新环境交接说明`](docs/10-新环境交接说明.md)
+
+### 发布包内容（`dist/`，约 55 MB）
+
+```
+SysRecover.exe / SysRecoverUI.exe / libwim-15.dll
+bootfiles/{grldr, grldr.mbr, vmlinuz-zjrestore, initramfs-zjrestore.cpio.gz, zjrestore-lite.sh}
+bootfiles/sb/{shimx64.efi, grub-ubuntu.efi, grub.cfg}     # Secure Boot 链
+skin/ resources/ version.json THIRD_PARTY_LICENSES.txt
+```
+
+---
+
+## 十、已知限制与待验证
+
+- **仅 x64**：32 位 Windows / PE 上 exe 会被系统直接拒绝（不是我们能拦的）。三条可选路线与代价见
+  [`docs/08`](docs/08-32位支持评估（待实施）.md)。
+- **2026 新硬件 Secure Boot**：目前 shim 只带 **CA2011** 签名（CA2011 已于 2026-06-26 到期，但**不影响
+  已信任它的固件启动**）→ **只信新证书（CA2023）的新机器**暂时起不来。备选方案见
+  [`PLAN.md` §11](PLAN.md)（等 Ubuntu 发双签 / 整链换 AlmaLinux）。
+- **Windows 7 零安装**：exe 与 `libwim-15.dll` 依赖 UCRT。实测装 **VC++ 2015-2022 x64 运行库**即可；
+  想把 UCRT 随包带上（约 1.5MB，微软官方支持的本地部署方式），把 DLL 放进 `third_party/ucrt/x64/`，
+  `make package` 会自动复制到 `dist/`。取法见 `third_party/ucrt/README.txt`。
+- **PE 就地还原 / RAID 真机 / 忙时关闭**：代码已就绪，**待实测**（[`docs/11` §3](docs/11-接手指南（读我优先）.md) 有清单）。
+- `ZJ_ENABLE_MOK_PATH`（备选线：我们自签的 UKI + MOK 注册）默认**不编译、不随包**
+  （`src/boot/uefi.cpp` 里改成 1 可启用）。
+
+---
+
+## 十一、许可与第三方
+
+- 本产品自身代码**未静态链接任何 GPL 组件、未修改任何第三方源码**（`libwim-15.dll` 为 **LGPL 动态链接**，
+  其余为「单独分发」的聚合）→ 不受 copyleft 的衍生作品条款约束。**是否开源为待决事项，与合规无关。**
+- 第三方组件清单、版本、用法与许可全文：`THIRD_PARTY_LICENSES.txt`（随包分发）。
+- 构建/测试期工具（MinGW-w64、osslsigncode、QEMU/OVMF、mtools）**不随产品分发**。
+
+---
+
+## 十二、文档地图
+
+| 文档 | 内容 |
+|---|---|
+| [`docs/11-接手指南（读我优先）`](docs/11-接手指南（读我优先）.md) | **先读这个**：现状、下一步、文档地图 |
+| [`docs/00`](docs/00-项目简介（给协作者）.md)…[`docs/10`](docs/10-新环境交接说明.md) | 需求/架构/引导设计/跨层契约/磁盘与安全/构建合规/测试矩阵/32位评估/PE 验收/新环境 |
+| [`docs/12-相对优势与竞品对比`](docs/12-相对优势与竞品对比.md) | 和同类工具比，我们好在哪、差在哪（含对客户的话术） |
+| [`AGENTS.md`](AGENTS.md) | 操作手册：§0 五条红线、§7 引导 SOP、**§13 坑位册（PIT-001~071）** |
+| [`PLAN.md`](PLAN.md) | 路线图、版本号规则、待决事项 |
