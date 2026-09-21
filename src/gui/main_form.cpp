@@ -63,6 +63,14 @@ std::wstring TimestampName() {
     return buf;
 }
 
+// 未写完的备份产物路径 —— 必须与 wim.cpp::Capture 的原子写一致
+// （它先写 `<目标>.tmp`，成功后 MoveFileEx 改名；中途失败自己会删 tmp）。
+// 备份走的是 Capture（req.append=false），所以"半成品"永远是这一个 `.tmp`；
+// 最终路径上的文件要么是旧的有效镜像、要么是刚改名完成的成品，**都不能删**。
+std::wstring IncompletePath(const std::wstring& dest) {
+    return dest.empty() ? std::wstring() : dest + L".tmp";
+}
+
 // 文件被 worker 持有（或删除失败）时，登记为"下次开机删除"——需要管理员权限，
 // 本程序已提权。用于「终止任务并退出」时清掉当下删不掉的半成品镜像。
 void RegisterPendingDelete(const std::wstring& path) {
@@ -307,9 +315,9 @@ void CMainForm::CancelAndExit() {
     }
     if (m_busy) {
         // 兜底：优雅取消没生效（例如卡在不可中断的 IO/驱动阶段）→ 直接杀进程。
-        // 此刻镜像仍被 worker 持有，删不掉 → 登记"下次开机删除"。
+        // 此刻临时文件仍被 worker 持有，删不掉 → 登记"下次开机删除"。
         LogInfo("GUI: worker still busy after 10s -> hard kill");
-        RegisterPendingDelete(m_workerDest);
+        RegisterPendingDelete(IncompletePath(m_workerDest));
         ::TerminateProcess(::GetCurrentProcess(), 0);
         return;
     }
@@ -321,19 +329,22 @@ void CMainForm::CancelAndExit() {
 }
 
 void CMainForm::CleanupIncompleteOutput() {
-    // 只删本次正在写的那一个文件，绝不碰目录里其它镜像。
+    // 只删**本次正在写的临时文件**（`<目标>.tmp`，见 wim.cpp::Capture 的原子写：
+    // 先写 tmp、成功才 MoveFileEx 改名）。**绝不能删最终路径** —— 那里可能是用户
+    // 之前就存在的有效镜像（wimlib 还没改名，它原封不动）。
     if (m_workerDest.empty())
         return;
-    DWORD a = ::GetFileAttributesW(m_workerDest.c_str());
+    std::wstring tmp = IncompletePath(m_workerDest);
+    DWORD a = ::GetFileAttributesW(tmp.c_str());
     if (a == INVALID_FILE_ATTRIBUTES)
-        return;
-    ::SetFileAttributesW(m_workerDest.c_str(), FILE_ATTRIBUTE_NORMAL);
-    if (::DeleteFileW(m_workerDest.c_str())) {
-        LogInfo("cancel: removed incomplete image " + W2U(m_workerDest));
+        return;  // 正常取消时 Capture 已经删过了，这里是兜底
+    ::SetFileAttributesW(tmp.c_str(), FILE_ATTRIBUTE_NORMAL);
+    if (::DeleteFileW(tmp.c_str())) {
+        LogInfo("cancel: removed incomplete temp " + W2U(tmp));
     } else {
-        LogError("cancel: cannot remove incomplete image (err=" +
+        LogError("cancel: cannot remove incomplete temp (err=" +
                  std::to_string(::GetLastError()) + "), scheduled at reboot");
-        RegisterPendingDelete(m_workerDest);
+        RegisterPendingDelete(tmp);
     }
 }
 
