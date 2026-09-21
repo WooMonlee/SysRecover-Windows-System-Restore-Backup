@@ -63,6 +63,14 @@ std::wstring TimestampName() {
     return buf;
 }
 
+// 文件被 worker 持有（或删除失败）时，登记为"下次开机删除"——需要管理员权限，
+// 本程序已提权。用于「终止任务并退出」时清掉当下删不掉的半成品镜像。
+void RegisterPendingDelete(const std::wstring& path) {
+    if (path.empty())
+        return;
+    ::MoveFileExW(path.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
+}
+
 }  // namespace
 
 // ────────────────── 基础 ──────────────────
@@ -136,12 +144,14 @@ LRESULT CMainForm::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         ::PostQuitMessage(0);
     }
     if (msg == WM_CLOSE && m_busy) {
-        // 关闭请求来自别处（新实例的 PostMessage(WM_CLOSE)、Alt+F4 等），
-        // 绕过了 Notify 里的 m_busy 闸门。任务执行中一旦销毁窗口，worker
-        // 线程会连同进程被杀，留下半成品镜像/中断的还原暂存 → 必须拒绝。
-        ::SetForegroundWindow(m_hWnd);
-        ::MessageBoxW(m_hWnd, L"正在执行任务，暂时无法关闭。\n请等待任务结束后再关闭程序。",
-                      L"知鉴一键还原", MB_OK | MB_ICONWARNING);
+        // 关闭请求来自别处（新实例的 PostMessage(WM_CLOSE)、Alt+F4、任务栏菜单等）。
+        // 任务执行中直接销毁窗口会连 worker 一起杀掉，留下半成品镜像 / 中断的暂存
+        // → 不能默默关，也不能只会拒绝：问一次，允许「终止并退出」。
+        if (m_cancelling)
+            return 0;
+        if (!AskBusyClose())
+            return 0;            // 「继续等待」：不关窗，任务继续
+        CancelAndExit();         // 「终止并退出」：中止 + 清理 + 关窗
         return 0;
     }
     if (msg == WM_NCHITTEST) {
@@ -209,10 +219,16 @@ std::wstring CMainForm::ElapsedText() const {
 
 void CMainForm::OnTaskComplete(int rc) {
     KillTimer(m_hWnd, 1);
+    m_busy = false;
+    if (m_cancel) {
+        // 用户选了「终止并退出」：不要再弹任何"失败"提示（窗口马上要关掉），
+        // 只留一条日志；半成品镜像由 CancelAndExit → CleanupIncompleteOutput 清。
+        LogInfo("task aborted by user (cancel-and-exit)");
+        return;
+    }
     SetProgress(rc == 0 ? 100 : 0);
     CControlUI* pPct = m_PaintManager.FindControl(_T("PercentText"));
     if (pPct) pPct->SetText(rc == 0 ? _T("100%") : _T(""));
-    m_busy = false;
     UpdateMainAction();
     if (rc == 4) {
         SetStatus(U2W(last_err_));
@@ -245,9 +261,100 @@ void CMainForm::OnTaskComplete(int rc) {
     }
 }
 
+// ────────────────── 忙时关闭 / 终止并退出（2026-09-20 用户规格） ──────────────────
+//
+// 以前：任务执行中点关闭**完全没有反应**（Notify 的 m_busy 早退把点击吞了），
+// 唯一出路是干等任务跑完。现在：默认「继续等待」，也可选「终止并退出」——
+// 立即中止任务并删除未写完的镜像。
+// 中止走既有取消链路：m_cancel=true → 进度回调返回 ABORT（wim.cpp:109）→
+// wimlib 在**下一次进度回调**就收手（实测亚秒级），不会留下"写入中"的坏镜像。
+
+bool CMainForm::AskBusyClose() {
+    if (!m_busy)
+        return true;
+    std::wstring msg = L"任务正在执行中（已用 " + ElapsedText() + L"）。\n"
+                       L"选择「继续等待」：任务照常进行，不受影响。\n"
+                       L"选择「终止并退出」：立即中止任务，并删除未写完的镜像文件。";
+    // 默认项 = 左按钮 =「继续等待」：回车/ESC 都落在安全项上，防误取消。
+    int r = CConfirmDlg::Ask2(m_hWnd, L"任务执行中", msg, L"继续等待",
+                              L"终止并退出", /*defaultIsRight=*/false);
+    return r != 0;  // 0 = 继续等待
+}
+
+void CMainForm::CancelAndExit() {
+    if (m_cancelling)
+        return;
+    m_cancelling = true;
+    LogInfo("GUI: user chose cancel-and-exit while busy");
+    m_cancel = true;  // → 进度回调返回 true → wimlib ABORT
+
+    // 等 worker 收手（正常 <1s）。期间保持消息泵活着，否则窗口白屏卡住。
+    ::EnableWindow(m_hWnd, FALSE);
+    const auto t0 = std::chrono::steady_clock::now();
+    while (m_busy) {
+        MSG m;
+        while (::PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) {
+            ::TranslateMessage(&m);
+            ::DispatchMessageW(&m);
+        }
+        if (!m_busy)
+            break;
+        if (std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - t0)
+                .count() >= 10)
+            break;
+        ::Sleep(20);
+    }
+    if (m_busy) {
+        // 兜底：优雅取消没生效（例如卡在不可中断的 IO/驱动阶段）→ 直接杀进程。
+        // 此刻镜像仍被 worker 持有，删不掉 → 登记"下次开机删除"。
+        LogInfo("GUI: worker still busy after 10s -> hard kill");
+        RegisterPendingDelete(m_workerDest);
+        ::TerminateProcess(::GetCurrentProcess(), 0);
+        return;
+    }
+    if (m_worker.joinable())
+        m_worker.join();  // 已自然结束，立即返回
+    CleanupIncompleteOutput();
+    ::EnableWindow(m_hWnd, TRUE);
+    Close();  // → WM_CLOSE（m_busy 已清）→ 正常关窗
+}
+
+void CMainForm::CleanupIncompleteOutput() {
+    // 只删本次正在写的那一个文件，绝不碰目录里其它镜像。
+    if (m_workerDest.empty())
+        return;
+    DWORD a = ::GetFileAttributesW(m_workerDest.c_str());
+    if (a == INVALID_FILE_ATTRIBUTES)
+        return;
+    ::SetFileAttributesW(m_workerDest.c_str(), FILE_ATTRIBUTE_NORMAL);
+    if (::DeleteFileW(m_workerDest.c_str())) {
+        LogInfo("cancel: removed incomplete image " + W2U(m_workerDest));
+    } else {
+        LogError("cancel: cannot remove incomplete image (err=" +
+                 std::to_string(::GetLastError()) + "), scheduled at reboot");
+        RegisterPendingDelete(m_workerDest);
+    }
+}
+
 // ────────────────── 事件路由 ──────────────────
 
 void CMainForm::Notify(TNotifyUI& msg) {
+    // 关闭按钮必须**先于** m_busy 早退处理：原来那句 `if (m_busy) return;` 把
+    // 关闭点击也一起吞掉了，于是下面那段按 m_busy 分流的关闭分支成了**死代码**，
+    // 表现为「任务执行中点右上角叉叉完全没反应」（用户 2026-09-20 实测吐槽）。
+    if (msg.sType == DUI_MSGTYPE_CLICK &&
+        msg.pSender->GetName() == CDuiString(_T("CloseBtn"))) {
+        if (m_cancelling)
+            return;
+        if (!m_busy) {
+            Close();
+            return;
+        }
+        if (AskBusyClose())
+            CancelAndExit();  // 选了「继续等待」则什么都不做（任务继续）
+        return;
+    }
     if (m_busy) return;  // 任务执行中忽略其他点击
     if (msg.sType == DUI_MSGTYPE_CLICK) {
         CDuiString name = msg.pSender->GetName();
@@ -266,13 +373,6 @@ void CMainForm::Notify(TNotifyUI& msg) {
             ToggleBootMenu();
         } else if (name == _T("MinBtn")) {
             SendMessage(WM_SYSCOMMAND, SC_MINIMIZE, 0);
-        } else if (name == _T("CloseBtn")) {
-            if (m_busy) {
-                MessageBoxW(m_hWnd, L"正在执行任务，暂时无法关闭。\n请等待任务结束后再关闭程序。",
-                            L"知鉴一键还原", MB_OK | MB_ICONWARNING);
-            } else {
-                Close();
-            }
         }
     } else if (msg.sType == DUI_MSGTYPE_SELECTCHANGED) {
         CDuiString name = msg.pSender->GetName();
@@ -629,6 +729,9 @@ void CMainForm::StartRestore() {
 }
 
 void CMainForm::StartRestoreAsync() {
+    // 让出 CPU 给界面：任务吃满所有核时界面会明显发飘（"点了半天没反应"）。
+    // 降到 BELOW_NORMAL 后交互明显跟手，任务耗时几乎不变（只让出空闲时间片）。
+    ::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
     RestoreRequest req;
     req.image = m_wimPath;
     req.disk  = m_selPart >= 0 && m_selPart < (int)m_parts.size()
@@ -706,6 +809,8 @@ void CMainForm::StartBackup() {
 }
 
 void CMainForm::StartBackupAsync() {
+    // 同 StartRestoreAsync：备份线程降到 BELOW_NORMAL，保证界面点击/弹框跟手。
+    ::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
     BackupRequest req;
     req.source  = m_workerSource;
     req.dest    = m_workerDest;

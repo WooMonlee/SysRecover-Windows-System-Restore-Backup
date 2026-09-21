@@ -22,6 +22,15 @@ void CConfirmDlg::InitWindow() {
     CControlUI* t = m_PaintManager.FindControl(_T("DlgTitle"));
     if (t && !m_title.empty())
         t->SetText(m_title.c_str());
+    // 按钮文案：skin/confirm.xml 里两个按钮默认写的是还原确认用的文案
+    // （「退出不重启」/「重启后还原」），这里按调用方给的文案覆盖。
+    // 两个按钮宽度分别是 126px / 156px，实测都能放下 5 个汉字。
+    CControlUI* b1 = m_PaintManager.FindControl(_T("BtnExit"));
+    if (b1 && !m_leftText.empty())
+        b1->SetText(m_leftText.c_str());
+    CControlUI* b2 = m_PaintManager.FindControl(_T("BtnReboot"));
+    if (b2 && !m_rightText.empty())
+        b2->SetText(m_rightText.c_str());
     // 消息按 '\n' 拆成最多 3 行（CSkinLabelUI 的 TextIn 是单行绘制，不认 '\n'）。
     const wchar_t* names[3] = {_T("DlgMsg1"), _T("DlgMsg2"), _T("DlgMsg3")};
     size_t start = 0;
@@ -55,10 +64,13 @@ void CConfirmDlg::Notify(TNotifyUI& msg) {
 }
 
 LRESULT CConfirmDlg::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
-    // 键盘兜底：ESC = 退出；回车 = 默认项（退出并重启）。
+    // 键盘兜底：ESC = 左按钮（安全的那个）；回车 = 默认项（见 m_defaultRight）。
     if (msg == WM_KEYDOWN) {
         if (wParam == VK_ESCAPE) { Finish(kExit); return 0; }
-        if (wParam == VK_RETURN) { Finish(kExitReboot); return 0; }
+        if (wParam == VK_RETURN) {
+            Finish(m_defaultRight ? kExitReboot : kExit);
+            return 0;
+        }
     }
     if (msg == WM_DESTROY)
         m_alive = false;
@@ -67,9 +79,19 @@ LRESULT CConfirmDlg::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
 
 int CConfirmDlg::Ask(HWND owner, const std::wstring& title,
                      const std::wstring& msg) {
+    return Ask2(owner, title, msg, std::wstring(), std::wstring(),
+                /*defaultIsRight=*/true);
+}
+
+int CConfirmDlg::Ask2(HWND owner, const std::wstring& title,
+                      const std::wstring& msg, const std::wstring& leftText,
+                      const std::wstring& rightText, bool defaultIsRight) {
     CConfirmDlg* dlg = new CConfirmDlg();
     dlg->m_title = title;
     dlg->m_msg = msg;
+    dlg->m_leftText = leftText;
+    dlg->m_rightText = rightText;
+    dlg->m_defaultRight = defaultIsRight;
 
     // 无系统外框（WS_POPUP）+ 不进任务栏；owner = 主窗口（模态禁用）。
     HWND h = dlg->Create(owner, _T("知鉴一键还原"),

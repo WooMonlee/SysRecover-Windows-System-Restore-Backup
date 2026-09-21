@@ -219,7 +219,7 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 **还原确认与「静默模式」（2026-09-16 用户规格）**：`Silent` 勾选框默认**不勾选**。还原时——
 - **未勾选**：只弹**一个**选择框（`CConfirmDlg` + `skin/confirm.xml`，非 `MessageBox`），按钮 `退出` / `退出并重启`（默认项，回车=重启，ESC=退出）；选「退出并重启」→ 暂存任务 → 成功即自动 `shutdown /r /t 5` 重启。**不再有**独立的"暂存成功"提示框，也**不带** `shutdown /c` 关机通知文本。
 - **勾选**：完全无提示框，直接暂存 → 自动重启（供机房批量/无人值守）。
-- 任务执行中（`m_busy`）点关闭/`Ctrl+F4` → 弹 `MessageBox` 拒绝（防误关写盘进程，`main_form.cpp` 的 `WM_CLOSE` 与 `CloseBtn` 两处都要拦）。错误提示框在静默模式下仍保留（fail-safe）。
+- **任务执行中点关闭/`Ctrl+F4`（2026-09-20 用户规格，替代原「只弹 MessageBox 拒绝」）**：`WM_CLOSE`（新实例 `PostMessage`/Alt+F4/任务栏）与 `CloseBtn` 两处都走 `AskBusyClose()` —— 弹二选框，**默认「继续等待」**（回车/ESC 都落在安全项上，防误取消）/ 可选**「终止并退出」** → `CancelAndExit()`：`m_cancel=true` → 保持消息泵地等 worker 收手（正常 <1s，wimlib 在下一次进度回调即 ABORT）→ `join()` → **删掉未写完的镜像**（`CleanupIncompleteOutput`）→ 关窗；若 10s 仍未停则兜底 `TerminateProcess` + 把半成品登记为「下次开机删除」。⚠️ `Notify` 里关闭按钮必须**先于** `if (m_busy) return;` 处理（那里曾把关闭点击一起吞掉，表现为"点叉叉完全没反应"——见 PIT-071）。错误提示框在静默模式下仍保留（fail-safe）。
 
 
 ---
@@ -404,6 +404,8 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 - PIT-070 **换机后重启蓝屏：BCD 恢复条目残留旧设备（`device=partition=D:`），而救援文件已在新布局的 C: → bootmgr `0xc000000F`**（2026-09-20 用户在笔记本实测并修复，= 用户报告的"第一次的问题"）：在笔记本上第一次暂存（16:23 `bootfix: ok`）后**重启即蓝屏**（Windows 引导错误 `0xc000000F`"所需设备无法访问"），救援层从未启动。根因：BCD 里的恢复条目 `{12345678-…}` **已经存在**（早前用旧布局把救援文件放数据盘 D: 时建的，条目里 `device=partition=D:`），而新布局（PIT-059）把 `grldr`/`grldr.mbr`/`menu.lst` 放在**目标盘 C:**；原 `BcdCreateBootsector` 遇到"条目已存在"就**跳过重设** → 文件在 C:、条目指 D: → bootmgr 去 D: 找 `\grldr.mbr` 找不到 → `0xc000000F`。**修复**（`src/boot/bcd.cpp`）：**条目已存在也不再跳过**，每次都把 `device partition=<本次部署盘>:` + `path \grldr.mbr` 重刷一遍（幂等 = 自愈），并顺带刷新 description 与 displayorder（先 `/remove` 再 `/addlast`，避免重复调用报错）。✅ 2026-09-20（用户修复，已由后续还原运行验证）
 
 - ✨ **新功能（2026-09-20，用户在笔记本上实现）**：GUI 第一步支持**把镜像文件拖进窗口**（`.esd`/`.wim`），等价于点「浏览系统镜像文件」→ 设为还原镜像。涉及 `src/gui/{main_form,ui_skin}.{h,cpp}`。
+
+- PIT-071 **任务执行中点关闭"完全没反应"：`Notify` 的 `m_busy` 早退把关闭点击吞成死代码，而唯一的取消通道只在析构函数里**（2026-09-20 用户实测踩到）：用户在朋友机器上测试备份、CPU 占用高想退出，**点右上角叉叉没有任何反应**，只能干等任务跑完。根因两处叠加：① `CMainForm::Notify` 开头就是 `if (m_busy) return;`，把 `CloseBtn` 的点击也一起吞掉 → 下面那段"忙时弹框拒绝"的分支**永远执行不到**（死代码）；② 真正能停任务的 `m_cancel = true` 全文件**只出现在析构函数**（`main_form.cpp` 头部）→ 关闭被拦 ⇒ 窗口不销毁 ⇒ 析构永不执行 ⇒ **取消信号永远设不上**。次要因素：worker 是默认线程优先级 + wimlib 吃满所有核 → 界面点击发飘。**修复**（用户规格：默认「继续等待」，可选「终止并退出」）：① `Notify` 把关闭按钮**提到 `m_busy` 早退之前**处理；② 新增 `AskBusyClose()`（`CConfirmDlg` 通用化为 `Ask2`：两按钮文案 + 默认项可指定；此处左=「继续等待」[默认，回车/ESC 均落安全项]、右=「终止并退出」）；③ 新增 `CancelAndExit()`：置取消位 → 保持消息泵地等 worker 收手（正常 <1s）→ `join()` → `CleanupIncompleteOutput()` 删除未写完的镜像 → 关窗；10s 仍未停 → 兜底 `TerminateProcess` + `MoveFileEx(..., MOVEFILE_DELAY_UNTIL_REBOOT)` 登记开机删除；④ `OnTaskComplete` 见 `m_cancel` 只记日志、**不弹失败框**（否则会挡住关窗）；⑤ 两个 worker 入口 `SetThreadPriority(THREAD_PRIORITY_BELOW_NORMAL)`。✅ 2026-09-20（编译通过，版本 `0.1.4`；**待用户实测**：备份中点叉叉应立即弹框；选「终止并退出」应 1 秒内退出且半截镜像被删）
 
 ---
 
