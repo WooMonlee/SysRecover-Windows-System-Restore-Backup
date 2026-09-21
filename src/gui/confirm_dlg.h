@@ -16,7 +16,15 @@ class CConfirmDlg : public WindowImplBase {
 public:
     enum { kExit = 0, kExitReboot = 1 };
 
-    // 弹出模态确认框并返回 kExit / kExitReboot。owner 可为 nullptr。
+    // 通用二选：返回 0（左按钮）/ 1（右按钮）。owner 可为 nullptr。
+    // leftText / rightText 为空则沿用 skin/confirm.xml 的静态文案。
+    // defaultIsRight：回车落在哪个按钮（false = 左）。ESC 一律等同左按钮（安全项）。
+    static int Ask2(HWND owner, const std::wstring& title, const std::wstring& msg,
+                    const std::wstring& leftText, const std::wstring& rightText,
+                    bool defaultIsRight);
+
+    // 兼容旧调用（还原确认）：左=退出不重启、右=重启后还原（默认为右）。
+    // 弹出模态确认框并返回 kExit / kExitReboot。
     static int Ask(HWND owner, const std::wstring& title, const std::wstring& msg);
 
     virtual CDuiString GetSkinFolder() override;
@@ -34,4 +42,7 @@ private:
     bool         m_alive = false;
     std::wstring m_title;
     std::wstring m_msg;
+    std::wstring m_leftText;
+    std::wstring m_rightText;
+    bool         m_defaultRight = true;
 };

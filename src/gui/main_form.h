@@ -56,6 +56,9 @@ private:
     void ToggleBootMenu();       // 「安装/删除启动还原」按钮
     void RefreshBootMenuBtn();   // 按是否已安装刷新按钮文字
     void RebootNow();
+    bool AskBusyClose();          // 忙时关闭：true = 用户选了「终止并退出」
+    void CancelAndExit();         // 中止 worker → 清理未完成镜像 → 关窗
+    void CleanupIncompleteOutput();
     bool IsSilent();   // 「静默模式」勾选态
     void SetStatus(const std::wstring& text);
     void SetProgress(int pct);
@@ -77,6 +80,7 @@ private:
     std::thread       m_worker;
     std::atomic<bool> m_cancel{false};
     std::atomic<bool> m_busy{false};
+    std::atomic<bool> m_cancelling{false};  // 「终止并退出」流程已启动（防重入/重复弹框）
     int               m_lastRc = 0;
     std::wstring      m_workerSource;   // StartBackupAsync 用：源路径
     std::wstring      m_workerDest;     // StartBackupAsync 用：目标路径

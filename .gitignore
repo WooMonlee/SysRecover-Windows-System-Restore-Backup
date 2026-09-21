@@ -33,6 +33,10 @@ tools/sb/dl/
 # 本机日志拷贝（排查用）
 log/
 
+# 本机杂项：打包/外部工具留下的文件（不属于项目 → 别误入库）
+/dist.7z
+/aqtinstall.log
+
 # 第三方源码：只保留**实际编译**的部分；演示程序/归档/未采用的库留在本机、不入库
 third_party/nim_duilib-main/
 third_party/nim_duilib-main.zip
