@@ -3,6 +3,7 @@
 // 语义对齐旧 C# BackupOrchestrator/RestoreOrchestrator（已冻结契约）。
 #include <string>
 
+#include "../disk/disk.h"
 #include "../wim/wim.h"
 
 namespace sysrecover {
@@ -28,6 +29,12 @@ struct RestoreRequest {
 // 备份。覆盖确认由调用方负责（CLI --yes / GUI 对话框）。
 // 返回：0 成功；1 失败（err=原因 UTF-8）。
 int RunBackup(const BackupRequest& req, ProgressFn progress, std::string& err);
+
+// 目标分区是否可以**就地还原**（不重启）？
+// 供调用方（GUI 的确认框文案、CLI 的提示）决定"要不要说重启"——
+// StageRestore 内部调用的是同一个函数，两处不会漂移（PIT-072）。
+// 判据：目标不是正在运行的系统盘，且能对目标卷加独占锁（FSCTL_LOCK_VOLUME）。
+bool CanRestoreInPlace(const PartitionInfo& target, std::string& why);
 
 // 还原。**两种执行方式自动选择**（PIT-064）：
 //   * 目标分区**没被占用**时（在 PE 里、或目标是别的分区）→ 就地还原：格式化 +

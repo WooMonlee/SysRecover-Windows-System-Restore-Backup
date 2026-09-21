@@ -16,6 +16,8 @@
 
 #include "StdAfx.h"
 
+#include "common/sysinfo.h"  // SystemDescription（备份信息/默认文件名）
+
 using namespace DuiLib;
 
 // 自定义 WM_APP 消息：worker 线程 → 主线程 UI 更新
@@ -71,6 +73,7 @@ private:
     bool m_needReboot = true;  // 还原：true=已暂存需重启；false=已就地完成（PIT-064）
     bool m_imageOk = false;    // 还原模式：当前镜像可读/可用（否则主按钮保持灰）
     std::wstring m_wimPath;
+    sysrecover::SystemDescription m_sysDesc;  // 运行中系统的描述（InitWindow 里取）
     int m_selPart = -1;
     int m_selImageIndex = 1;
     std::vector<int> m_imgIdx;

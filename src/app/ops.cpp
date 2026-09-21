@@ -75,40 +75,6 @@ bool SameDrive(wchar_t a, wchar_t b) {
     return towupper(a) == towupper(b);
 }
 
-// 目标分区是否**未**被占用（可以就地写）？
-// 判据（用户规格）：不是正在运行的系统盘，且能对该卷加独占锁 ——
-// FSCTL_LOCK_VOLUME 会因"卷上有打开的文件/句柄"而失败。
-// 能就地写 → 直接还原（PE 里 / 还原到非系统盘）；否则走暂存 + 重启 + Linux。
-bool CanRestoreInPlace(const PartitionInfo& t, std::string& why) {
-    if (t.letter.empty()) {
-        why = "目标分区没有盘符（无法就地写）";
-        return false;
-    }
-    wchar_t winDir[MAX_PATH] = {};
-    if (GetWindowsDirectoryW(winDir, MAX_PATH) &&
-        SameDrive(winDir[0], t.letter[0])) {
-        why = "目标是正在运行的系统盘（必须重启后脱机还原）";
-        return false;
-    }
-    std::wstring dev = L"\\\\.\\" + t.letter + L":";
-    HANDLE h = CreateFileW(dev.c_str(), GENERIC_READ | GENERIC_WRITE,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                           OPEN_EXISTING, 0, nullptr);
-    if (h == INVALID_HANDLE_VALUE) {
-        why = "打开目标卷失败 err=" + std::to_string(GetLastError());
-        return false;
-    }
-    DWORD ret = 0;
-    BOOL locked = DeviceIoControl(h, FSCTL_LOCK_VOLUME, nullptr, 0, nullptr, 0,
-                                  &ret, nullptr);
-    if (locked)
-        DeviceIoControl(h, FSCTL_UNLOCK_VOLUME, nullptr, 0, nullptr, 0, &ret,
-                        nullptr);
-    CloseHandle(h);
-    why = locked ? "目标分区未被占用" : "目标分区正被使用（有打开的文件或句柄）";
-    return locked != FALSE;
-}
-
 // 就地还原：快速格式化 → wimlib 目录模式应用（PIT-008）→ 系统镜像才 bcdboot
 // 修引导。**全程不重启**。
 int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
@@ -188,6 +154,41 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
 }
 
 }  // namespace
+
+// 目标分区是否**未**被占用（可以就地写）？—— 对外可见（ops.h），因为 GUI/CLI 要用它
+// 决定提示文案（"需不需要重启"）；StageRestore 内部用的是同一个函数，不会漂移。
+// 判据（用户规格）：不是正在运行的系统盘，且能对该卷加独占锁 ——
+// FSCTL_LOCK_VOLUME 会因"卷上有打开的文件/句柄"而失败。
+// 能就地写 → 直接还原（PE 里 / 还原到非系统盘）；否则走暂存 + 重启 + Linux。
+bool CanRestoreInPlace(const PartitionInfo& t, std::string& why) {
+    if (t.letter.empty()) {
+        why = "目标分区没有盘符（无法就地写）";
+        return false;
+    }
+    wchar_t winDir[MAX_PATH] = {};
+    if (GetWindowsDirectoryW(winDir, MAX_PATH) &&
+        SameDrive(winDir[0], t.letter[0])) {
+        why = "目标是正在运行的系统盘（必须重启后脱机还原）";
+        return false;
+    }
+    std::wstring dev = L"\\\\.\\" + t.letter + L":";
+    HANDLE h = CreateFileW(dev.c_str(), GENERIC_READ | GENERIC_WRITE,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                           OPEN_EXISTING, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        why = "打开目标卷失败 err=" + std::to_string(GetLastError());
+        return false;
+    }
+    DWORD ret = 0;
+    BOOL locked = DeviceIoControl(h, FSCTL_LOCK_VOLUME, nullptr, 0, nullptr, 0,
+                                  &ret, nullptr);
+    if (locked)
+        DeviceIoControl(h, FSCTL_UNLOCK_VOLUME, nullptr, 0, nullptr, 0, &ret,
+                        nullptr);
+    CloseHandle(h);
+    why = locked ? "目标分区未被占用" : "目标分区正被使用（有打开的文件或句柄）";
+    return locked != FALSE;
+}
 
 int RunBackup(const BackupRequest& req, ProgressFn progress,
               std::string& err) {

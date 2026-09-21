@@ -14,6 +14,7 @@
 #include "boot/uefi.h"
 #include "common/logger.h"
 #include "common/process.h"
+#include "common/sysinfo.h"
 #include "common/progress.h"
 #include "disk/disk.h"
 #include "wim/wim.h"
@@ -60,6 +61,15 @@ std::wstring TimestampName() {
     wchar_t buf[40];
     swprintf(buf, 40, L"%04u%02u%02u-%02u%02u%02u", st.wYear, st.wMonth,
              st.wDay, st.wHour, st.wMinute, st.wSecond);
+    return buf;
+}
+
+// 只有日期：YYYYMMDD（备份的镜像信息与默认文件名用，用户规格 2026-09-21）。
+std::wstring TimestampDate() {
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    wchar_t buf[16];
+    swprintf(buf, 16, L"%04u%02u%02u", st.wYear, st.wMonth, st.wDay);
     return buf;
 }
 
@@ -112,6 +122,7 @@ void CMainForm::InitWindow() {
     ::ChangeWindowMessageFilterEx(m_hWnd, WM_DROPFILES, MSGFLT_ALLOW, nullptr);
     ::ChangeWindowMessageFilterEx(m_hWnd, WM_COPYDATA, MSGFLT_ALLOW, nullptr);
     ::ChangeWindowMessageFilterEx(m_hWnd, 0x0049, MSGFLT_ALLOW, nullptr);
+    m_sysDesc = sysrecover::DescribeRunningSystem();  // 备份信息/默认文件名要用
     PopulatePartitions();
     ApplyModeUi();
     RefreshBootMenuBtn();
@@ -570,7 +581,11 @@ void CMainForm::BrowseSaveFile() {
     int fmtIdx = BackupFmt();
     pDlg->SetFileTypeIndex(fmtIdx == 0 ? 2 : 1);  // COMDLG 1-based
     const wchar_t* ext = fmtIdx == 0 ? L".esd" : L".wim";
-    std::wstring defName = L"backup-" + TimestampName() + ext;
+    // 默认文件名（用户规格 2026-09-21）：`20260921Win10.19044备份.esd`
+    std::wstring defName = TimestampDate() +
+                           (m_sysDesc.shortTag.empty() ? TimestampName()
+                                                       : m_sysDesc.shortTag) +
+                           L"备份" + ext;
     pDlg->SetFileName(defName.c_str());
     if (SUCCEEDED(pDlg->Show(m_hWnd))) {
         IShellItem* pItem = nullptr;
@@ -694,16 +709,33 @@ void CMainForm::StartRestore() {
     // 非静默模式：只弹一个选择框（退出 / 退出并重启）——选定后暂存并自动重启，
     // 不再有额外的成功提示框，也不弹关机通知。静默模式：不弹框，直接暂存并重启。
     if (!IsSilent()) {
-        wchar_t confirm[512];
-        swprintf(confirm, 512,
-                 L"即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n"
-                 L"该分区上的所有数据将被覆盖！\n"
-                 L"选择「重启后还原」将暂存任务并自动重启执行。",
-                 part.letter.empty() ? L"?" : part.letter.c_str(),
-                 part.diskIndex, part.partNumber);
-        if (CConfirmDlg::Ask(m_hWnd, L"确认还原", confirm) !=
-            CConfirmDlg::kExitReboot)
-            return;
+        // 提示文案必须与**真实行为**一致（PIT-072）：PE 里 / 还原到非系统盘走的是
+        // "就地还原、不重启"，以前这里一律写"重启后还原"，用户 2026-09-21 在 PE 里
+        // 实测被误导。判断复用 ops 层同一个函数（CanRestoreInPlace），两边不漂移。
+        std::string why;
+        bool needReboot = !CanRestoreInPlace(part, why);
+        wchar_t confirm[640];
+        if (needReboot) {
+            swprintf(confirm, 640,
+                     L"即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n"
+                     L"该分区上的所有数据将被覆盖！\n"
+                     L"选择「退出并重启」将暂存任务，随后自动重启执行。",
+                     part.letter.empty() ? L"?" : part.letter.c_str(),
+                     part.diskIndex, part.partNumber);
+            if (CConfirmDlg::Ask2(m_hWnd, L"确认还原", confirm, L"退出",
+                                  L"退出并重启", /*defaultIsRight=*/true) != 1)
+                return;
+        } else {
+            swprintf(confirm, 640,
+                     L"即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n"
+                     L"该分区上的所有数据将被覆盖！\n"
+                     L"目标分区当前未被占用，将立即就地还原，不需要重启。",
+                     part.letter.empty() ? L"?" : part.letter.c_str(),
+                     part.diskIndex, part.partNumber);
+            if (CConfirmDlg::Ask2(m_hWnd, L"确认还原", confirm, L"取消",
+                                  L"开始还原", /*defaultIsRight=*/true) != 1)
+                return;
+        }
     }
     // 软件在目标盘（会被格式化）或只读介质上 → 日志要回退到数据盘，先让用户确认
     {
@@ -773,7 +805,10 @@ void CMainForm::StartBackup() {
         }
         std::wstring dir = dataDrive + kRecoveryDir;
         CreateDirectoryW(dir.c_str(), nullptr);
-        dest = dir + L"\\backup-" + TimestampName() +
+        dest = dir + L"\\" + TimestampDate() +
+               (m_sysDesc.shortTag.empty() ? TimestampName()
+                                           : m_sysDesc.shortTag) +
+               L"备份" +
                (fmt == 0 ? L".esd" : L".wim");
     }
     if (GetFileAttributesW(dest.c_str()) != INVALID_FILE_ATTRIBUTES) {
@@ -876,6 +911,17 @@ void CMainForm::ApplyModeUi() {
                 m_PaintManager.FindControl(_T("FormatBox")));
             if (pFmt && pFmt->GetCurSel() < 0 && pFmt->GetCount() > 0)
                 pFmt->SelectItem(0);
+        }
+        // 镜像信息（用户规格 2026-09-21）：在文件名下方给出「日期 + 系统类型 + 备份」，
+        // 例如 `20260921 Windows 10 IoT 企业版 LTSC 21H2 19044.4046 备份`。
+        // 只在用户尚未填写时预填，不覆盖手输内容；这个值同时会成为 WIM 里的子镜像名。
+        {
+            CControlUI* pNote = m_PaintManager.FindControl(_T("NoteInput"));
+            if (pNote && pNote->GetText().IsEmpty() && !m_sysDesc.full.empty()) {
+                std::wstring info =
+                    TimestampDate() + L" " + m_sysDesc.full + L" 备份";
+                pNote->SetText(info.c_str());
+            }
         }
         Vis(_T("RepairBootBtn"),true);
         Vis(_T("BootMenuBtn"),  true);
