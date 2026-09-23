@@ -46,6 +46,10 @@ public:
     int Probe(const std::wstring& imagePath, std::wstring& why);
     int ListImages(const std::wstring& imagePath,
                    std::vector<ImageDesc>& out);
+    // 取某个子镜像的**未压缩**内容大小（字节）—— 还原前空间预检（P1）用。
+    // 返回：0 成功；非 0 = wimlib 错误码（调用方自行决定是否阻断）。
+    int ImageSize(const std::wstring& imagePath, int index,
+                  unsigned long long* bytes);
 
     static const wchar_t* ErrorString(int code);
 

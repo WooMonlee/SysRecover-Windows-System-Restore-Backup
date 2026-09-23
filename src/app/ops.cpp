@@ -189,6 +189,37 @@ bool CanRestoreInPlace(const PartitionInfo& t, std::string& why) {
     why = locked ? "目标分区未被占用" : "目标分区正被使用（有打开的文件或句柄）";
     return locked != FALSE;
 }
+// 还原前空间预检（P1）—— 见 ops.h。**必须在格式化之前**调用。
+int CheckRestoreSpace(const std::wstring& imagePath, int index,
+                      const PartitionInfo& target, std::string& err) {
+    WimEngine engine;
+    if (!engine.ok())
+        return 0;  // wimlib 起不来：不阻断（后面 apply 自己会报错）
+    unsigned long long bytes = 0;
+    int rc = engine.ImageSize(imagePath, index < 1 ? 1 : index, &bytes);
+    if (rc != 0 || bytes == 0) {
+        LogError("space precheck: cannot read image size (rc=" +
+                 std::to_string(rc) + ") -> skip");
+        return 0;  // 读不到大小 → 不阻断
+    }
+    // 内容量（已扣掉硬链接重复部分）+ 10% + 300MB（NTFS 元数据/目录索引/$LogFile 等开销）
+    unsigned long long need = bytes + bytes / 10 + (300ull << 20);
+    unsigned long long have = target.sizeBytes;
+    char buf[320];
+    snprintf(buf, sizeof(buf),
+             "space precheck: content %.1f GB, need ~%.1f GB, target %.1f GB",
+             bytes / 1073741824.0, need / 1073741824.0, have / 1073741824.0);
+    LogInfo(buf);
+    if (have && need > have) {
+        snprintf(buf, sizeof(buf),
+                 "目标分区空间不足：镜像解压后约需 %.1f GB（已含余量），"
+                 "但目标分区只有 %.1f GB。\n请换更大的目标分区，或改用更小的镜像。",
+                 need / 1073741824.0, have / 1073741824.0);
+        err = buf;
+        return 1;
+    }
+    return 0;
+}
 
 int RunBackup(const BackupRequest& req, ProgressFn progress,
               std::string& err) {
@@ -363,6 +394,17 @@ int StageRestore(const RestoreRequest& req, std::string& err,
     if (!reason.empty()) {
         err = reason;
         return 4;
+    }
+    // 2.1) 空间预检（P1）：镜像未压缩大小 vs 目标分区大小。
+    //      必须在这里（**格式化之前**）拦下 —— 否则会出现"数据没了、系统也没装上"。
+    //      就地还原与"暂存+重启"两条路都从这一点过，所以放在分支之前。
+    {
+        std::string spErr;
+        if (CheckRestoreSpace(imagePath, req.index, target, spErr) == 1) {
+            err = spErr;
+            LogError("space precheck failed: " + spErr);
+            return 1;
+        }
     }
     if (!AcquireOpLock()) {
         err = "已有备份/还原实例在运行";
