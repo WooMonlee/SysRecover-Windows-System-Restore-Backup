@@ -506,6 +506,42 @@ int CmdDiagZip(const std::vector<std::string>& a) {
     return 0;
 }
 
+// 历史记录（P7）：打印 logs\history.jsonl 的最后 N 行
+int CmdHistory(const std::vector<std::string>& a) {
+    int n = std::atoi(Opt(a, "--last", "20").c_str());
+    if (n <= 0)
+        n = 20;
+    std::wstring path = sysrecover::ExeDir() + L"\\logs\\history.jsonl";
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                           OPEN_EXISTING, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        std::printf("还没有历史记录（备份或还原成功后会写 %ls）\n", path.c_str());
+        return 0;
+    }
+    LARGE_INTEGER sz = {};
+    GetFileSizeEx(h, &sz);
+    std::string all(static_cast<size_t>(sz.QuadPart), 0);
+    DWORD got = 0;
+    if (!all.empty())
+        ReadFile(h, &all[0], static_cast<DWORD>(all.size()), &got, nullptr);
+    CloseHandle(h);
+    std::vector<std::string> lines;
+    for (size_t p = 0; p < all.size();) {
+        size_t e = all.find('\n', p);
+        if (e == std::string::npos)
+            break;
+        lines.push_back(all.substr(p, e - p));
+        p = e + 1;
+    }
+    size_t start = lines.size() > static_cast<size_t>(n)
+                       ? lines.size() - static_cast<size_t>(n)
+                       : 0;
+    for (size_t i = start; i < lines.size(); ++i)
+        std::printf("%s\n", lines[i].c_str());
+    return 0;
+}
+
 int CmdList() {    const auto disks = sysrecover::EnumerateDisks();
     const double gb = 1024.0 * 1024 * 1024;
     for (const auto& d : disks) {
@@ -613,6 +649,8 @@ int main() {
         return CmdImages(args);
     if (args[0] == "extract")
         return CmdExtract(args);
+    if (args[0] == "history")
+        return CmdHistory(args);
     if (args[0] == "shortcut")
         return CmdShortcut(args);
     return Usage();
