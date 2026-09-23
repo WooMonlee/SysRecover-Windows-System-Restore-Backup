@@ -81,6 +81,14 @@ mnt_dev(){
         exfat)
             mount -t exfat "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
             ;;
+        # 光盘/ISO/UDF —— 镜像**可能就在光盘上**（用户 2026-09-23 反馈：还原系统
+        # 拒绝光盘上的镜像在逻辑上说不通）。内核 sr_mod/isofs/udf 都在包内
+        # （实测救援层能列出 sr0），这里显式指定，别只依赖 blkid 的猜测。
+        iso9660|udf|cd9660)
+            mount -t iso9660 "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            mount -t udf "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            mount "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            ;;
         "")
             mount "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
             ;;
@@ -187,7 +195,9 @@ SRC_M="/tmp/zj_img"
 mkdir -p "$SRC_M"
 for _d in $(list_parts); do
     [ -b "$_d" ] || continue
-    case "$_d" in *sr*|*loop*|*cdrom*) continue ;; esac
+    # ⚠️ 这里**不能**跳过光驱（sr*）：镜像可能就在光盘/ISO 上（用户 2026-09-23
+    #    反馈）。只跳过 loop/ram 这类伪设备。目标分区扫描那边才该跳过 sr*。
+    case "$_d" in *loop*|*ram*) continue ;; esac
     [ "$_d" = "$TARGET_DEV" ] && continue
     if mnt_dev "$_d" "$SRC_M"; then
         if [ -f "$SRC_M/$IMG_REL" ]; then

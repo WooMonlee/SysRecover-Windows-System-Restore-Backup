@@ -745,6 +745,23 @@ void CSkinEditUI::DoEvent(TEventUI& event) {
     // 原生 EDIT 子窗口是「获得焦点/点击时才创建」的（UIEdit.cpp:301/317），
     // 所以每次事件后兜一次：它一出现就登记为拖放目标并挂子类过程。
     EnsureDropTarget();
+    // 关键（用户 2026-09-23 反馈"手动输入后鼠标一移开字符就消失"）：
+    // 失焦后文本由**控件自绘**（见 DoPaint 的 `!IsFocused()` 分支），用的是控件的
+    // GetText()；而手动输入/粘贴进的是**原生 EDIT 子窗口** —— 不同步回来，自绘就画
+    // 出空的（视觉上"字符消失"），按钮那边也拿不到路径。每次事件后同步一次。
+    SyncTextFromNative();
+}
+
+void CSkinEditUI::SyncTextFromNative() {
+    HWND h = GetNativeEditHWND();
+    if (!h) return;
+    int n = ::GetWindowTextLengthW(h);
+    if (n <= 0) return;
+    std::wstring buf(static_cast<size_t>(n) + 1, L'\0');
+    ::GetWindowTextW(h, &buf[0], n + 1);
+    buf.resize(static_cast<size_t>(n));
+    if (GetText() != CDuiString(buf.c_str()))
+        SetText(buf.c_str());
 }
 
 void CSkinEditUI::EnsureDropTarget() {

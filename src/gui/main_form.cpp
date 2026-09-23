@@ -144,7 +144,22 @@ LRESULT CMainForm::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         // 顺手解析子镜像（用 m_lastLoadedWim 防止每敲一个键就重解析一遍）。
         CControlUI* pEdit = m_PaintManager.FindControl(_T("ImagePath"));
         if (pEdit) {
-            std::wstring p = pEdit->GetText().GetData();
+            // 手动输入/粘贴的内容在**原生 EDIT 子窗口**里，控件的 GetText() 可能
+            // 还是旧的 → 直接读子窗口（双保险，配合 CSkinEditUI::SyncTextFromNative）。
+            std::wstring p;
+            HWND hNative =
+                static_cast<CSkinEditUI*>(pEdit)->GetNativeEditHWND();
+            if (hNative) {
+                int n = ::GetWindowTextLengthW(hNative);
+                if (n > 0) {
+                    std::wstring buf(static_cast<size_t>(n) + 1, L'\0');
+                    ::GetWindowTextW(hNative, &buf[0], n + 1);
+                    buf.resize(static_cast<size_t>(n));
+                    p = buf;
+                }
+            }
+            if (p.empty())
+                p = pEdit->GetText().GetData();
             if (p != m_wimPath) {
                 m_wimPath = p;
                 if (!m_backupMode && !m_wimPath.empty() &&
@@ -780,12 +795,19 @@ void CMainForm::StartRestore() {
         bool needReboot = !CanRestoreInPlace(part, why);
         wchar_t confirm[640];
         if (needReboot) {
+            // 把**判定原因**也显示出来（用户 2026-09-23：PE 里系统盘是 X:，还原 C:
+            // 本不该重启 → 需要一眼看出到底卡在哪个条件）。文案保持短，避免被
+            // 确认框右侧裁掉（PIT-074 的教训）。
+            std::wstring shortWhy =
+                why.find("系统盘") != std::string::npos
+                    ? L"目标是正在运行的系统盘"
+                    : L"目标分区当前被占用";
             swprintf(confirm, 640,
                      L"即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n"
                      L"该分区上的所有数据将被覆盖！\n"
-                     L"选择「退出并重启」将暂存任务，随后自动重启执行。",
+                     L"原因：%ls；将暂存任务并在重启后执行。",
                      part.letter.empty() ? L"?" : part.letter.c_str(),
-                     part.diskIndex, part.partNumber);
+                     part.diskIndex, part.partNumber, shortWhy.c_str());
             if (CConfirmDlg::Ask2(m_hWnd, L"确认还原", confirm, L"退出",
                                   L"退出并重启", /*defaultIsRight=*/true) != 1)
                 return;
