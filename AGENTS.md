@@ -422,6 +422,8 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   **实测校准**：`TOTALBYTES 10.16GB − HARDLINKBYTES 5.09GB = 5.07GB`，与救援层 apply 日志的 `Extracting file data: 5188 MiB (=5.07GB)` **完全一致** ✓。
   **验证手法（可复用）**：用 **ctypes 直调 `dist/libwim-15.dll`**（`wimlib_global_init` / `wimlib_open_wim` / `wimlib_get_xml_data`）把 XML 打出来看 —— **只读，不碰任何分区**。✅ 2026-09-21（`0.1.6`）
 
+- PIT-074 **检测 UTF-16 不能只看 `buf[1] == 0`：带 BOM 时开头是 `FF FE`**（2026-09-21 做 P10 时踩到，**P1 也因此静默失效过**）：`wimlib_get_xml_data` 返回 UTF-16LE **带 BOM**（`FF FE`），而我们最初按"第 2 字节是否为 0"判断 UTF-16 ✗ → 带 BOM 时 `buf[1] == 0xFE ≠ 0` ✗ → 误判成 UTF-8 → 解析全空 → `images` 显示 `0.00 GB`、**空间预检静默跳过**（fail-open：不报错、看不出来 ✗）。**修复**：① 先识别 `FF FE` BOM；② 否则扫前 16 字节里有没有 `0x00`（UTF-16 文本特征）。**教训**：fail-open 的检查（解析失败就放过）**必须留一条日志**，否则坏了也发现不了 —— 这次是靠 `images` 打出 `0.00 GB` 才暴露的。✅ 2026-09-21（`0.1.7`）
+
 - ✨ **备份信息与默认文件名（2026-09-21 用户规格）**：备份模式下——
   · **文件名下方（备注框）预填**「`日期 + 系统类型 + 备份`」，例如
     `20260921 Windows 10 IoT 企业版 LTSC 21H2 19044.4046 备份`（仅当用户尚未手输时预填；该值同时成为 WIM 里的子镜像名）；

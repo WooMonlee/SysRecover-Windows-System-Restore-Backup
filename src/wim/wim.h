@@ -13,6 +13,9 @@ namespace sysrecover {
 struct ImageDesc {
     int index = 0;  // 1-based
     std::wstring name;
+    std::wstring description;             // 描述（可能为空）
+    unsigned long long sizeBytes = 0;     // **实际占用** = TOTALBYTES − HARDLINKBYTES（PIT-073）
+    unsigned long long creationTime = 0;  // FILETIME(UTC)，0 = 未知
 };
 
 // 进度回调：percent 0-100，stage 为阶段文本；返回 true 表示取消。

@@ -277,6 +277,95 @@ int WimEngine::Probe(const std::wstring& imagePath, std::wstring& why) {
     return 0;
 }
 
+namespace {
+
+// ── WIM 元数据 XML 解析小工具（PIT-073：wimlib 返回的是 **UTF-16LE 带 BOM**）──
+// 说明：打包的 wimlib.h（1.14）没有 wimlib_get_image_info()，所以子镜像的大小/描述/
+// 创建时间只能从元数据 XML 里取。踩过的坑：按窄串找标签会**静默失败**（→ 预检/展示
+// 形同虚设）；缓冲区要用 free() 释放（wimlib_free 只释放 WIMStruct）。
+
+bool ReadWimXml(WIMStruct* w, std::string& out) {
+    void* buf = nullptr;
+    size_t n = 0;
+    if (wimlib_get_xml_data(w, &buf, &n) != 0 || !buf || n == 0)
+        return false;
+    out.clear();
+    // 检测 UTF-16：**不能只看 buf[1]==0** —— 带 BOM 时开头是 FF FE（实测！），
+    // 那样会被误判成 UTF-8 → 解析全空（曾导致 P1 空间预检静默失效）。
+    // 改为：① 识别 FF FE BOM；② 否则扫前 16 字节里有没有 0x00（UTF-16 文本特征）。
+    const char* p0 = static_cast<const char*>(buf);
+    bool utf16 = (n >= 2 && static_cast<unsigned char>(p0[0]) == 0xFF &&
+                  static_cast<unsigned char>(p0[1]) == 0xFE);
+    if (!utf16) {
+        size_t lim = n < 16 ? n : 16;
+        for (size_t i = 0; i < lim; ++i)
+            if (p0[i] == 0) { utf16 = true; break; }
+    }
+    if (utf16) {
+        std::wstring ws(static_cast<const wchar_t*>(buf), n / 2);
+        int need = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(),
+                                       static_cast<int>(ws.size()), nullptr, 0,
+                                       nullptr, nullptr);
+        if (need > 0) {
+            out.resize(static_cast<size_t>(need));
+            WideCharToMultiByte(CP_UTF8, 0, ws.c_str(),
+                                static_cast<int>(ws.size()), &out[0], need,
+                                nullptr, nullptr);
+        }
+    } else {
+        out.assign(static_cast<const char*>(buf), n);
+    }
+    free(buf);
+    return !out.empty();
+}
+
+// 取 <IMAGE INDEX="index" …> … </IMAGE> 这一段（找不到返回空串）
+std::string ImageSection(const std::string& xml, int index) {
+    char tag[64];
+    snprintf(tag, sizeof(tag), "<IMAGE INDEX=\"%d\"", index);
+    size_t p = xml.find(tag);
+    if (p == std::string::npos)
+        return {};
+    size_t e = xml.find("</IMAGE>", p);
+    return xml.substr(p, e == std::string::npos ? std::string::npos : e - p);
+}
+
+// 取 <TAG>值</TAG>（无则空串）
+std::string XmlField(const std::string& seg, const char* tag) {
+    std::string open = std::string("<") + tag + ">";
+    size_t t = seg.find(open);
+    if (t == std::string::npos)
+        return {};
+    t += open.size();
+    size_t e = seg.find("</", t);
+    if (e == std::string::npos)
+        return {};
+    return seg.substr(t, e - t);
+}
+
+// 十六进制/十进制都能吃（WIM 的 HIGHPART/LOWPART 常写成 0x…）
+unsigned long long XmlNum(const std::string& seg, const char* tag) {
+    std::string v = XmlField(seg, tag);
+    if (v.empty())
+        return 0;
+    unsigned long long n = strtoull(v.c_str(), nullptr, 0);
+    if (n == 0)
+        n = strtoull(v.c_str(), nullptr, 16);  // 无 0x 前缀的纯十六进制
+    return n;
+}
+
+std::wstring U2W(const std::string& s) {
+    if (s.empty())
+        return {};
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    std::wstring w(n > 0 ? n - 1 : 0, 0);
+    if (n > 0)
+        MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, &w[0], n);
+    return w;
+}
+
+}  // namespace
+
 int WimEngine::ListImages(const std::wstring& imagePath,
                           std::vector<ImageDesc>& out) {
     out.clear();
@@ -288,17 +377,35 @@ int WimEngine::ListImages(const std::wstring& imagePath,
     if (rc != 0)
         return rc;
     h.w = raw;
-    struct wimlib_wim_info info = {};
-    rc = wimlib_get_wim_info(h.w, &info);
-    if (rc != 0)
-        return rc;
-    for (uint32_t i = 1; i <= info.image_count; ++i) {
+    // 注意：打包的 wimlib.h（1.14）没有 wimlib_get_image_count()，
+    // 镜像数要从 wimlib_get_wim_info() 里取（原实现就是这么做的）。
+    struct wimlib_wim_info wi = {};
+    if (wimlib_get_wim_info(h.w, &wi) != 0)
+        return -1;
+    int count = static_cast<int>(wi.image_count);
+    std::string xml;
+    bool haveXml = ReadWimXml(h.w, xml);
+    for (int i = 1; i <= count; ++i) {
         ImageDesc d;
-        d.index = static_cast<int>(i);
-        const wchar_t* name =
-            wimlib_get_image_name(h.w, static_cast<int>(i));
-        if (name)
-            d.name = name;
+        d.index = i;
+        const wchar_t* nm = wimlib_get_image_name(h.w, i);
+        if (nm)
+            d.name = nm;
+        if (haveXml) {
+            std::string seg = ImageSection(xml, i);
+            if (!seg.empty()) {
+                d.description = U2W(XmlField(seg, "DESCRIPTION"));
+                // 实际占用 = TOTALBYTES − HARDLINKBYTES（硬链接在目标上不额外占空间）
+                unsigned long long tb = XmlNum(seg, "TOTALBYTES");
+                unsigned long long hl = XmlNum(seg, "HARDLINKBYTES");
+                d.sizeBytes = (hl && hl < tb) ? tb - hl : tb;
+                // 创建时间：<CREATIONTIME><HIGHPART>..</HIGHPART><LOWPART>..</LOWPART>
+                std::string ct = XmlField(seg, "CREATIONTIME");
+                if (!ct.empty())
+                    d.creationTime =
+                        (XmlNum(ct, "HIGHPART") << 32) | XmlNum(ct, "LOWPART");
+            }
+        }
         out.push_back(std::move(d));
     }
     return 0;
@@ -328,7 +435,16 @@ int WimEngine::ImageSize(const std::wstring& imagePath, int index,
     // 实测（ctypes 直调 libwim-15.dll）：每个字符后跟 0x00。若按窄串直接找标签会
     // **静默失败**（返回 -1 → 预检被跳过，形同虚设），所以这里先统一转成窄串。
     std::string xml;
-    if (n >= 2 && static_cast<const char*>(buf)[1] == 0) {
+    // 同 ReadWimXml：必须识别 FF FE BOM（只看 buf[1]==0 会漏判 → 静默失效）
+    const char* p1 = static_cast<const char*>(buf);
+    bool utf16 = (n >= 2 && static_cast<unsigned char>(p1[0]) == 0xFF &&
+                  static_cast<unsigned char>(p1[1]) == 0xFE);
+    if (!utf16) {
+        size_t lim = n < 16 ? n : 16;
+        for (size_t i = 0; i < lim; ++i)
+            if (p1[i] == 0) { utf16 = true; break; }
+    }
+    if (utf16) {
         std::wstring w(static_cast<const wchar_t*>(buf), n / 2);
         int need = WideCharToMultiByte(CP_UTF8, 0, w.c_str(),
                                        static_cast<int>(w.size()), nullptr, 0,

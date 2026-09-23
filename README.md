@@ -156,7 +156,7 @@ SysRecover.exe backup --dest D:\backup\win10-20260920.esd --source C:/ ^
 - `--compress`：`recovery`（.esd 最省）/ `maximum` / `fast`
 - `--verify` 写完立即校验；`--name` 指定子镜像名
 - 目标已存在需 `--yes` 覆盖，或用 `--append` 追加为同一 WIM 里的新子镜像
-- 辅助命令：`images --image <镜像>` 列子镜像；`verify --image <镜像>` 单独校验
+- 辅助命令：`images --file <镜像>` 列子镜像（含大小与日期）；`verify --image <镜像>` 单独校验
 
 ### 案例 2 · 还原一个万能镜像到 C 盘
 
