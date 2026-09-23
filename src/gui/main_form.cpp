@@ -426,13 +426,10 @@ void CMainForm::Notify(TNotifyUI& msg) {
         } else if (name == _T("BootMenuBtn")) {
             ToggleBootMenu();
         } else if (name == _T("SiteLink")) {
-            // 【临时·仅为演示】借这个按钮把 BitLocker 提醒框弹出来看看（假数据）。
-            // 看完后改回打开网站 —— 把下面 ShellExecuteW 那行的注释去掉、删掉
-            // AskBitLockerWarning 那两行即可。
-            std::vector<std::wstring> fake = {L"C:", L"D:"};
-            AskBitLockerWarning(fake);
-            // ::ShellExecuteW(nullptr, L"open", kSiteUrl, nullptr, nullptr,
-            //                 SW_SHOWNORMAL);
+            // 右下角「网站」链接 → 用系统默认浏览器打开。
+            // （2026-09-23 曾临时改成弹 BitLocker 演示框，用户确认文案后已改回。）
+            ::ShellExecuteW(nullptr, L"open", kSiteUrl, nullptr, nullptr,
+                            SW_SHOWNORMAL);
         } else if (name == _T("MinBtn")) {
             SendMessage(WM_SYSCOMMAND, SC_MINIMIZE, 0);
         }
