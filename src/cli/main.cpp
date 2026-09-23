@@ -10,6 +10,7 @@
 
 #include "wimlib.h"
 #include "../common/version.h"
+#include "../common/zip.h"
 #include "../app/ops.h"
 #include "../app/safety.h"
 #include "../app/shortcut.h"
@@ -45,23 +46,46 @@ int CmdVersion() {
     return 0;
 }
 
-int CmdDiag() {
-    std::printf("[diag] admin=%s\n", IsAdmin() ? "yes" : "no");
-    std::printf("[diag] firmware=%s\n",
-                sysrecover::IsUefiFirmware() ? "UEFI" : "BIOS");
+// 收集诊断信息到文本 —— `diag` 打印它，`diag --zip` 把它打进诊断包。
+// 返回 wimlib 初始化结果（0=OK），供调用方决定退出码。
+int DiagText(std::string& out) {
+    char buf[640];
+    snprintf(buf, sizeof(buf), "[diag] admin=%s\n", IsAdmin() ? "yes" : "no");
+    out += buf;
+    snprintf(buf, sizeof(buf), "[diag] firmware=%s\n",
+             sysrecover::IsUefiFirmware() ? "UEFI" : "BIOS");
+    out += buf;
     if (sysrecover::IsUefiFirmware()) {
-        std::printf("[diag] secureboot=%s\n",
-                    sysrecover::IsSecureBootEnabled() ? "ON (需签名引导)" : "off");
+        snprintf(buf, sizeof(buf), "[diag] secureboot=%s\n",
+                 sysrecover::IsSecureBootEnabled() ? "ON (需签名引导)" : "off");
+        out += buf;
         std::string detail;
         bool installed = sysrecover::UefiBootEntryExists(detail);
-        std::printf("[diag] uefi boot entry=%s (%s)\n",
-                    installed ? "installed" : "not installed", detail.c_str());
+        snprintf(buf, sizeof(buf), "[diag] uefi boot entry=%s (%s)\n",
+                 installed ? "installed" : "not installed", detail.c_str());
+        out += buf;
     }
     int rc = wimlib_global_init(0);
-    std::printf("[diag] wimlib_global_init -> %d (%s)\n", rc,
-                rc == 0 ? "OK" : "FAIL");
+    snprintf(buf, sizeof(buf), "[diag] wimlib_global_init -> %d (%s)\n", rc,
+             rc == 0 ? "OK" : "FAIL");
+    out += buf;
     if (rc == 0)
         wimlib_global_cleanup();
+    snprintf(buf, sizeof(buf), "[diag] version=%s\n", SYSRECOVER_VERSION);
+    out += buf;
+    std::wstring exeDir = sysrecover::ExeDir();
+    char narrow[MAX_PATH * 2] = {};
+    WideCharToMultiByte(CP_UTF8, 0, exeDir.c_str(), -1, narrow, sizeof(narrow),
+                        nullptr, nullptr);
+    snprintf(buf, sizeof(buf), "[diag] exe_dir=%s\n", narrow);
+    out += buf;
+    return rc;
+}
+
+int CmdDiag() {
+    std::string t;
+    int rc = DiagText(t);
+    std::fputs(t.c_str(), stdout);
     return rc == 0 ? 0 : 1;
 }
 
@@ -365,8 +389,78 @@ int CmdExtract(const std::vector<std::string>& a) {
     return 0;
 }
 
-int CmdList() {
-    const auto disks = sysrecover::EnumerateDisks();
+// 导出诊断包：diag 文本 + logs/ 下的文件 + 契约文件 + version.json → 一个 zip。
+// 用自写的 ZipWriter（store 模式，零依赖；见 src/common/zip.h）。
+int CmdDiagZip(const std::vector<std::string>& a) {
+    std::wstring exeDir = sysrecover::ExeDir();
+    std::wstring logsDir = exeDir + L"\\logs";
+    std::wstring outPath;
+    std::string outOpt = Opt(a, "--out");
+    if (!outOpt.empty()) {
+        outPath = ToWide(outOpt);
+    } else {
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        wchar_t nm[128];
+        swprintf(nm, 128, L"\\SysRecover-diag-%04u%02u%02u-%02u%02u%02u.zip",
+                 st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
+                 st.wSecond);
+        CreateDirectoryW(logsDir.c_str(), nullptr);
+        outPath = logsDir + nm;
+    }
+    sysrecover::ZipWriter zip(outPath);
+    if (!zip.ok()) {
+        std::printf("无法创建诊断包：%ls\n", outPath.c_str());
+        return 1;
+    }
+    int n = 0;
+    {  // 1) diag 文本
+        std::string t;
+        DiagText(t);
+        if (zip.AddData(t.data(), t.size(), "diag.txt"))
+            ++n;
+    }
+    {  // 2) logs 目录下的文件（不递归）
+        WIN32_FIND_DATAW fd;
+        HANDLE h = FindFirstFileW((logsDir + L"\\*").c_str(), &fd);
+        if (h != INVALID_HANDLE_VALUE) {
+            do {
+                if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+                    continue;
+                std::wstring full = logsDir + L"\\" + fd.cFileName;
+                char u8[512] = {};
+                WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, u8,
+                                    sizeof(u8), nullptr, nullptr);
+                std::string zn = std::string("logs/") + u8;
+                if (zip.AddFile(full, zn))
+                    ++n;
+            } while (FindNextFileW(h, &fd));
+            FindClose(h);
+        }
+    }
+    {  // 3) 契约文件与版本（有才加）
+        const wchar_t* extra[] = {L"\\restore-task.conf", L"\\restore-task.json",
+                                  L"\\version.json"};
+        for (const wchar_t* f : extra) {
+            std::wstring full = exeDir + f;
+            if (GetFileAttributesW(full.c_str()) == INVALID_FILE_ATTRIBUTES)
+                continue;
+            char u8[512] = {};
+            WideCharToMultiByte(CP_UTF8, 0, f + 1, -1, u8, sizeof(u8), nullptr,
+                                nullptr);
+            if (zip.AddFile(full, u8))
+                ++n;
+        }
+    }
+    if (!zip.Close()) {
+        std::printf("写诊断包失败\n");
+        return 1;
+    }
+    std::printf("已导出诊断包（%d 个文件）：%ls\n", n, outPath.c_str());
+    return 0;
+}
+
+int CmdList() {    const auto disks = sysrecover::EnumerateDisks();
     const double gb = 1024.0 * 1024 * 1024;
     for (const auto& d : disks) {
         std::wprintf(L"Disk %u  %ls  %.0fGB  %hs%s\n", d.index,
@@ -448,8 +542,12 @@ int main(int argc, char** argv) {
     sysrecover::LogInfo(cmdline);
     if (args[0] == "version")
         return CmdVersion();
-    if (args[0] == "diag")
+    if (args[0] == "diag") {
+        for (const auto& s : args)
+            if (s == "--zip")
+                return CmdDiagZip(args);  // diag --zip [--out x.zip]
         return CmdDiag();
+    }
     if (args[0] == "list")
         return CmdList();
     if (args[0] == "backup")

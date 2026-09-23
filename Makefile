@@ -23,7 +23,7 @@ LDLIBS   = -Lthird_party/wimlib -l:libwim-15.dll -ladvapi32 -lole32 -lshell32 -l
 # ---- 应用模块静态库（CLI 与 GUI 共用，避免双份编译 ODR 问题） ----
 APP_SRC = src/disk/disk.cpp src/wim/wim.cpp src/wim/exclude.cpp \
       src/common/process.cpp src/common/logger.cpp src/common/progress.cpp \
-      src/common/singleton.cpp src/common/sysinfo.cpp src/boot/bcd.cpp src/boot/grub.cpp \
+      src/common/singleton.cpp src/common/sysinfo.cpp src/common/zip.cpp src/boot/bcd.cpp src/boot/grub.cpp \
       src/boot/uefi.cpp src/boot/task.cpp src/boot/bootfix.cpp \
       src/app/safety.cpp \
       src/app/shortcut.cpp src/app/ops.cpp
