@@ -322,6 +322,22 @@ int CmdRestore(const std::vector<std::string>& a) {
     req.repairBoot = repairBoot;
     std::string err;
     bool needReboot = true;
+    // BitLocker 提醒（同 GUI 规格）：有加密卷就醒目提示（脚本场景不阻塞，只提示）
+    {
+        auto bl = sysrecover::BitLockerVolumes();
+        if (!bl.empty()) {
+            std::string list;
+            for (const auto& v : bl) {
+                if (!list.empty())
+                    list += " ";
+                list += W2U8(v);
+            }
+            std::printf(
+                "警告：本机存在 BitLocker 加密卷（%s）——\n"
+                "      如果没有密码 / 恢复密钥，还原后这些卷的数据将无法恢复。\n",
+                list.c_str());
+        }
+    }
     int rc = sysrecover::StageRestore(req, err, &needReboot);
     if (rc != 0) {
         std::printf("%s\n", err.c_str());

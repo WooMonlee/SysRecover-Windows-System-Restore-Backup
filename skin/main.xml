@@ -75,6 +75,9 @@
         <Control float="true" pos="0,371,741,406" bkcolor="#FFFAFBFE" />
         <SkinLabel name="StatusText" float="true" pos="17,371,196,406" text="执行进度" color="#FF5F6C80" fontsize="13" />
         <RoundProgress name="Progress" float="true" pos="200,385,672,392" value="0" />
+        <!-- 右下角「网站」链接（用户规格 2026-09-23）：透明底 + 无边框，看起来像链接。
+             URL 在 src/gui/main_form.cpp 的 kSiteUrl（初期指向无忧论坛帖子）。 -->
+        <SkinButton name="SiteLink" float="true" pos="678,374,738,402" text="网站" fontsize="13" bkcolor="#00000000" bordercolor="#00000000" textcolor="#FF2B5CE0" />
         <SkinLabel name="PercentText" float="true" pos="676,371,723,406" text="" color="#FF5F6C80" fontsize="13" align="right" />
 
         <!-- 备份模式备注输入（还原模式隐藏） -->
