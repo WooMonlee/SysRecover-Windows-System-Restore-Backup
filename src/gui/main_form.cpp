@@ -253,8 +253,11 @@ void CMainForm::OnTaskComplete(int rc) {
         SetStatus(U2W(last_err_));
         MessageBoxW(m_hWnd, U2W(last_err_).c_str(), L"安全门禁拒绝", MB_OK | MB_ICONERROR);
     } else if (rc != 0) {
+        // P8：把"下一步怎么办"一起给用户（空间不足/BitLocker/坏镜像等都有对应建议）
+        std::string advice = sysrecover::ErrorAdvice(rc, last_err_);
+        std::wstring box = U2W(last_err_) + U2W(advice);
         SetStatus(U2W(last_err_));
-        MessageBoxW(m_hWnd, U2W(last_err_).c_str(),
+        MessageBoxW(m_hWnd, box.c_str(),
                     m_backupMode ? L"备份失败" : L"暂存失败", MB_OK | MB_ICONERROR);
     } else if (m_backupMode) {
         m_imageOk = true;  // 产物就是刚写的有效镜像 → 切到还原页主按钮即可用

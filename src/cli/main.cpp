@@ -220,6 +220,9 @@ int CmdBackup(const std::vector<std::string>& a) {
     std::printf("\n");
     if (rc != 0) {
         std::printf("%s\n", err.c_str());
+        std::string advice = sysrecover::ErrorAdvice(rc, err);  // P8
+        if (!advice.empty())
+            std::printf("%s\n", advice.c_str());
         if (g_cancel) {
             std::printf("已取消\n");
             return 6;  // §9 退出码 6=取消
@@ -312,6 +315,9 @@ int CmdRestore(const std::vector<std::string>& a) {
     int rc = sysrecover::StageRestore(req, err, &needReboot);
     if (rc != 0) {
         std::printf("%s\n", err.c_str());
+        std::string advice = sysrecover::ErrorAdvice(rc, err);  // P8
+        if (!advice.empty())
+            std::printf("%s\n", advice.c_str());
         return rc == 4 ? 4 : (rc == 5 ? 5 : 1);
     }
     if (needReboot)

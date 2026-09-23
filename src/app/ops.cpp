@@ -221,6 +221,29 @@ int CheckRestoreSpace(const std::wstring& imagePath, int index,
     return 0;
 }
 
+// 失败后的"下一步"（P8）—— 见 ops.h。按错误文本/退出码匹配，匹配不上返回空串。
+std::string ErrorAdvice(int rc, const std::string& err) {
+    auto has = [&err](const char* k) { return err.find(k) != std::string::npos; };
+    if (has("BitLocker") || has("bitlocker"))
+        return "\n\n建议：目标盘启用了 BitLocker。请先在「管理员命令提示符」里挂起保护，"
+               "然后重试：\n    manage-bde -protectors -disable X: -rebootcount 1\n"
+               "（X 换成目标盘符。还原会覆盖该盘数据，之后不需要恢复保护。）";
+    if (has("空间不足"))
+        return "\n\n建议：换一个更大的目标分区，或改用内容更小的镜像。";
+    if (has("写入未完成") || has("不完整"))
+        return "\n\n建议：该镜像上次没有写完（备份中途中断过）。请重新做一次备份。";
+    if (rc == 88 || has("concurrent") || has("正在被修改"))
+        return "\n\n建议：备份源里有文件在持续变化（数据库/下载/云同步目录）。"
+               "先停掉这些程序，或把它们所在目录加入排除清单后再备份。";
+    if (has("镜像在目标分区内"))
+        return "\n\n建议：把镜像文件移到别的分区 —— 它不能放在会被格式化的目标分区上。";
+    if (has("管理员"))
+        return "\n\n建议：以管理员身份运行（本程序要读写分区与引导）。";
+    if (rc == 6)
+        return "\n\n（任务已被用户取消，没有改动目标分区。）";
+    return {};
+}
+
 int RunBackup(const BackupRequest& req, ProgressFn progress,
               std::string& err) {
     if (req.dest.empty()) {
