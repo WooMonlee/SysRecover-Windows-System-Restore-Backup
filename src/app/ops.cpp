@@ -575,13 +575,33 @@ int StageRestore(const RestoreRequest& req, std::string& err,
         LogError(err + " / " + tlog);
         return 1;
     }
-    // 5) 任务文件写 exe 目录（副契约，restore.sh 第 5 步 find 读取）
-    if (!WriteRestoreTask(exeDir, t, tlog)) {
-        ReleaseOpLock();
-        ProgressDone("restore", "failed");
-        err = "写还原任务失败";
-        LogError(err + " / " + tlog);
-        return 1;
+    // 5) 任务文件（**副契约**）：优先写 exe 目录；只读介质（光盘）或写不了时回退到
+    //    <数据盘>\ZJRESTORE\（救援层会扫描各分区找它，PIT-035）。
+    //    ⚠️ **写不了也不致命**：主契约是**目标分区根**上的 _zjresy 日志，救援层能从
+    //    日志字段读出全部参数（PIT-035 的回退）。2026-09-23 实测：用户从**光盘**运行，
+    //    这一步失败 + 被当成致命错误 → 还原根本没执行 ✗（而日志其实已经写好了 ✓）。
+    {
+        std::string wtlog;
+        bool okTask = WriteRestoreTask(exeDir, t, wtlog);
+        std::wstring used = exeDir;
+        if (!okTask) {
+            std::wstring dataDrive = FindDataDrive();
+            std::wstring alt =
+                dataDrive.empty() ? std::wstring() : dataDrive + L"ZJRESTORE";
+            if (!alt.empty()) {
+                CreateDirectoryW(alt.c_str(), nullptr);
+                wtlog.clear();
+                if (WriteRestoreTask(alt, t, wtlog)) {
+                    okTask = true;
+                    used = alt;
+                }
+            }
+        }
+        if (!okTask)
+            LogError("restore task write failed (non-fatal; the target-root "
+                     "log is the primary contract): " + wtlog);
+        else
+            LogInfo("restore task written to " + W2U(used));
     }
     // 6) 引导层 + 单次启动（仅正常 Windows，§2 禁令3）
     if (req.repairBoot) {
