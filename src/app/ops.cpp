@@ -244,6 +244,42 @@ std::string ErrorAdvice(int rc, const std::string& err) {
     return {};
 }
 
+// 历史记录（P7）：往 <exeDir>\logs\history.jsonl 追加一行（JSON Lines，外部/AI 好读）。
+// 记"什么时候做了什么"：备份完成、就地还原、暂存还原（暂存的实际结果在救援层日志里）。
+void AppendHistory(const char* action, const std::wstring& image,
+                   const std::wstring& target, unsigned long long ms,
+                   const char* detail) {
+    std::wstring dir = ExeDir() + L"\\logs";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    HANDLE h = CreateFileW((dir + L"\\history.jsonl").c_str(), FILE_APPEND_DATA,
+                           FILE_SHARE_READ, nullptr, OPEN_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE)
+        return;
+    auto esc = [](const std::string& s) {
+        std::string o;
+        for (char c : s) {
+            if (c == '\\' || c == '"')
+                o += '\\';
+            o += c;
+        }
+        return o;
+    };
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    char buf[1200];
+    snprintf(buf, sizeof(buf),
+             "{\"time\":\"%04u-%02u-%02u %02u:%02u:%02u\",\"action\":\"%s\","
+             "\"image\":\"%s\",\"target\":\"%s\",\"elapsed_s\":%llu,"
+             "\"version\":\"%s\",\"detail\":\"%s\"}\n",
+             st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
+             action, esc(W2U(image)).c_str(), esc(W2U(target)).c_str(),
+             ms / 1000, SYSRECOVER_VERSION, detail ? detail : "");
+    DWORD wrote = 0;
+    WriteFile(h, buf, static_cast<DWORD>(strlen(buf)), &wrote, nullptr);
+    CloseHandle(h);
+}
+
 int RunBackup(const BackupRequest& req, ProgressFn progress,
               std::string& err) {
     if (req.dest.empty()) {
@@ -257,6 +293,7 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
     ProgressUpdate("backup", 0, "start");
     LogInfo("backup source=" + W2U(req.source) + " dest=" + W2U(req.dest) +
             " compress=" + req.compress);
+    const ULONGLONG t0 = GetTickCount64();  // P7：历史记录用
     // 盘符根（C:/ 或 C:\）→ 热备：VSS 快照 + 排除配置（PIT-008/009）；
     // 也可用 req.snapshot 显式强制（例如备份正在使用的数据库目录）。
     bool snapshot = req.snapshot ||
@@ -332,6 +369,7 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
     ReleaseOpLock();
     ProgressDone("backup", "done");
     LogInfo("backup done");
+    AppendHistory("backup", req.dest, req.source, GetTickCount64() - t0, "ok");
     return 0;
 }
 
@@ -443,13 +481,18 @@ int StageRestore(const RestoreRequest& req, std::string& err,
         std::string why;
         if (CanRestoreInPlace(target, why)) {
             LogInfo(std::string("restore mode: in-place (") + why + ")");
+            const ULONGLONG t1 = GetTickCount64();
             int rc = RunDirectRestore(req, target, imagePath, err);
             if (needReboot)
                 *needReboot = false;
             ReleaseOpLock();
+            AppendHistory("restore-inplace", req.image, imagePath,
+                          GetTickCount64() - t1, rc == 0 ? "ok" : "failed");
             return rc;
         }
         LogInfo(std::string("restore mode: staged reboot (") + why + ")");
+        AppendHistory("restore-staged", req.image, imagePath, 0,
+                      "staged; 实际结果见救援层日志");
     }
 
     std::wstring exeDir = ExeDir();
