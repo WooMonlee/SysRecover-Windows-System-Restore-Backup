@@ -11,6 +11,7 @@
 #include <string.h>
 #include <tchar.h>
 #include <wchar.h>
+#include <string>  // std::wstring（SyncTextFromNative 用；标准头须在 StdAfx.h 之前，PIT-012）
 
 #include "ui_skin.h"
 
