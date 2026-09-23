@@ -118,7 +118,7 @@ bool EnableEnvPrivilege(std::string& log) {
 
 int FirmwareTrustedUefiCas() {
     std::string dummy;
-    EnablePrivilege(dummy);  // 读固件变量需要 SeSystemEnvironmentPrivilege
+    EnableEnvPrivilege(dummy);  // 读固件变量需要 SeSystemEnvironmentPrivilege
     std::vector<BYTE> buf(64 * 1024);
     SetLastError(0);
     DWORD len = GetFirmwareEnvironmentVariableW(
