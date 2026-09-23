@@ -60,6 +60,10 @@ enum wimlib_compression_type CompressType(const std::string& name,
 
 struct ProgCtx {
     ProgressFn* fn = nullptr;
+    // P4：速度/ETA 用 —— 上一次的字节数与时刻（GetTickCount64）
+    uint64_t lastBytes = 0;
+    uint64_t lastTick = 0;
+    double   mbps = 0.0;  // 平滑后的速度（MB/s）
 };
 
 int Pct(uint64_t done, uint64_t total) {
@@ -108,6 +112,41 @@ enum wimlib_progress_status ProgressThunk(enum wimlib_progress_msg msg,
     }
     if (pct < 0)
         return WIMLIB_PROGRESS_STATUS_CONTINUE;
+    // P4：速度 + 剩余时间（只对有"总字节数"的写/解压阶段）。回调频率很高，这里
+    // 只做少量整数/浮点运算，不碰 UI/文件（AGENTS §8）。用 ASCII 后缀，避免给
+    // GUI 的阶段名映射（按前缀匹配）和 CLI 的控制台编码添乱。
+    {
+        uint64_t doneBytes = 0, totalBytes = 0;
+        if (msg == WIMLIB_PROGRESS_MSG_WRITE_STREAMS) {
+            doneBytes = info->write_streams.completed_bytes;
+            totalBytes = info->write_streams.total_bytes;
+        } else if (msg == WIMLIB_PROGRESS_MSG_EXTRACT_STREAMS) {
+            doneBytes = info->extract.completed_bytes;
+            totalBytes = info->extract.total_bytes;
+        }
+        if (totalBytes > 0) {
+            ULONGLONG now = GetTickCount64();
+            if (c->lastTick && now > c->lastTick && doneBytes >= c->lastBytes) {
+                double secs = static_cast<double>(now - c->lastTick) / 1000.0;
+                double inst = static_cast<double>(doneBytes - c->lastBytes) /
+                              secs / (1024.0 * 1024.0);
+                // 指数平滑，避免数字乱跳
+                c->mbps = (c->mbps > 0.0) ? (c->mbps * 0.7 + inst * 0.3) : inst;
+            }
+            c->lastTick = now;
+            c->lastBytes = doneBytes;
+            if (c->mbps > 0.05) {
+                double left =
+                    static_cast<double>(totalBytes - doneBytes) /
+                    (c->mbps * 1024.0 * 1024.0);
+                char sb[96];
+                snprintf(sb, sizeof(sb), "  %.1f MB/s  ETA %d:%02d", c->mbps,
+                         static_cast<int>(left / 60),
+                         static_cast<int>(left) % 60);
+                stage += sb;
+            }
+        }
+    }
     return (*c->fn)(pct, stage) ? WIMLIB_PROGRESS_STATUS_ABORT
                                 : WIMLIB_PROGRESS_STATUS_CONTINUE;
 }
