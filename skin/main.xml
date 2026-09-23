@@ -74,11 +74,14 @@
         <Control float="true" pos="0,370,741,371" bkcolor="#FFEEF1F6" />
         <Control float="true" pos="0,371,741,406" bkcolor="#FFFAFBFE" />
         <SkinLabel name="StatusText" float="true" pos="17,371,196,406" text="执行进度" color="#FF5F6C80" fontsize="13" />
-        <RoundProgress name="Progress" float="true" pos="200,385,672,392" value="0" />
-        <!-- 右下角「网站」链接（用户规格 2026-09-23）：透明底 + 无边框，看起来像链接。
-             URL 在 src/gui/main_form.cpp 的 kSiteUrl（初期指向无忧论坛帖子）。 -->
-        <SkinButton name="SiteLink" float="true" pos="678,374,738,402" text="网站" fontsize="13" bkcolor="#00000000" bordercolor="#00000000" textcolor="#FF2B5CE0" />
-        <SkinLabel name="PercentText" float="true" pos="676,371,723,406" text="" color="#FF5F6C80" fontsize="13" align="right" />
+        <RoundProgress name="Progress" float="true" pos="200,385,560,392" value="0" />
+        <SkinLabel name="PercentText" float="true" pos="566,371,620,406" text="" color="#FF5F6C80" fontsize="13" align="right" />
+        <!-- 右下角「网站」链接（用户规格 2026-09-23）。注意两点踩过的坑：
+             ① 必须避开 PercentText（它声明在后=在顶层，会抢走点击 → 链接放它右边）；
+             ② 不能用全透明 bkcolor：ui_skin.cpp:699 把 0 当"未设置"→画成白底 ✗，
+                这里用状态栏同色 #fafbfe（视觉隐形，hover 时 tint 一下仍能看出反馈）。
+             URL 在 src/gui/main_form.cpp 的 kSiteUrl。 -->
+        <SkinButton name="SiteLink" float="true" pos="626,374,736,402" text="网站" fontsize="13" bkcolor="#FFFAFBFE" bordercolor="#FFFAFBFE" textcolor="#FF2B5CE0" />
 
         <!-- 备份模式备注输入（还原模式隐藏） -->
         <SkinEdit name="NoteInput" float="true" pos="249,116,710,136" fontsize="14" bordercolor="#FFC9D6F2" underline="true" textcolor="#FF1B2432" nativebkcolor="#FFFFFFFF" textpadding="10,5,10,5" visible="false" />
