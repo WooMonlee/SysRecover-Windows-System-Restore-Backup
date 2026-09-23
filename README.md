@@ -143,6 +143,7 @@
 ```cmd
 SysRecover.exe list      :: 磁盘/分区/文件系统/盘符/ESP/系统标记
 SysRecover.exe diag      :: 固件类型、Secure Boot 状态、启动项是否已装、wimlib 自检
+                         :: 加 --zip 可导出诊断包（diag 文本 + logs/ + 契约文件），方便反馈问题
 ```
 
 ### 案例 1 · 把当前系统热备成镜像
