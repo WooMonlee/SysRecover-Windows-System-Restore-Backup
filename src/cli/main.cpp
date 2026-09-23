@@ -325,6 +325,46 @@ int CmdImages(const std::vector<std::string>& a) {
 
 }  // namespace
 
+int CmdExtract(const std::vector<std::string>& a) {
+    std::string file = Opt(a, "--file");
+    if (file.empty())
+        file = Opt(a, "--image");  // images 用 --file、restore 用 --image，这里两个都收
+    std::string dest = Opt(a, "--dest");
+    int index = std::atoi(Opt(a, "--index", "1").c_str());
+    // --path 可重复（Opt 只取第一个匹配，所以自己扫一遍）
+    std::vector<std::wstring> paths;
+    for (size_t i = 0; i + 1 < a.size(); ++i)
+        if (a[i] == "--path")
+            paths.push_back(ToWide(a[i + 1]));
+    if (file.empty() || dest.empty() || paths.empty()) {
+        std::printf(
+            "用法: SysRecover.exe extract --file <镜像> [--index N] "
+            "--path <镜像内路径> [--path ...] --dest <输出目录>\n"
+            "  路径用 Windows 风格、以 \\ 开头，支持通配符，例如：\n"
+            "    --path \"\\Windows\\win.ini\"\n"
+            "    --path \"\\Users\\*\\Desktop\\*.txt\"\n");
+        return 2;
+    }
+    // 输出目录：不存在就建（父目录需已存在）
+    if (!CreateDirectoryW(ToWide(dest).c_str(), nullptr) &&
+        ::GetLastError() != ERROR_ALREADY_EXISTS) {
+        std::printf("无法创建输出目录（父目录需已存在）\n");
+        return 1;
+    }
+    sysrecover::WimEngine engine;
+    if (!engine.ok()) {
+        std::printf("wimlib 初始化失败\n");
+        return 1;
+    }
+    int rc = engine.ExtractPaths(ToWide(file), index, paths, ToWide(dest));
+    if (rc != 0) {
+        std::printf("提取失败：%ls\n", sysrecover::WimEngine::ErrorString(rc));
+        return 1;
+    }
+    std::printf("已提取 %zu 个路径到 %s\n", paths.size(), dest.c_str());
+    return 0;
+}
+
 int CmdList() {
     const auto disks = sysrecover::EnumerateDisks();
     const double gb = 1024.0 * 1024 * 1024;
@@ -385,7 +425,7 @@ int CmdShortcut(const std::vector<std::string>& a) {
 int Usage() {
     std::printf(
         "Usage: SysRecover.exe "
-        "<version|diag|list|backup|restore|verify|images|shortcut> [opts]\n");
+        "<version|diag|list|backup|restore|verify|images|extract|shortcut> [opts]\n");
     return 2;
 }
 
@@ -420,6 +460,8 @@ int main(int argc, char** argv) {
         return CmdVerify(args);
     if (args[0] == "images")
         return CmdImages(args);
+    if (args[0] == "extract")
+        return CmdExtract(args);
     if (args[0] == "shortcut")
         return CmdShortcut(args);
     return Usage();

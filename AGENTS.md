@@ -211,6 +211,7 @@ CLI：`SysRecover.exe <cmd> [opts]`，无 `--no-gui`（默认就是 CLI），`--
 | `backup --dest <wim> [--source C:/] [--compress fast\|maximum\|recovery] [--append] [--verify] [--yes]` | 热备（源路径注意尾斜杠） |
 | `restore --image <f> --disk N --part M [--index 1] [--no-repair-boot] [--yes]` | 先做 ESP/BitLocker/恢复分区/镜像在目标分区四检查 |
 | `verify / images / diag / version` | 校验 / 列镜像 / 自检 / 版本 |
+| `extract --file <镜像> [--index N] --path <镜像内路径> [--path ...] --dest <目录>` | **从镜像里取单个/一组文件**（支持通配符，如 `\Users\*\Desktop\*.txt`）——"还原前先看看、只捞一个文件出来" |
 | GUI 自动模式（Phase 5） | `--auto-backup --source C: --dest D:\x.wim` / `--auto-restore --image <f> --disk N --part M`（对齐老 `MainWindow.xaml.cs`，CLI 先行，GUI 后移植） |
 
 退出码：`0 成功，1 通用失败，2 参数错误，3 需管理员，4 危险目标被拒，5 镜像校验失败，6 取消`。
