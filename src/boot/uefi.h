@@ -28,6 +28,14 @@ bool SetUefiBootNext(std::string& log);
 // 必须走 shim（微软签名）+ MOK 那条链（见 PIT-062）。
 bool IsSecureBootEnabled();
 
+// P6：读固件 db，看它信任哪张微软 UEFI CA（只做字符串扫描，证书 CN 在 DER 里是明文）。
+// 返回位掩码：kFirmwareCa2011 / kFirmwareCa2023；0 = 读不到（非 UEFI / 无权限）。
+// 用途：我们当前的 Secure Boot 链是 CA2011 签名 —— 若固件只信任 CA2023，
+// 救援环境可能起不来，应当**提前**告诉用户（见 PLAN.md §11）。
+const int kFirmwareCa2011 = 1;
+const int kFirmwareCa2023 = 2;
+int FirmwareTrustedUefiCas();
+
 // 我们的 MOK 公钥是否已注册进固件（即用户是否做过那次一次性注册）。
 // exeDir 提供 bootfiles\sb\zj-mok.cer 用来在 MokListRT 里比对。
 // 没注册时 shim 会弹 MokManager，用户必须先重启一次并注册，救援才跑得起来。

@@ -116,6 +116,25 @@ bool EnableEnvPrivilege(std::string& log) {
     return true;
 }
 
+int FirmwareTrustedUefiCas() {
+    std::string dummy;
+    EnablePrivilege(dummy);  // 读固件变量需要 SeSystemEnvironmentPrivilege
+    std::vector<BYTE> buf(64 * 1024);
+    SetLastError(0);
+    DWORD len = GetFirmwareEnvironmentVariableW(
+        L"db", kGlobalGuid, buf.data(), static_cast<DWORD>(buf.size()));
+    if (len == 0)
+        return 0;  // 读不到（非 UEFI / 无权限 / 固件不给）
+    std::string s(reinterpret_cast<const char*>(buf.data()), len);
+    int mask = 0;
+    if (s.find("Microsoft Corporation UEFI CA 2011") != std::string::npos)
+        mask |= kFirmwareCa2011;
+    if (s.find("Microsoft UEFI CA 2023") != std::string::npos ||
+        s.find("Windows UEFI CA 2023") != std::string::npos)
+        mask |= kFirmwareCa2023;
+    return mask;
+}
+
 std::wstring VarName(int num) {
     wchar_t n[10];
     swprintf(n, 10, L"Boot%04X", num);
