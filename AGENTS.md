@@ -426,6 +426,10 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 
 - PIT-074 **检测 UTF-16 不能只看 `buf[1] == 0`：带 BOM 时开头是 `FF FE`**（2026-09-21 做 P10 时踩到，**P1 也因此静默失效过**）：`wimlib_get_xml_data` 返回 UTF-16LE **带 BOM**（`FF FE`），而我们最初按"第 2 字节是否为 0"判断 UTF-16 ✗ → 带 BOM 时 `buf[1] == 0xFE ≠ 0` ✗ → 误判成 UTF-8 → 解析全空 → `images` 显示 `0.00 GB`、**空间预检静默跳过**（fail-open：不报错、看不出来 ✗）。**修复**：① 先识别 `FF FE` BOM；② 否则扫前 16 字节里有没有 `0x00`（UTF-16 文本特征）。**教训**：fail-open 的检查（解析失败就放过）**必须留一条日志**，否则坏了也发现不了 —— 这次是靠 `images` 打出 `0.00 GB` 才暴露的。✅ 2026-09-21（`0.1.7`）
 
+- PIT-075 **就地还原"第一次进度回调就中止"：进度回调返回值语义写反（`true` = 取消）→ `rc=76 WIMLIB_ERR_ABORTED_BY_PROGRESS`**（2026-09-23 用户实测踩到）：用户在 **PE（从光盘运行）** 和**把程序拷到 D 盘后**都遇到 `暂存失败：就地还原：应用镜像失败 rc=76 (The operation was aborted by the library user)`，误以为是只读介质或权限问题 ✗。真实原因：`ops.cpp::RunDirectRestore` 传给 `wim.Apply` 的进度回调写成 `return true;` —— 而 `wim.cpp` 的约定是 **返回 true = 请求 ABORT**（`(*c->fn)(pct,stage) ? WIMLIB_PROGRESS_STATUS_ABORT : CONTINUE`）→ **第一次回调就中止** ✗。**修复**：`return false;`（继续），并在该处写明语义。**为什么一直没发现**：就地还原此前**从未跑通**（`docs/07` 一直标"待实测"✓）；而"暂存 + 重启"路径的 apply 跑在 Linux 救援层里（不经过这个 C++ 回调 ✓），所以一直正常。**教训**：`bool` 型回调的"真=取消"这种约定极易写反 —— 注释里其实写了（`wim.h`），调用方没看；日后这类语义建议直接叫 `onProgressReturningAbort()` 之类，或改用枚举。✅ 2026-09-23
+
+- PIT-076 **手动输入镜像路径时按钮不变蓝（GUI 只监听"浏览…"/拖入，不监听输入框变化）**（2026-09-23 用户实测）：备份模式在"浏览保存位置"右侧输入框里**手打**路径/文件名 → "开始备份系统"仍是灰的 ✗，必须点一次"浏览…"才变蓝。原因：`CMainForm::Notify` 只处理 CLICK / SELECTCHANGED / ITEMSELECT，**没有监听输入框文本变化** → `m_wimPath` 不同步、`UpdateMainAction()` 不触发。**修复**：在主窗口 `HandleMessage` 加 `WM_COMMAND` + `EN_CHANGE`（`CSkinEditUI` 内部是原生 EDIT，其变化通知送到父窗口 = 主窗口）→ 同步 `m_wimPath` + 刷新按钮；还原模式下若路径指向存在的文件，顺手解析子镜像（用 `m_lastLoadedWim` 防抖，避免每敲一键就重开 WIM）。✅ 2026-09-23
+
 - ✨ **备份信息与默认文件名（2026-09-21 用户规格）**：备份模式下——
   · **文件名下方（备注框）预填**「`日期 + 系统类型 + 备份`」，例如
     `20260921 Windows 10 IoT 企业版 LTSC 21H2 19044.4046 备份`（仅当用户尚未手输时预填；该值同时成为 WIM 里的子镜像名）；

@@ -75,6 +75,7 @@ private:
     bool m_needReboot = true;  // 还原：true=已暂存需重启；false=已就地完成（PIT-064）
     bool m_imageOk = false;    // 还原模式：当前镜像可读/可用（否则主按钮保持灰）
     std::wstring m_wimPath;
+    std::wstring m_lastLoadedWim;  // 上次已解析过子镜像的路径（避免手动输入时反复解析）
     sysrecover::SystemDescription m_sysDesc;  // 运行中系统的描述（InitWindow 里取）
     int m_selPart = -1;
     int m_selImageIndex = 1;
