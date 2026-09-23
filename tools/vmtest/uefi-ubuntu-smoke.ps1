@@ -1,13 +1,15 @@
-﻿# uefi-ubuntu-smoke.ps1 - Validate the "variant D" rescue chain (Secure Boot OFF).
+﻿# uefi-ubuntu-smoke.ps1 - Validate the Secure Boot chain (shim -> Debian GRUB -> kernel).
 #
-# Chain: OVMF Shell -> shimx64.efi -> grubx64.efi (Canonical-signed Ubuntu GRUB)
-#        -> grub.cfg -> Canonical-signed Ubuntu kernel + OUR initramfs
-#        -> our /init (Alpine userland + Ubuntu modules) runs.
+# Chain: OVMF Shell -> shimx64.efi (MS dual-signed: CA2011+CA2023)
+#        -> grubx64.efi (Debian-signed GRUB) -> grub.cfg -> Debian-signed kernel
+#        + OUR initramfs -> our /init (Alpine userland + Debian modules) runs.
 #
-# What this proves WITHOUT a Secure Boot environment: the Ubuntu kernel boots our
-# initramfs and the rescue layer comes up (module loading works, /init runs).
-# The one thing only a real SB machine can prove is GRUB accepting the kernel's
-# Canonical signature -- and that is already established by Ubuntu's own design.
+# This proves (even with Secure Boot OFF, because shim always validates its second
+# stage against its embedded certs): the Debian shim accepts the Debian GRUB, GRUB
+# loads the Debian kernel with our initramfs, and the rescue layer comes up.
+# The one thing only a real Secure Boot machine can prove is the firmware accepting
+# the shim and GRUB enforcing the kernel signature under shim_lock.
+# (2026-09-23: switched from Ubuntu to Debian for the CA2023-capable dual-signed shim.)
 #
 # The test writes its own grub.cfg with `console=ttyS0` so the rescue output is
 # visible on the serial log (the shipped grub.cfg uses console=tty0).
@@ -29,7 +31,7 @@ $sb = Join-Path $root "bootfiles\sb"
 $boot = Join-Path $root "bootfiles"
 $tmp = Join-Path $env:TEMP "zj-uefi-ubuntu"
 
-foreach ($f in @("shimx64.efi", "mmx64.efi", "grub-ubuntu.efi")) {
+foreach ($f in @("shimx64.efi", "grubx64.efi")) {
     if (!(Test-Path (Join-Path $sb $f))) {
         Write-Host "missing $f (run make package)"; exit 1
     }
@@ -39,8 +41,7 @@ Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path (Join-Path $tmp "EFI\ZJRESTORE") | Out-Null
 $d = Join-Path $tmp "EFI\ZJRESTORE"
 Copy-Item (Join-Path $sb "shimx64.efi") $d
-Copy-Item (Join-Path $sb "mmx64.efi") $d
-Copy-Item (Join-Path $sb "grub-ubuntu.efi") (Join-Path $d "grubx64.efi")
+Copy-Item (Join-Path $sb "grubx64.efi") $d
 Copy-Item (Join-Path $boot "vmlinuz-zjrestore") $d
 Copy-Item (Join-Path $boot "initramfs-zjrestore.cpio.gz") $d
 $cfg = @"

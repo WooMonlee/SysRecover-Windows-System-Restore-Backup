@@ -118,7 +118,8 @@ package: all
 	@copy /Y bootfiles\initramfs-zjrestore.cpio.gz dist\bootfiles\ >nul
 	@copy /Y bootfiles\zjrestore-lite.sh dist\bootfiles\ >nul
 	@if not exist dist\bootfiles\sb mkdir dist\bootfiles\sb
-	@copy /Y bootfiles\sb\grub-ubuntu.efi dist\bootfiles\sb\ >nul
+	@copy /Y bootfiles\sb\shimx64.efi dist\bootfiles\sb\ >nul
+	@copy /Y bootfiles\sb\grubx64.efi dist\bootfiles\sb\ >nul
 	@copy /Y bootfiles\sb\grub.cfg dist\bootfiles\sb\ >nul
 	@copy /Y THIRD_PARTY_LICENSES.txt dist\ >nul
 	@if exist third_party\ucrt\x64\*.dll copy /Y third_party\ucrt\x64\*.dll dist\ >nul

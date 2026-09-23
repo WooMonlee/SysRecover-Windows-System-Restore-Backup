@@ -436,13 +436,14 @@ bool InstallUefiBootEntry(const std::wstring& espRoot,
     } else
 #endif
     if (mode == SbMode::Grub) {
-        // shim（微软签名）→ Canonical 签名的 Ubuntu GRUB（shim 内嵌同一把证书，
-        // **无需 MOK 注册**）→ grub.cfg 用普通 `linux`/`initrd` 加载我们的内核。
+        // shim（**微软双签：CA2011 + CA2023**）→ Debian 签名的 GRUB（shim 内嵌同一把
+        // 证书，**无需 MOK 注册**）→ grub.cfg 用普通 `linux`/`initrd` 加载我们的内核。
+        // 2026-09-23 换链（备选 B）：Ubuntu → Debian。原因：Ubuntu 的 shim 目前只带
+        // CA2011 单签，**2026 新出厂只信 CA2023 的固件起不来**；Debian 的是双签。
+        // 不再需要 mmx64/fbx64 —— 那是 MOK 备选线的资产（本项目 grub 模式用不到）。
         files = {
             {L"\\bootfiles\\sb\\shimx64.efi", L"shimx64.efi"},
-            {L"\\bootfiles\\sb\\mmx64.efi", L"mmx64.efi"},
-            {L"\\bootfiles\\sb\\fbx64.efi", L"fbx64.efi"},
-            {L"\\bootfiles\\sb\\grub-ubuntu.efi", L"grubx64.efi"},
+            {L"\\bootfiles\\sb\\grubx64.efi", L"grubx64.efi"},
             {L"\\bootfiles\\sb\\grub.cfg", L"grub.cfg"},
             {L"\\bootfiles\\vmlinuz-zjrestore", L"vmlinuz-zjrestore"},
             {L"\\bootfiles\\initramfs-zjrestore.cpio.gz",
