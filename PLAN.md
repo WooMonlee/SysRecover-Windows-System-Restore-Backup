@@ -264,6 +264,44 @@ tar.gz，可直接解包）组装：
 > 「新硬件只信 CA2023」的失败场景**在现有 VM 上复现不出来**；要复现需新建 VM / 用新版 OVMF 固件模板，
 > 或手动把 CA2023 灌进 VM 的 `db`。
 
+### §11.1 换链前的核实（2026-09-23 实测）
+
+**AlmaLinux 10**（原备选 B 的候选）：
+- `shim-x64 16.1-4`：**CA2011 + CA2023 双签** ✓（实测含 `Microsoft UEFI CA 2023 signer`）
+- `grubx64.efi`（4.2MB）/ `vmlinuz`（6.12.0-211.56.1，15.9MB）：均为 **AlmaLinux 签名** ✓ → 链自洽 ✓
+- ⚠️ **但驱动覆盖有风险** ✗：Alma 的 `kernel-modules-extra` 只有 **3.1MB**（Ubuntu 的 `linux-modules-extra` 是 **113MB**）；
+  实扫三个包（`kernel-modules-core` 1250 个/27.8MB + `kernel-modules` 1009 个/39.9MB + `extra` 154 个/1.4MB）后，
+  **`vmd` / `isci` / `arcmsr` / `pm80xx` / `mvsas` 找不到模块文件** ✗（内建？还是被上游内核移除？待定）；
+  **`ntfs3` 也没有** ✗（但我们随包带 `ntfs-3g`(FUSE)，NTFS 照样能挂 ✓）
+- 内核 6.12 的 vmlinuz **没有内嵌 `.config`** ✗（PIT-044 那招在 RHEL 系内核上不适用）
+
+**Debian**（新发现，**可能是更优选择** ✓✓）：
+- `shim-signed 1.51+16.1-2` 的 `shimx64.efi.signed`（1063KB）：**也是双签** ✓✓
+  （CA2011 ×3 + `Microsoft UEFI CA 2023` ×4 + `Microsoft UEFI CA 2023 signer` ×1，内嵌 **Debian** 证书）
+- Debian 与 Ubuntu **同源** → 内核模块覆盖**应当同样广** ✓（Alma/RHEL 明显更"克制" ✗）
+- → **备选 B 的发行版候选：Debian 优于 AlmaLinux**（待验覆盖后定）
+
+**结论 / 下一步**：换链前先做一次「**候选发行版驱动覆盖对比**」——
+各下 1 个内核/模块包、数模块并核对关键 HBA 名单（Ubuntu 现状 / Debian / Alma 三家），**再决定换谁**；
+选定后再动代码（构建脚本 + SB 资产 + 回归测试）。
+
+**✅ 三家对比结论（2026-09-23 实测完成）**：
+
+| | 现在的 Ubuntu 链 | **Debian 13 (trixie)** ⭐**推荐** | AlmaLinux 10 |
+|---|---|---|---|
+| shim 双签（CA2011+CA2023）| ❌ 单签 | ✅ **双签**（`shim-signed 1.51+16.1-2` 实测）| ✅ 双签（`shim-x64 16.1-4`）|
+| 内核 | 6.8 / **14.2MB** | **6.12.107 / 11.6MB**（最小）| 6.12.0 / 15.9MB |
+| 模块总量 | —（我们只取存储闭包 34MB）| **4225 个 / 89.3MB** | 2413 个 / 69.1MB |
+| **关键驱动 31 项**（`vmd`/`isci`/`arcmsr`/`pm80xx`/`mvsas`/`megaraid_sas`/`mpt3sas`/`mptspi`/`mptsas`/`hpsa`/`aacraid`/`smartpqi`/`virtio_*`/`nvme`/`ahci`/`ata_piix`/`usb-storage`/`uas`/`sd_mod`/`vfat`/`exfat`/`dm-*`/`raid0-10`/`qla2xxx`/`lpfc`）| 现状可用 ✓ | **31/31 ✓✓** | **缺 5 项** ✗（vmd/isci/arcmsr/pm80xx/mvsas）|
+| `ntfs3` | ✗（靠随包 `ntfs-3g` 兜底）| ✅ 有 | ✗ |
+
+→ **决定：备选 B 的发行版选 Debian** ✓（双签 ✓ + 驱动最全 ✓ + 内核最小 → 我们只取存储闭包，
+**体积估计与现状持平甚至略降**）。AlmaLinux 因驱动覆盖偏窄而**不采用** ✗。
+
+**下一步（实施 B）**：① 写 `tools/build-debian-rescue.py`（复用现有骨架，换内核/模块来源；
+Debian 的模块也是 `.ko.xz`）② 先验"能组装出可启动 initramfs"（QEMU 认盘）③ 再验 Secure Boot 链
+（QEMU+OVMF+SB 开）④ 最后替换 `bootfiles/`（shim/GRUB/内核/initramfs）+ 更新 SBOM/文档 + 回归。
+
 ---
 
 ## 12. 开发待办（已与用户确认，待排期）
