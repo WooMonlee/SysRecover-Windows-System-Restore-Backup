@@ -105,7 +105,11 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
     int arc = wim.Apply(imagePath, req.index, letter + L":\\",
                         [](int pct, const std::string& st) {
                             ProgressUpdate("restore", pct, st);
-                            return true;
+                            // ⚠️ 语义：**返回 true = 请求中止**（wim.cpp 里
+                            //    `(*c->fn)(...) ? ABORT : CONTINUE`）。这里必须
+                            //    return false 才会继续！曾写成 true → 第一次进度
+                            //    回调就中止 → rc=76 (ABORTED_BY_PROGRESS)。
+                            return false;
                         });
     if (arc != 0) {
         err = "就地还原：应用镜像失败 rc=" + std::to_string(arc) + " (" +

@@ -136,6 +136,29 @@ void CMainForm::InitWindow() {
 // ────────────────── HandleMessage（worker 线程安全回调） ──────────────────
 
 LRESULT CMainForm::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_COMMAND && HIWORD(wParam) == EN_CHANGE) {
+        // 输入框内容变化 —— 原生 EDIT 的 EN_CHANGE 会送到父窗口（=主窗口，Duilib
+        // 控件本身不是窗口）。用户 2026-09-23 反馈：**手动输入**镜像路径时
+        // "开始备份系统"按钮一直是灰的（以前只有"浏览…"/拖入才会刷新按钮）。
+        // 这里把当前文本同步进 m_wimPath 并刷新按钮；还原模式下若指向存在的文件，
+        // 顺手解析子镜像（用 m_lastLoadedWim 防止每敲一个键就重解析一遍）。
+        CControlUI* pEdit = m_PaintManager.FindControl(_T("ImagePath"));
+        if (pEdit) {
+            std::wstring p = pEdit->GetText().GetData();
+            if (p != m_wimPath) {
+                m_wimPath = p;
+                if (!m_backupMode && !m_wimPath.empty() &&
+                    m_wimPath != m_lastLoadedWim &&
+                    GetFileAttributesW(m_wimPath.c_str()) !=
+                        INVALID_FILE_ATTRIBUTES) {
+                    m_lastLoadedWim = m_wimPath;
+                    LoadWimImages(m_wimPath);
+                }
+                UpdateMainAction();
+            }
+        }
+        return 0;
+    }
     if (msg == WM_TIMER && wParam == 1) {
         if (m_busy)
             SetStatus(m_lastStage + L"    已用 " + ElapsedText());
@@ -787,9 +810,15 @@ void CMainForm::StartRestore() {
         bool onTarget = exL && tgL && towupper(exL) == towupper(tgL);
         bool fixedDisk = exL && GetDriveTypeW(exRoot) == DRIVE_FIXED;
         if ((onTarget || !fixedDisk) && !IsSilent()) {
+            // 用户 2026-09-23 反馈：只说"数据盘"不知道是哪个盘 → 把盘符带上
+            std::wstring dataDrive = FindDataDrive();
+            std::wstring where = dataDrive.empty()
+                                     ? std::wstring(L"数据盘的 ZJRESTORE 目录")
+                                     : (dataDrive.substr(0, 1) + L": 盘的 ZJRESTORE 目录");
             if (MessageBoxW(m_hWnd,
-                    L"程序所在目录在要还原的系统盘上（或只读盘），\n"
-                    L"本次还原的日志将改放到数据盘的 ZJRESTORE 目录。\n是否继续？",
+                    (L"程序所在目录在要还原的系统盘上（或只读盘），\n"
+                     L"本次还原的日志将改放到 " + where + L"。\n是否继续？")
+                        .c_str(),
                     L"提示", MB_OKCANCEL | MB_ICONWARNING) != IDOK)
                 return;
         }
