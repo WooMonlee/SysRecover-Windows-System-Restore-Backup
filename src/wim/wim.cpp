@@ -495,4 +495,25 @@ int WimEngine::ImageSize(const std::wstring& imagePath, int index,
     return 0;
 }
 
+int WimEngine::ExtractPaths(const std::wstring& imagePath, int index,
+                            const std::vector<std::wstring>& paths,
+                            const std::wstring& destDir) {
+    if (!inited_ || paths.empty() || destDir.empty())
+        return -1;
+    WimHandle h;
+    WIMStruct* raw = nullptr;
+    int rc = wimlib_open_wim(imagePath.c_str(), 0, &raw);
+    if (rc != 0)
+        return rc;
+    h.w = raw;
+    std::vector<const wimlib_tchar*> cpaths;
+    cpaths.reserve(paths.size());
+    for (const auto& p : paths)
+        cpaths.push_back(p.c_str());
+    // flags=0：与 Apply 一致（Windows 上按普通目录模式写文件）。
+    // 路径支持通配符；wimlib 会保留镜像内的目录层级写到 destDir 下。
+    return wimlib_extract_paths(h.w, index, destDir.c_str(), cpaths.data(),
+                               cpaths.size(), 0);
+}
+
 }  // namespace sysrecover

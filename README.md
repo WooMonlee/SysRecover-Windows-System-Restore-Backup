@@ -157,6 +157,12 @@ SysRecover.exe backup --dest D:\backup\win10-20260920.esd --source C:/ ^
 - `--verify` 写完立即校验；`--name` 指定子镜像名
 - 目标已存在需 `--yes` 覆盖，或用 `--append` 追加为同一 WIM 里的新子镜像
 - 辅助命令：`images --file <镜像>` 列子镜像（含大小与日期）；`verify --image <镜像>` 单独校验
+- **从镜像里取单个文件**（不用整盘还原，先看看里面有什么 / 只捞一个文档出来）：
+  ```cmd
+  SysRecover.exe extract --file D:\backup\win10.esd --index 1 ^
+                         --path "\Users\*\Desktop\*.docx" --dest D:\out
+  ```
+  `--path` 可重复，支持通配符；文件按镜像里的目录层级落到 `--dest` 下。
 
 ### 案例 2 · 还原一个万能镜像到 C 盘
 

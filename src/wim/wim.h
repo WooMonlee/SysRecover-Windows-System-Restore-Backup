@@ -53,6 +53,13 @@ public:
     // 返回：0 成功；非 0 = wimlib 错误码（调用方自行决定是否阻断）。
     int ImageSize(const std::wstring& imagePath, int index,
                   unsigned long long* bytes);
+    // 从镜像里**提取指定路径**到 destDir（该目录必须已存在）。
+    // paths 用 Windows 风格、以 \ 开头，支持通配符，例如：
+    //   L"\\Windows\\win.ini"   L"\\Users\\*\\Desktop\\*.txt"
+    // 返回 0 成功；非 0 = wimlib 错误码。
+    int ExtractPaths(const std::wstring& imagePath, int index,
+                     const std::vector<std::wstring>& paths,
+                     const std::wstring& destDir);
 
     static const wchar_t* ErrorString(int code);
 
