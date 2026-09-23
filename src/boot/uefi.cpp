@@ -116,25 +116,6 @@ bool EnableEnvPrivilege(std::string& log) {
     return true;
 }
 
-int FirmwareTrustedUefiCas() {
-    std::string dummy;
-    EnableEnvPrivilege(dummy);  // 读固件变量需要 SeSystemEnvironmentPrivilege
-    std::vector<BYTE> buf(64 * 1024);
-    SetLastError(0);
-    DWORD len = GetFirmwareEnvironmentVariableW(
-        L"db", kGlobalGuid, buf.data(), static_cast<DWORD>(buf.size()));
-    if (len == 0)
-        return 0;  // 读不到（非 UEFI / 无权限 / 固件不给）
-    std::string s(reinterpret_cast<const char*>(buf.data()), len);
-    int mask = 0;
-    if (s.find("Microsoft Corporation UEFI CA 2011") != std::string::npos)
-        mask |= kFirmwareCa2011;
-    if (s.find("Microsoft UEFI CA 2023") != std::string::npos ||
-        s.find("Windows UEFI CA 2023") != std::string::npos)
-        mask |= kFirmwareCa2023;
-    return mask;
-}
-
 std::wstring VarName(int num) {
     wchar_t n[10];
     swprintf(n, 10, L"Boot%04X", num);
@@ -313,6 +294,27 @@ bool RemoveTree(const std::wstring& path) {
 }
 
 }  // namespace
+
+// P6：读固件 db，看它信任哪张微软 UEFI CA（只做字符串扫描 —— 证书的 CN 在 DER 里
+// 是明文）。**必须定义在匿名命名空间之外**（要对外链接给 CLI 的 diag 用）。
+int FirmwareTrustedUefiCas() {
+    std::string dummy;
+    EnableEnvPrivilege(dummy);  // 读固件变量需要 SeSystemEnvironmentPrivilege
+    std::vector<BYTE> buf(64 * 1024);
+    SetLastError(0);
+    DWORD len = GetFirmwareEnvironmentVariableW(
+        L"db", kGlobalGuid, buf.data(), static_cast<DWORD>(buf.size()));
+    if (len == 0)
+        return 0;  // 读不到（非 UEFI / 无权限 / 固件不给）
+    std::string s(reinterpret_cast<const char*>(buf.data()), len);
+    int mask = 0;
+    if (s.find("Microsoft Corporation UEFI CA 2011") != std::string::npos)
+        mask |= kFirmwareCa2011;
+    if (s.find("Microsoft UEFI CA 2023") != std::string::npos ||
+        s.find("Windows UEFI CA 2023") != std::string::npos)
+        mask |= kFirmwareCa2023;
+    return mask;
+}
 
 static bool BuildAndWrite(int num, const GUID& sig, DWORD partNum,
                           unsigned long long start, unsigned long long size,
