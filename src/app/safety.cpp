@@ -1,6 +1,8 @@
 // 还原安全检查实现。
 #include "safety.h"
 
+#include <windows.h>  // GetLogicalDrives / GetDriveTypeW（BitLocker 全盘扫描）
+
 #include <cstdlib>
 #include <cwctype>
 
@@ -45,6 +47,26 @@ bool IsBitLockerEncrypted(wchar_t letter) {
 
 }  // namespace
 
+// 全系统 BitLocker 扫描（用户规格 2026-09-23）—— 见 safety.h。
+std::vector<std::wstring> BitLockerVolumes() {
+    std::vector<std::wstring> out;
+    DWORD mask = GetLogicalDrives();
+    for (wchar_t c = L'A'; c <= L'Z'; ++c) {
+        if (!(mask & (1u << (c - L'A'))))
+            continue;
+        wchar_t root[4] = {c, L':', L'\\', 0};
+        UINT type = GetDriveTypeW(root);
+        if (type != DRIVE_FIXED && type != DRIVE_REMOVABLE)
+            continue;
+        if (IsBitLockerEncrypted(c)) {
+            std::wstring v(1, c);
+            v += L":";
+            out.push_back(v);
+        }
+    }
+    return out;
+}
+
 std::string CheckRestoreTarget(const PartitionInfo& p,
                                const std::wstring& imagePath) {
     if (p.isEsp)
@@ -57,8 +79,8 @@ std::string CheckRestoreTarget(const PartitionInfo& p,
         if (towupper(p.letter[0]) == towupper(imagePath[0]))
             return "拒绝：镜像在目标分区内，请先移走";
     }
-    if (!p.letter.empty() && IsBitLockerEncrypted(p.letter[0]))
-        return "拒绝：目标分区已启用 BitLocker";
+    // BitLocker 不再在这里硬拒绝（用户规格 2026-09-23）：改为"全系统扫描 + 提醒
+    // 用户可选继续/退出"，见 BitLockerVolumes() 以及 GUI/CLI 的提示。
     // GPT 目标：只有 UEFI 固件能引导（走 ESP 上的 bootmgfw + BCD）；BIOS 固件下
     // GRUB4DOS 那套链（grldr.mbr = 16 位实模式）在 GPT 上也没法用 → 仍拒绝。
     if (!p.guid.empty() && !IsUefiFirmware())
