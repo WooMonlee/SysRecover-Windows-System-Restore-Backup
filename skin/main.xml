@@ -81,7 +81,7 @@
              ② 不能用全透明 bkcolor：ui_skin.cpp:699 把 0 当"未设置"→画成白底 ✗，
                 这里用状态栏同色 #fafbfe（视觉隐形，hover 时 tint 一下仍能看出反馈）。
              URL 在 src/gui/main_form.cpp 的 kSiteUrl。 -->
-        <SkinButton name="SiteLink" float="true" pos="626,374,736,402" text="网站" fontsize="13" bkcolor="#FFFAFBFE" bordercolor="#FFFAFBFE" textcolor="#FF2B5CE0" />
+        <SkinButton name="SiteLink" float="true" pos="663,374,736,402" text="网站" fontsize="13" bkcolor="#FFFAFBFE" bordercolor="#FFFAFBFE" textcolor="#FF2B5CE0" />
 
         <!-- 备份模式备注输入（还原模式隐藏） -->
         <SkinEdit name="NoteInput" float="true" pos="249,116,710,136" fontsize="14" bordercolor="#FFC9D6F2" underline="true" textcolor="#FF1B2432" nativebkcolor="#FFFFFFFF" textpadding="10,5,10,5" visible="false" />

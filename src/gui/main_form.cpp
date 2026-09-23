@@ -323,9 +323,11 @@ bool CMainForm::AskBitLockerWarning(const std::vector<std::wstring>& vols) {
     LogInfo("BitLocker volumes detected: " + W2U(list));
     if (IsSilent())
         return true;
+    // 文案按用户 2026-09-23 的反馈断行（原第 2 行太长被右边裁掉）：
+    // 在"这些卷的数据在还原后"处加逗号换行，末尾挪到下一行。
     std::wstring msg = L"检测到本机有 BitLocker 加密的卷：" + list + L"\n" +
-                       L"如果你没有对应的密码 / 恢复密钥，这些卷的数据在还原后将无法恢复。\n" +
-                       L"是否继续还原？";
+                       L"如果你没有对应的密码 / 恢复密钥，这些卷的数据在还原后，\n" +
+                       L"将无法恢复。是否继续还原？";
     return CConfirmDlg::Ask2(m_hWnd, L"BitLocker 提醒", msg, L"退出", L"继续",
                              /*defaultIsRight=*/false) == 1;
 }
