@@ -65,6 +65,16 @@ int DiagText(std::string& out) {
         snprintf(buf, sizeof(buf), "[diag] uefi boot entry=%s (%s)\n",
                  installed ? "installed" : "not installed", detail.c_str());
         out += buf;
+        // P6：固件信任哪张微软 UEFI CA（决定我们的救援环境能不能起来）
+        int ca = sysrecover::FirmwareTrustedUefiCas();
+        snprintf(buf, sizeof(buf), "[diag] firmware db: CA2011=%s CA2023=%s\n",
+                 (ca & sysrecover::kFirmwareCa2011) ? "yes" : "no",
+                 (ca & sysrecover::kFirmwareCa2023) ? "yes" : "no");
+        out += buf;
+        if (ca && !(ca & sysrecover::kFirmwareCa2011) &&
+            (ca & sysrecover::kFirmwareCa2023))
+            out += "[diag] WARN: 本机固件只信任 CA2023，而我们的救援环境用 CA2011 "
+                   "签名 → 可能起不来（见 PLAN.md §11 备选 B/C）\n";
     }
     int rc = wimlib_global_init(0);
     snprintf(buf, sizeof(buf), "[diag] wimlib_global_init -> %d (%s)\n", rc,
