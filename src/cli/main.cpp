@@ -1,6 +1,7 @@
 ﻿// SysRecover CLI（Phase 0）：version / diag。完整命令见 AGENTS.md §9。
 // 退出码：0 成功，1 通用失败，2 参数错误（与 AGENTS.md §9 一致）。
 #include <windows.h>
+#include <shellapi.h>  // CommandLineToArgvW（P11：从宽命令行取参数）
 #include <shlobj.h>
 #include <chrono>
 #include <cstdio>
@@ -113,8 +114,37 @@ std::wstring ToWide(const std::string& s) {
     return w;
 }
 
-std::string Opt(const std::vector<std::string>& a, const char* key,
-                const std::string& def = "") {
+// 宽 → UTF-8（参数统一走 UTF-8）
+std::string W2U8(const std::wstring& w) {
+    if (w.empty())
+        return {};
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr,
+                                nullptr);
+    std::string s(n > 0 ? n - 1 : 0, 0);
+    if (n > 0)
+        WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, &s[0], n, nullptr,
+                            nullptr);
+    return s;
+}
+
+// 取命令行参数（**UTF-8**）—— P11。
+// 为什么不用 argv：C 运行时给的 argv 是 **ANSI**（当前代码页），而下游的 ToWide()
+// 是按 UTF-8 解的 → 中文路径被弄乱（实测 `images --file 中文.esd` 报
+// "Failed to open a file"）。改用 GetCommandLineW + CommandLineToArgvW 拿宽字符，
+// 再统一转成 UTF-8，整条链路就自洽了。
+std::vector<std::string> Utf8Args() {
+    std::vector<std::string> out;
+    int n = 0;
+    LPWSTR* w = CommandLineToArgvW(GetCommandLineW(), &n);
+    if (!w)
+        return out;
+    for (int i = 1; i < n; ++i)  // 跳过 argv[0]（exe 路径）
+        out.push_back(W2U8(w[i]));
+    LocalFree(w);
+    return out;
+}
+
+std::string Opt(const std::vector<std::string>& a, const char* key,                const std::string& def = "") {
     for (size_t i = 0; i + 1 < a.size(); ++i)
         if (a[i] == key)
             return a[i + 1];
@@ -525,8 +555,15 @@ int Usage() {
 
 }  // namespace
 
-int main(int argc, char** argv) {
-    std::vector<std::string> args(argv + 1, argv + argc);
+int main() {
+    // 控制台输出切到 UTF-8（否则中文提示在 GBK 控制台是乱码）；退出时还原原代码页。
+    struct CpGuard {
+        UINT out;
+        ~CpGuard() { SetConsoleOutputCP(out); }
+    } cpGuard{GetConsoleOutputCP()};
+    SetConsoleOutputCP(CP_UTF8);
+
+    std::vector<std::string> args = Utf8Args();
     if (args.empty())
         return Usage();
     std::wstring exeDir = sysrecover::ExeDir();
