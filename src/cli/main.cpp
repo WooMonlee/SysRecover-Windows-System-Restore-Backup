@@ -301,8 +301,25 @@ int CmdImages(const std::vector<std::string>& a) {
                     sysrecover::WimEngine::ErrorString(rc));
         return 1;
     }
-    for (const auto& img : list)
-        std::wprintf(L"%d | %ls\n", img.index, img.name.c_str());
+    for (const auto& img : list) {
+        // 大小 = 实际占用（TOTALBYTES−HARDLINKBYTES，见 PIT-073）；日期 = FILETIME→本地时间
+        wchar_t dateBuf[40] = L"";
+        if (img.creationTime) {
+            FILETIME ft, lft;
+            SYSTEMTIME st;
+            ft.dwLowDateTime = (DWORD)(img.creationTime & 0xFFFFFFFFull);
+            ft.dwHighDateTime = (DWORD)(img.creationTime >> 32);
+            if (FileTimeToLocalFileTime(&ft, &lft) &&
+                FileTimeToSystemTime(&lft, &st))
+                swprintf(dateBuf, 40, L"%04u-%02u-%02u %02u:%02u", st.wYear,
+                         st.wMonth, st.wDay, st.wHour, st.wMinute);
+        }
+        std::wprintf(L"%d | %ls | %.2f GB | %ls\n", img.index,
+                     img.name.c_str(), img.sizeBytes / 1073741824.0,
+                     dateBuf[0] ? dateBuf : L"-");
+        if (!img.description.empty())
+            std::wprintf(L"      %ls\n", img.description.c_str());
+    }
     return 0;
 }
 

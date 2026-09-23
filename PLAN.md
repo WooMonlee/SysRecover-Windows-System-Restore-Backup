@@ -309,7 +309,8 @@ tar.gz，可直接解包）组装：
 | **P5** | **SB：一键重启进固件设置** | ✅ 工程内**没有** `/fw` | `shutdown /r /fw /t 0`（Win10+/UEFI）→ 放在 SB 相关提示、引导安装失败处 | 1h |
 | **P6** | **SB：读固件 `db` 判断该用哪条链** | ✅ 可行：`uefi.cpp` 已有 `GetFirmwareEnvironmentVariableW` + 提权；`db` 里证书 CN 是**明文字符串** → 字符串扫描即可 | 安装/暂存前探测 → 显示"本机固件信任：CA2011 / CA2023 / 两者"；若**只信 CA2023** 而我们的链是 CA2011 → **提前明确提示**（别让用户重启后才懵）。与 §11 的 B/C 配合 | 半天 |
 | **P9** | **文件级提取** | ⚠️ **修正**：子镜像浏览/选择**已有**（GUI 下拉、`images`、`restore --index N`）；缺的只是**文件级** | `WimEngine::ExtractPaths(path,index,pattern,dest)`（`wimlib_extract_paths`）+ CLI `extract --image X --index N --path "\Windows\..." --dest D:\out`；GUI 树留以后 | 半天 |
-| **P10** | **镜像信息展示** | ✅ `ImageDesc` 目前只有 `{index,name}` | `images` 输出加**未压缩大小/日期/描述**；GUI 下拉显示 `Index - Name（大小）`（与 P1 共用新 API）| 2~3h |
+| **P10** | **镜像信息展示** | ✅ `ImageDesc` 目前只有 `{index,name}` | ✅ **已完成（`0.1.7`）**：`images --file` 现在输出 `序号 \| 名称 \| 实际占用大小 \| 创建日期` + 描述行；GUI 下拉显示 `Index - Name（大小）`。⚠️ 小尾巴：**创建日期还没解析出来**（显示 `-`，`CREATIONTIME` 的 HIGHPART/LOWPART 待查），不影响使用 | 2~3h |
+| **P11** | **CLI 中文路径**（做 P10 时发现）| ✅ 真 bug：CLI 的参数来自控制台 argv（**ANSI**），`ToWide` 按 UTF-8 解 → **中文路径被打乱**，`images --file 中文.esd` 直接 "Failed to open a file" ✗（GUI 内部走宽串，不受影响）| 用 `GetCommandLineW` + `CommandLineToArgvW` 取宽字符 argv（Win32 标准做法）；顺带把 README 里写错的 `images --image` 改成 `--file`（已改）| 1~2h |
 | **P7** | **备份/还原历史记录** | ✅ 无 | 追加写 `logs/history.jsonl`（时间/类型/镜像/目标/结果/耗时/版本）+ CLI `history` 读取；GUI 列表以后 | 2~3h |
 | **P8** | **失败提示给"下一步"** | ✅ 现在只给错误文本 | 把常见错误（rc=4/5/84/88、空间不足、BitLocker、未装引导）映射成**可操作建议**（含"跨硬件还原建议先 sysprep"）→ CLI + GUI 弹窗正文 | 2~3h |
 
@@ -326,6 +327,16 @@ tar.gz，可直接解包）组装：
 | 定时备份 / 企业 MOK | ⏸️ **留作将来** | §12 保留条目 |
 | 兼容性矩阵 | ✅ **转测试**（不是开发）| 并入 `docs/07` 待测清单：Hyper-V / VirtualBox / Win8.1 / Server 版 / 4Kn 扇区 |
 
-### 13.3 实施顺序
+### 13.3 实施顺序（2026-09-21 重排：按"代码相关性 + 价值/风险"分组，减少来回切换）
 
-`P1`（安全）→ `P3`（排错效率）→ `P4`（体验，便宜）→ `P2`（兼容，需谨慎）→ `P5`+`P6`（SB 一组）→ `P9`+`P10`（共用 wim API）→ `P7`+`P8`（体验收尾）
+1. ✅ **P1** 空间预检（安全；已完成 `0.1.6`）
+2. **P10 镜像信息展示**（顺手把 P1 的 wim API 暴露出来 → **P1 的数值可被验证**；改动小）
+3. **P9 文件级提取**（与 P10 同一套 wim API，一起做省一次上下文）
+4. **P3 诊断包**（排错效率，独立）
+5. **P4 速度/ETA**（体验，便宜）
+6. **P2 BitLocker**（兼容，需谨慎）
+7. **P8 失败提示给"下一步"**（紧跟 P2：把 BitLocker/空间/坏镜像等错误都配上可操作建议）
+8. **P5 SB 一键重启进固件设置** + **P6 SB 读 `db` 判断该用哪条链**（一组）
+9. **P7 备份/还原历史记录**（收尾）
+
+> 每项完成后：`python tools/version.py --bump` → 提交 → 推送；并在本表把该项标 ✅ + 版本号。

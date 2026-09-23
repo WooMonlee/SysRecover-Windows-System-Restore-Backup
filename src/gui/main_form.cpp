@@ -678,7 +678,8 @@ void CMainForm::LoadWimImages(const std::wstring& path) {
         // 注意：MinGW 下 swprintf 的 %s 当**窄**字符串用（PIT-007）—— 传 wchar_t*
         // 会在第一个字符的高字节 0x00 处截断（症状：镜像名只剩首字母 "1 - W"）。
         // 宽字符串必须用 %ls。
-        swprintf(buf, 512, L"%d - %ls", img.index, img.name.c_str());
+        swprintf(buf, 512, L"%d - %ls（%.1f GB）", img.index, img.name.c_str(),
+                 img.sizeBytes / 1073741824.0);
         item->SetText(buf);
         pCombo->Add(item);
         m_imgIdx.push_back(img.index);
