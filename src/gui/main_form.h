@@ -59,6 +59,8 @@ private:
     void RefreshBootMenuBtn();   // 按是否已安装刷新按钮文字
     void RebootNow();
     bool AskBusyClose();          // 忙时关闭：true = 用户选了「终止并退出」
+    // BitLocker 提醒（有加密卷时提醒"没密钥则数据无法恢复"）：true = 继续
+    bool AskBitLockerWarning(const std::vector<std::wstring>& vols);
     void CancelAndExit();         // 中止 worker → 清理未完成镜像 → 关窗
     void CleanupIncompleteOutput();
     bool IsSilent();   // 「静默模式」勾选态

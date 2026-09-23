@@ -308,6 +308,28 @@ bool CMainForm::AskBusyClose() {
     return r != 0;  // 0 = 继续等待
 }
 
+// BitLocker 提醒（用户规格 2026-09-23）：有加密卷时提醒"没密钥则数据无法恢复"，
+// 用户可选继续/退出（默认**退出**=安全项）。返回 true = 继续。
+// 静默模式跳过弹框（无人值守），但仍写一条日志。
+bool CMainForm::AskBitLockerWarning(const std::vector<std::wstring>& vols) {
+    if (vols.empty())
+        return true;
+    std::wstring list;
+    for (size_t i = 0; i < vols.size(); ++i) {
+        if (i)
+            list += L"、";
+        list += vols[i];
+    }
+    LogInfo("BitLocker volumes detected: " + W2U(list));
+    if (IsSilent())
+        return true;
+    std::wstring msg = L"检测到本机有 BitLocker 加密的卷：" + list + L"\n" +
+                       L"如果你没有对应的密码 / 恢复密钥，这些卷的数据在还原后将无法恢复。\n" +
+                       L"是否继续还原？";
+    return CConfirmDlg::Ask2(m_hWnd, L"BitLocker 提醒", msg, L"退出", L"继续",
+                             /*defaultIsRight=*/false) == 1;
+}
+
 void CMainForm::CancelAndExit() {
     if (m_cancelling)
         return;
@@ -402,9 +424,13 @@ void CMainForm::Notify(TNotifyUI& msg) {
         } else if (name == _T("BootMenuBtn")) {
             ToggleBootMenu();
         } else if (name == _T("SiteLink")) {
-            // 右下角「网站」链接 → 用系统默认浏览器打开
-            ::ShellExecuteW(nullptr, L"open", kSiteUrl, nullptr, nullptr,
-                            SW_SHOWNORMAL);
+            // 【临时·仅为演示】借这个按钮把 BitLocker 提醒框弹出来看看（假数据）。
+            // 看完后改回打开网站 —— 把下面 ShellExecuteW 那行的注释去掉、删掉
+            // AskBitLockerWarning 那两行即可。
+            std::vector<std::wstring> fake = {L"C:", L"D:"};
+            AskBitLockerWarning(fake);
+            // ::ShellExecuteW(nullptr, L"open", kSiteUrl, nullptr, nullptr,
+            //                 SW_SHOWNORMAL);
         } else if (name == _T("MinBtn")) {
             SendMessage(WM_SYSCOMMAND, SC_MINIMIZE, 0);
         }
@@ -719,30 +745,9 @@ void CMainForm::StartRestore() {
         SetStatus(L"请选择目标分区"); return;
     }
     const PartitionInfo& part = m_parts[m_selPart];
-    // BitLocker 提醒（用户规格 2026-09-23）：**只要系统里有加密卷**就提醒 ——
-    // 加密卷若没有密码/恢复密钥，还原后数据将无法恢复；用户可选继续或退出。
-    // 默认项是「退出」（安全项）。静默模式跳过（无人值守），但仍写日志。
-    {
-        auto bl = sysrecover::BitLockerVolumes();
-        if (!bl.empty()) {
-            std::wstring vols;
-            for (size_t i = 0; i < bl.size(); ++i) {
-                if (i)
-                    vols += L"、";
-                vols += bl[i];
-            }
-            LogInfo("restore: BitLocker volumes detected: " + W2U(vols));
-            if (!IsSilent()) {
-                std::wstring msg =
-                    L"检测到本机有 BitLocker 加密的卷：" + vols + L"\n" +
-                    L"如果你没有对应的密码 / 恢复密钥，这些卷的数据在还原后将无法恢复。\n" +
-                    L"是否继续还原？";
-                if (CConfirmDlg::Ask2(m_hWnd, L"BitLocker 提醒", msg, L"退出",
-                                      L"继续", /*defaultIsRight=*/false) != 1)
-                    return;
-            }
-        }
-    }
+    // BitLocker 提醒（用户规格 2026-09-23）：**只要系统里有加密卷**就提醒。
+    if (!AskBitLockerWarning(sysrecover::BitLockerVolumes()))
+        return;
     // 非静默模式：只弹一个选择框（退出 / 退出并重启）——选定后暂存并自动重启，
     // 不再有额外的成功提示框，也不弹关机通知。静默模式：不弹框，直接暂存并重启。
     if (!IsSilent()) {
