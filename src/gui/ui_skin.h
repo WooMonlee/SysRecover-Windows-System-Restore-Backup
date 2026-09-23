@@ -251,6 +251,8 @@ public:
 
 private:
     void ApplyNativeFont();
+    // 把原生 EDIT 子窗口里的文本同步回控件（失焦后是控件自绘，见 DoPaint）
+    void SyncTextFromNative();
     // 原生 EDIT 子窗口只接受文件拖放还不够（默认 WndProc 会吞掉 WM_DROPFILES），
     // 这里给它挂一个子类过程，把 WM_DROPFILES 原样转投给顶层窗口统一处理。
     void EnsureDropTarget();
