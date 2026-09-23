@@ -36,6 +36,12 @@ int RunBackup(const BackupRequest& req, ProgressFn progress, std::string& err);
 // 判据：目标不是正在运行的系统盘，且能对目标卷加独占锁（FSCTL_LOCK_VOLUME）。
 bool CanRestoreInPlace(const PartitionInfo& target, std::string& why);
 
+// 还原前**空间预检**（P1）：镜像的**未压缩**内容大小 vs 目标分区大小。
+// 必须在"格式化之前"拦下，否则会出现"数据没了、系统也没装上"（先格式化再 apply）。
+// 返回：0 = 够（或无法判定 → 不阻断，让流程继续）；1 = 空间不足（err=给用户看的说明）。
+int CheckRestoreSpace(const std::wstring& imagePath, int index,
+                      const PartitionInfo& target, std::string& err);
+
 // 还原。**两种执行方式自动选择**（PIT-064）：
 //   * 目标分区**没被占用**时（在 PE 里、或目标是别的分区）→ 就地还原：格式化 +
 //     apply + 修引导，**不重启**（needReboot=false）；

@@ -1,6 +1,8 @@
 // WIM 引擎实现：libwim C API 直连。
 #include "wim.h"
 
+#include <windows.h>  // WideCharToMultiByte（XML 是 UTF-16LE，见 ImageSize）
+
 #include <windows.h>
 
 #include <cstdio>
@@ -299,6 +301,81 @@ int WimEngine::ListImages(const std::wstring& imagePath,
             d.name = name;
         out.push_back(std::move(d));
     }
+    return 0;
+}
+
+int WimEngine::ImageSize(const std::wstring& imagePath, int index,
+                         unsigned long long* bytes) {
+    if (!inited_ || !bytes)
+        return -1;
+    *bytes = 0;
+    WimHandle h;
+    WIMStruct* raw = nullptr;
+    int rc = wimlib_open_wim(imagePath.c_str(), 0, &raw);
+    if (rc != 0)
+        return rc;
+    h.w = raw;
+    // 说明：打包的 wimlib.h（1.14）没有 wimlib_get_image_info()，
+    // 但每个子镜像的**未压缩**总大小就在 WIM 元数据 XML 的 <TOTALBYTES> 里，
+    // 用 wimlib_get_xml_data() 取出来自己解析（顶层也有一个 TOTALBYTES，是整包大小，
+    // 所以必须从 <IMAGE INDEX="N"> 之后开始找）。
+    void* buf = nullptr;
+    size_t n = 0;
+    rc = wimlib_get_xml_data(h.w, &buf, &n);
+    if (rc != 0 || !buf || n == 0)
+        return rc != 0 ? rc : -1;
+    // 重要：wimlib 返回的 XML 是 **UTF-16LE**（WIM 元数据的原生编码），不是 UTF-8。
+    // 实测（ctypes 直调 libwim-15.dll）：每个字符后跟 0x00。若按窄串直接找标签会
+    // **静默失败**（返回 -1 → 预检被跳过，形同虚设），所以这里先统一转成窄串。
+    std::string xml;
+    if (n >= 2 && static_cast<const char*>(buf)[1] == 0) {
+        std::wstring w(static_cast<const wchar_t*>(buf), n / 2);
+        int need = WideCharToMultiByte(CP_UTF8, 0, w.c_str(),
+                                       static_cast<int>(w.size()), nullptr, 0,
+                                       nullptr, nullptr);
+        if (need > 0) {
+            xml.resize(static_cast<size_t>(need));
+            WideCharToMultiByte(CP_UTF8, 0, w.c_str(),
+                                static_cast<int>(w.size()), &xml[0], need,
+                                nullptr, nullptr);
+        }
+    } else {
+        xml.assign(static_cast<const char*>(buf), n);
+    }
+    free(buf);  // XML 缓冲区由 wimlib 用 malloc 分配 → 必须用 free()
+    // （注意：wimlib_free() 是释放 WIMStruct 的，不是通用释放器）
+    if (xml.empty())
+        return -1;
+    // 定位子镜像段落：<IMAGE INDEX="N" ...> … </IMAGE>
+    char tag[64];
+    snprintf(tag, sizeof(tag), "<IMAGE INDEX=\"%d\"", index);
+    size_t p = xml.find(tag);
+    if (p == std::string::npos)
+        return -1;
+    size_t end = xml.find("</IMAGE>", p);
+    std::string seg =
+        xml.substr(p, end == std::string::npos ? std::string::npos : end - p);
+    auto field = [&seg](const char* open) -> unsigned long long {
+        size_t t = seg.find(open);
+        if (t == std::string::npos)
+            return 0;
+        t += strlen(open);
+        size_t e = seg.find("</", t);
+        if (e == std::string::npos)
+            return 0;
+        return strtoull(seg.substr(t, e - t).c_str(), nullptr, 10);
+    };
+    // 真正会占用的空间 = TOTALBYTES − HARDLINKBYTES：
+    //   TOTALBYTES 把硬链接**按独立文件**计数，HARDLINKBYTES 是其中"重复"的那部分；
+    //   目标分区上硬链接只占一份 → 相减才是真正要写的量。
+    //   实测校准（本机测试镜像）：10.16GB − 5.09GB = 5.07GB，与救援层 apply 日志的
+    //   "Extracting file data: 5188 MiB"(=5.07GB) **完全一致**。若直接用 TOTALBYTES
+    //   会高估近一倍 → 误拒本来装得下的还原。
+    unsigned long long total = field("<TOTALBYTES>");
+    unsigned long long hard = field("<HARDLINKBYTES>");
+    if (total == 0)
+        return -1;
+    *bytes = (hard && hard < total) ? total - hard : total;
     return 0;
 }
 

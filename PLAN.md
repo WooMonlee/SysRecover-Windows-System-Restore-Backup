@@ -302,7 +302,7 @@ tar.gz，可直接解包）组装：
 
 | # | 事项 | 核实结论 | 做法 | 工作量 |
 |---|---|---|---|---|
-| **P1** | **还原前空间预检** | ✅ **真问题**：就地还原与救援层都是**先格式化再 apply**，全工程**无任何**目标空间检查（只有 ESP 空间检查，是另一回事）→ 空间不够会"数据没了、系统也没装上" | ① 新增 `WimEngine::ImageSize(path,index,&bytes)`（`wimlib_get_image_info` → `total_bytes` = **未压缩**内容大小）；② **暂存阶段**（Windows 侧，重启前）用 `bytes×1.05 + 200MB` 对比目标分区**总大小** → 不够就拒绝（退出码 4）；③ **就地还原**对比目标卷**可用空间**（`GetDiskFreeSpaceExW`）；④ **救援层兜底**：`mkntfs` 前用 img 大小对比分区大小 | 半天 |
+| **P1** | **还原前空间预检** | ✅ **真问题**：就地还原与救援层都是**先格式化再 apply**，全工程**无任何**目标空间检查（只有 ESP 空间检查，是另一回事）→ 空间不够会"数据没了、系统也没装上" | ✅ **已完成（`0.1.6`）**：新增 `WimEngine::ImageSize()`（解析 WIM 元数据 XML，坑见 AGENTS **PIT-073**：UTF-16LE + 必须减 HARDLINKBYTES）+ `CheckRestoreSpace()` 插在**安全门禁之后、格式化之前**（暂存/就地两条路都覆盖）；估算法 = 内容量 ×1.10 + 300MB | 半天 |
 | **P3** | **一键导出诊断包** | ✅ 现在没有任何打包能力，排错一直靠人工收集 | 新 `diag --zip [--out x.zip]` + GUI 按钮；内容 = `logs/*` + `diag` 输出 + `restore-task.conf/.json` + 目标根 `_zjresy*.log`（可读时）+ `version.json`。实现**自写最小 ZIP（store 模式、不压缩、零依赖）**，备选 COM `Shell.Application` | 半天 |
 | **P4** | **速度 / ETA** | ⚠️ **修正**：CLI 也**没有**（只有已用时间）→ 两边都要加 | 进度回调里已有 `completed_bytes/total_bytes` → 算 MB/s 与剩余时间；CLI 一行刷新 + GUI 状态栏 | 2~3h |
 | **P2** | **BitLocker：从"拒绝"到"能办"（v1）** | ✅ 现状：`safety.cpp` 用 `manage-bde -status` 检测到加密就**直接拒绝** | v1 = **带指引的确认**：说明"目标盘启用了 BitLocker，需先挂起保护"，给「帮我挂起并继续」→ 执行 `manage-bde -protectors -disable <L>: -rebootcount 1`；并提示"若中止还原，记得 `-protectors -enable <L>:` 恢复保护"。**v2**（以后）才做完整自动化（含恢复密钥） | 半天 |
