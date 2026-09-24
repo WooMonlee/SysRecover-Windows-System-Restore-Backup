@@ -32,7 +32,8 @@
 | 分区管理 / 调整分区 / 克隆磁盘 | 我们不做磁盘工具，只处理"把系统写回去"这件事 |
 | 数据恢复 | 不做 |
 | **多点还原 / 差分秒还原** | 这条产品线**没有**，也不打算加（那是另一个产品线的事） |
-| 32 位系统 | ✅ **支持**：Windows 侧**跟随系统位数**（32 位系统跑 x86、64 位系统跑 x64），发布包根目录的启动器自动选；**Linux 救援层固定 x64** |
+| **32 位系统** | ✅ **支持**：Windows 侧**跟随系统位数**（32 位系统跑 x86、64 位系统跑 x64），发布包根目录的启动器自动选；**Linux 救援层固定 x64** |
+| **Windows 2003 / XP / Vista 及更早** | ✗ **不支持**（UCRT 最低 Vista SP2 / Win7 SP1+；见「已知限制」）|
 
 ---
 
@@ -248,8 +249,9 @@ skin/ resources/ version.json THIRD_PARTY_LICENSES.txt
   "只信 CA2023 的新固件"仍**待真机验证**。
 - **Windows 7 零安装**：exe 与 `libwim-15.dll` 依赖 **UCRT**（Win7 无内置）→ 发布包**已随带 x64/x86 两套 UCRT**
   （`third_party/ucrt/{x64,x86}`，`make package` 自动分发），Win7 无需另装 VC++ 运行库。
-- **Windows 2003 / XP / Vista 不支持**：exe 依赖 **UCRT**（要求 **Win7 SP1+**），且产品目标矩阵就是 Win7 / Win10 / Win11 / WinPE。
-  实测 Win2003 会报 `找不到 api-ms-win-core-errorhandling-l1-1-0.dll`（UCRT API set 不存在）。
+- **Windows 2003 / XP / Vista 及更早版本不支持**（含 Server 2003）：exe 依赖 **UCRT**（微软 UCRT 可再发行仅覆盖
+  Vista SP2 / Win7 SP1+ / Server 2008 R2 SP1+，**不含 2003/XP**），且官方 `libwim-15.dll` 也依赖 UCRT。
+  实测 Win2003 报 `找不到 api-ms-win-core-errorhandling-l1-1-0.dll`。产品支持矩阵为 **Win7 / Win10 / Win11 / WinPE**。
 - **Win7 作目标 + UEFI 固件不稳**：Win7 的 UEFI 支持本身很弱，且 UEFI 还原时我们**不重刷 ESP 上的引导文件版本**
   （救援层在 Linux，跑不了 `bcdboot`）→ 实测在"按 Win10 配的 UEFI VM"里还原 Win7 会出现**引导循环**。
   **建议 Win7 目标走 BIOS/MBR**（Win7 的主流形态）。已列入待办（见 `docs/14` §3：还原后首次启动刷 `bcdboot`）。
