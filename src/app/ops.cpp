@@ -175,6 +175,14 @@ bool CanRestoreInPlace(const PartitionInfo& t, std::string& why) {
         why = "目标是正在运行的系统盘（必须重启后脱机还原）";
         return false;
     }
+    // 用户规格（2026-09-23）：**PE 里只要目标不是正在运行的系统盘，就应该就地还原**，
+    // 不重启也不提示重启。PE 下目标分区通常并没被真正使用，但 FSCTL_LOCK_VOLUME 仍
+    // 可能因各种句柄失败 → 会误判成"必须重启"（用户实测踩到）。所以 PE 下直接放行；
+    // 正常 Windows 仍用卷锁判定，只有真的锁不上（分区被占用、无法就地还原）才提示重启。
+    if (IsWinPE()) {
+        why = "在 PE 中运行（目标非运行系统盘）→ 就地还原";
+        return true;
+    }
     std::wstring dev = L"\\\\.\\" + t.letter + L":";
     HANDLE h = CreateFileW(dev.c_str(), GENERIC_READ | GENERIC_WRITE,
                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
