@@ -61,7 +61,7 @@ MBR → bootmgr → BCD「实模式启动扇区」条目(device=<目标盘>: pat
 - 救援文件部署到**目标分区**（通常 C:）：`grldr`/`grldr.mbr`/`menu.lst` 在根目录，
   其余进 `<目标>\ZJRESTORE\{boot,scripts,bootfix,logs}`；**数据盘根目录保持干净**（PIT-059）。
 - 还原成功 → 目标分区被格式化 → 目标盘上的救援文件自然消失（常驻的 ESP 模块除外）。
-- **UEFI+SB 的 ESP 模块常驻**：`<ESP>\EFI\ZJRESTORE\`（约 50MB：内核 14 + initramfs 33 + GRUB/shim 4），
+- **UEFI+SB 的 ESP 模块常驻**：`<ESP>\EFI\ZJRESTORE\`（约 36MB：内核 11.6 + initramfs 20.5 + GRUB/shim 3.9），
   开机启动菜单里可随时进救援；只有「删除启动还原」才清。
 - **恢复旧文件**：部署前先清空自己的目录，避免不同引导方式的历史文件把 ESP 塞满（PIT-063 附带修复）。
 

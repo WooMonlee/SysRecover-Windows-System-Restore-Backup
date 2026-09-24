@@ -69,7 +69,7 @@ Start-Sleep -Seconds 2
 $txt = Get-Content $log -Raw -Encoding UTF8
 $pass1 = $txt.Contains("SR: modules loaded")
 $pass2 = $txt.Contains("restore")
-$pass3 = $txt.Contains("Linux version 6.8.0-31-generic")
+$pass3 = $txt.Contains("Linux version 6.12.107")
 Write-Host ("ubuntu kernel booted    : {0}" -f $pass3)
 Write-Host ("rescue init ran         : {0}" -f $pass1)
 Write-Host ("log                     : $log")

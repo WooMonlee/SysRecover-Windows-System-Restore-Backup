@@ -13,6 +13,9 @@ initrd 按 UEFI 规则不校验，所以**我们的用户态不用换**。
   1. Debian 只发 **一个包**（`linux-image-<abi>-amd64` = 内核 + **全部 4225 个模块**，89MB）
      没有 Ubuntu 那种 base/extra 之分 → 这里**按路径白名单裁剪**到存储/文件系统相关
      （否则 initramfs 会从 34MB 涨到 ~90MB），依赖闭包仍自动补齐。
+     **2026-09-24（PIT-079）再加一层 EXCLUDE_PREFIXES**：白名单里 `kernel/fs/` 是整
+     目录，会把网络/集群/嵌入式文件系统全拉进来；剔除后模块 779→约 490、省 ~15.7MB。
+     另补 EXTRA_KEEP = USB HID（救援 shell 的 USB 键盘；PS/2 那套是内核内建的）。
   2. 模块是 **`.ko.xz`**，统一转成 **`.ko.gz`**（busybox modprobe 走 gzip —— 现在的
      Ubuntu 版就是这么跑的，已验证），用 Python 自带的 `lzma`/`gzip`，不需要外部工具。
   3. `modules.dep` 依然自己生成（Debian 的包不含它）。
@@ -55,6 +58,80 @@ KEEP_PREFIXES = [
     'kernel/drivers/gpu/drm/tiny/',
     'kernel/fs/', 'kernel/lib/', 'kernel/crypto/', 'kernel/arch/x86/',
 ]
+
+# 明确排除（对**白名单命中**与**依赖闭包**两处同时生效）。
+# 依据 2026-09-24 调研（AGENTS.md PIT-079）：下列模块对"本地盘 Windows 还原"完全
+# 用不到，删掉可省 ~15.7MB（.ko.gz）。已逐条校验"没有保留模块依赖被排除模块"，
+# 且构建期有**断言**兜底（真冲突会直接报错，不会静默产出坏包）。
+EXCLUDE_PREFIXES = [
+    # 网络文件系统（镜像不通过网络盘）
+    'kernel/fs/nfs/', 'kernel/fs/nfsd/', 'kernel/fs/nfs_common/', 'kernel/fs/smb/',
+    'kernel/fs/ceph/', 'kernel/fs/afs/', 'kernel/fs/9p/', 'kernel/fs/cachefiles/',
+    'kernel/fs/netfs/',
+    # 集群/Unix 系文件系统
+    'kernel/fs/ocfs2/', 'kernel/fs/gfs2/', 'kernel/fs/dlm/', 'kernel/fs/lockd/',
+    'kernel/fs/jfs/', 'kernel/fs/reiserfs/', 'kernel/fs/nilfs2/', 'kernel/fs/ubifs/',
+    'kernel/fs/jffs2/', 'kernel/fs/hfs/', 'kernel/fs/hfsplus/', 'kernel/fs/erofs/',
+    'kernel/fs/squashfs/', 'kernel/fs/zonefs/', 'kernel/fs/orangefs/', 'kernel/fs/ecryptfs/',
+    'kernel/fs/coda/', 'kernel/fs/ufs/', 'kernel/fs/sysv/', 'kernel/fs/minix/',
+    'kernel/fs/befs/', 'kernel/fs/adfs/', 'kernel/fs/omfs/', 'kernel/fs/freevxfs/',
+    'kernel/fs/qnx4/', 'kernel/fs/qnx6/', 'kernel/fs/bfs/', 'kernel/fs/efs/',
+    'kernel/fs/hpfs/', 'kernel/fs/affs/', 'kernel/fs/romfs/', 'kernel/fs/vboxsf/',
+    'kernel/fs/ntfs/',        # 老只读 ntfs 驱动（我们走 ntfs3 / ntfs-3g）
+    'kernel/fs/fuse/',        # fuse 本身内建（CONFIG_FUSE_FS=y），这里的 cuse 不需要
+    # 用不到的通用 fs
+    'kernel/fs/overlayfs/', 'kernel/fs/autofs/', 'kernel/fs/efivarfs/',
+    'kernel/fs/pstore/', 'kernel/fs/binfmt_misc',
+    # 虚拟化/媒体/声音/IB/测试
+    'kernel/arch/x86/kvm/', 'kernel/drivers/media/', 'kernel/sound/',
+    'kernel/drivers/infiniband/', 'kernel/drivers/target/', 'kernel/drivers/parport/',
+    'kernel/lib/test_', 'kernel/lib/notifier-error-inject',
+    'kernel/lib/pm-notifier-error-inject', 'kernel/lib/memory-notifier-error-inject',
+    'kernel/lib/test_static_key', 'kernel/crypto/tcrypt',
+    # 网络存储（NVMe-oF / iSCSI / FCoE offload）—— 本地盘还原用不到，
+    # 但它们会经闭包拉进 drivers/net、infiniband、target、libfc 一大串
+    'kernel/drivers/net/',
+    'kernel/drivers/nvme/host/nvme-rdma', 'kernel/drivers/nvme/host/nvme-tcp',
+    'kernel/drivers/nvme/target/nvmet-rdma', 'kernel/drivers/nvme/target/nvmet-tcp',
+    'kernel/drivers/scsi/be2iscsi/', 'kernel/drivers/scsi/bnx2fc/',
+    'kernel/drivers/scsi/bnx2i/', 'kernel/drivers/scsi/qla4xxx/',
+    'kernel/drivers/scsi/cxgbi/', 'kernel/drivers/scsi/fcoe/',
+    'kernel/drivers/scsi/fnic/', 'kernel/drivers/scsi/qedf/',
+    'kernel/drivers/scsi/qedi/', 'kernel/drivers/scsi/libfc/',
+    'kernel/drivers/scsi/iscsi_boot_sysfs', 'kernel/drivers/scsi/iscsi_tcp',
+    'kernel/drivers/scsi/libiscsi', 'kernel/drivers/scsi/scsi_transport_iscsi',
+    'kernel/drivers/scsi/qla2xxx/tcm_qla2xxx',
+    'kernel/drivers/firmware/iscsi_ibft',
+    # USB 设备端(gadget)/Type-C/串口/摄像头等（还原用不到）
+    'kernel/drivers/usb/typec/', 'kernel/drivers/usb/gadget/',
+    'kernel/drivers/usb/dwc3/', 'kernel/drivers/usb/usbip/',
+    'kernel/drivers/usb/misc/', 'kernel/drivers/usb/class/',
+    'kernel/drivers/usb/serial/', 'kernel/drivers/usb/atm/',
+    'kernel/drivers/usb/image/',
+    # 与磁盘无关的块/md
+    'kernel/drivers/block/null_blk', 'kernel/drivers/md/md-cluster',
+    # DRM/KMS：Debian 的 efifb/simplefb/FRAMEBUFFER_CONSOLE **内建**
+    # （CONFIG_FB_EFI/FB_SIMPLE=y），控制台不需要 KMS。（PIT-061 是 Alpine 内核
+    # 的特有问题——它 SYSFB_SIMPLEFB=y 会顶掉 efifb，Debian 不存在。）
+    'kernel/drivers/gpu/drm/tiny/',
+]
+
+# 精确补收：不在 KEEP_PREFIXES 里、但救援 shell 需要 —— **USB 键盘/鼠标**。
+# PS/2 那套（atkbd/i8042/libps2/serio/input-core）在 Debian 内核里是内建的，
+# 只有 USB HID 需要模块（hid → usbhid/hid-generic，闭包自动带 usbcore）。
+EXTRA_KEEP = [
+    'kernel/drivers/hid/hid.ko.xz',
+    'kernel/drivers/hid/hid-generic.ko.xz',
+    'kernel/drivers/hid/usbhid/usbhid.ko.xz',
+]
+
+
+def is_keep(rel):
+    return rel in EXTRA_KEEP or any(rel.startswith(p) for p in KEEP_PREFIXES)
+
+
+def is_excluded(rel):
+    return any(rel.startswith(p) for p in EXCLUDE_PREFIXES)
 
 
 def log(m):
@@ -160,10 +237,10 @@ def stage_debian_modules(zj, mod_root):
         zj.MODES[outrel] = 0o644
         rels.append(outrel)
 
-    # 2) 白名单命中者
+    # 2) 白名单命中者（+ EXTRA_KEEP），排除清单在此直接过滤
     queue, nkeep = [], 0
     for name, rel in sorted(all_files.items()):
-        if any(rel.startswith(p) for p in KEEP_PREFIXES):
+        if is_keep(rel) and not is_excluded(rel):
             write_module(rel)
             nkeep += 1
         else:
@@ -176,6 +253,7 @@ def stage_debian_modules(zj, mod_root):
     for rel in list(rels):
         pending.update(deps.get(rel, []))
     added = 0
+    blocked = []
     while pending:
         name = pending.pop()
         if name in name2rel:
@@ -183,10 +261,28 @@ def stage_debian_modules(zj, mod_root):
         rel = all_files.get(name)
         if not rel:
             continue  # 内建模块 / 不在包里
+        if is_excluded(rel):
+            blocked.append(name)   # 被保留模块需要，却被排除 → 构建期直接报错
+            continue
         write_module(rel)
         added += 1
         pending.update(deps.get(name2rel[name], []))
     log('debian: + 依赖闭包 %d 个，共 %d 个模块' % (added, len(rels)))
+
+    # 4) 断言（fail-fast，避免静默产出缺依赖的坏包）：
+    #    a) 不能有"被排除但被保留模块需要"的模块；
+    #    b) 每个保留模块的依赖必须都在包内（不在 all_files 里 = 内建，允许）。
+    if blocked:
+        raise RuntimeError('EXCLUDE 与依赖冲突，被保留模块需要: %s'
+                           % ', '.join(sorted(set(blocked))))
+    missing = []
+    for rel in rels:
+        for d in deps.get(rel, []):
+            if d not in name2rel and d in all_files:
+                missing.append('%s <- %s' % (d, rel))
+    if missing:
+        raise RuntimeError('依赖缺失（构建错误）: %s'
+                           % ', '.join(sorted(set(missing))[:10]))
 
     # modules.dep（必须**二进制**写：见 build-ubuntu-rescue.py 里的注释，\r 会让
     # busybox modprobe 报 "not found in modules.dep"）
