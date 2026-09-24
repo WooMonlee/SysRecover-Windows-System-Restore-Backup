@@ -67,7 +67,7 @@
 | libwim 引入 | 预编译 `wimlib.h + libwim.lib + libwim-15.dll` 放 `third_party/wimlib/`；运行时 DLL 与 EXE 同目录分发；**严禁静态链接 libwim，严禁抄 `wimlib-imagex.c`** |
 | Duilib 引入 | **已换库：经典 `Duilib`（MIT/BSD）**，`third_party/duilib-master/`（35 cpp，静态库 `build/libduilib.a`）。原因：`nim_duilib` 运行时强制 Skia（`GlobalManager` 无 GDI 回退），Skia 体积违背 <10MB 目标，弃用（源码留存 `third_party/nim_duilib-main/` 不再编译）；MinGW 移植补丁见 PIT-012；XML 皮肤随包 `dist/skin/`，禁止依赖外部散文件 |
 | 构建三命令 | `mingw32-make -f Makefile all` / `mingw32-make -f Makefile clean` / `mingw32-make -f Makefile package`（Makefile 头部写死 MinGW 路径 `D:/Prog/ProgIDE/mingw64`，其余用相对路径） |
-| 救援层构建 | `python tools/vmtest/build-alpine-initramfs.py`（从 `tools/vmtest/dl/alpine/*.apk` 组装 `bootfiles/{vmlinuz-zjrestore,initramfs-zjrestore.cpio.gz}`；**纯 Windows/Python，无需 Linux 环境**，见 PIT-044/045/046） |
+| 救援层构建 | `python tools/build-debian-rescue.py`（**当前**：Debian 签名内核 + 存储子集模块 + Alpine 用户态；纯 Windows/Python，无需 Linux 环境）。用户态组装复用 `tools/vmtest/build-alpine-initramfs.py`（从 `tools/vmtest/dl/alpine/*.apk`），见 PIT-044/045/046、PLAN §11 |
 | 输出物 | `SysRecover.exe` + `libwim-15.dll` + `boot/{vmlinuz,initramfs,restore.sh,grldr,grldr.mbr,menu.lst模板}` + `version.json` + SHA256 |
 | 门禁 | 体积检查（见 PLAN.md §1 体积目标 < 10 MB）+ `objdump -p` / `x86_64-w64-mingw32-objdump` 或 Dependencies 零依赖检查 + `diag` 自检通过 |
 
@@ -176,7 +176,7 @@ bcdedit /bootsequence {GUID}
 - Windows 侧：`IsUefiFirmware()` 判固件；`FindEspPartition()` + `mountvol X: /s` 挂 ESP；`InstallUefiBootEntry()`（`src/boot/uefi.cpp`）把内核+initramfs 放 `<ESP>\EFI\ZJRESTORE\` 并写 `Boot####`（短格式 HardDrive 节点 + FilePath 节点；OptionalData = UTF-16LE 命令行）+ 挂 `BootOrder` 末尾；`bcdboot <目标>:\Windows /s <ESP>: /f UEFI` 修 ESP 引导；`SetUefiBootNext()` 单次启动。
 - Linux 侧：`pt_type=gpt` → **跳过 PBR/引导区修复**（ESP 不动）；**成功保留** ESP 上的 `\EFI\ZJRESTORE\`（常驻恢复模块，仅 Windows 侧「删除启动还原」才清）。
 - 安全门禁：GPT 目标**仅 UEFI 固件放行**（`safety.cpp`），BIOS+GPT 仍拒绝。
-- **Secure Boot 分支**（PIT-062）：`IsSecureBootEnabled()` 为真时改走 `固件 → shimx64.efi（微软签名）→ grubx64.efi(= 我们签名的 UKI) → systemd-stub → 内核`；`IsMokEnrolled()` 判一次性密钥注册是否完成，未完成则暂存前拦住。构建见 `tools/build-uki.py`。
+- **Secure Boot 分支**（2026-09-23 起换 **Debian** 链，见 PLAN §11.1）：`IsSecureBootEnabled()` 为真时改走 `固件 → shimx64.efi（**微软双签：CA2011+CA2023**）→ grubx64.efi（**Debian 签名**的 GRUB）→ 我们的内核（Debian 签名）+ initramfs`。选 Debian 的原因：① shim 双签才能在**只信 CA2023 的 2026 新固件**上启动（Ubuntu 目前只有 CA2011 单签）；② 关键存储/HBA 驱动 31/31（Alma 缺 5 项）；③ 内核更小。**不再需要 MOK 注册**（整条链都是发行版签名），也**不用** mmx64/fbx64（那是旧 MOK 备选线的资产）。资产在 `bootfiles/sb/{shimx64.efi,grubx64.efi,grub.cfg}`；回归测试 `tools/vmtest/uefi-ubuntu-smoke.ps1`。
 - 回归：`tools/vmtest/uefi-smoke.ps1`（QEMU + OVMF，PASS）、`tools/vmtest/uefi-bootentry-smoke.ps1`（固件从 Boot#### 直启内核，PASS）、`tools/vmtest/uefi-screen.ps1`（屏幕有输出，PASS）。ESP/BitLocker 检查见 §11。
 
 ---
@@ -401,6 +401,7 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   - **安全性质**：没有绕过任何东西 —— 链上每个可执行文件都有合法签名，和 Ubuntu 正常开机完全一样；微软/Canonical 换证书时我们只换文件。
   - **后续**：① 服务器 RAID 模块（`vmd`/`megaraid`/老 `mpt*`/`isci`）在 Ubuntu 的 `linux-modules-extra`（113MB）里，需挑子集补入；② 内建模块的 `not found in modules.dep` 日志噪音可静音。
   - **验证**：✅ 2026-09-19 用户 VM（Secure Boot 开启）实测**通过**（零交互、无 0xc000007b、无 MokManager），`Secure boot mode: grub`。
+  - ⚠️ **2026-09-23 已被取代**：为覆盖「只信 CA2023 的 2026 新固件」，整条链**换成 Debian**（shim 微软**双签** + Debian 签名 GRUB/内核），见 **PLAN §11.1**。本条目保留作历史记录；`ZJ_SB_MODE=grub` 的机制不变，只是资产换成 Debian 的。
 
 - PIT-061 **UEFI 救援"黑屏像卡死"：内核 `CONFIG_SYSFB_SIMPLEFB=y` 顶掉内建 efifb，而 `simpledrm` 是模块、没打包 → 没有 fbcon**（2026-09-19，用户实测踩到）：症状 = UEFI 还原时屏幕停在 `EFI stub: Loaded initrd from command line option` 加一个一闪一闪的光标，看着完全像死机；**其实内核在正常跑** —— 用户按 Ctrl+Alt+Del 热重启后，还原**已经做完并且进的是新系统**（进度条一直在输出，只是屏幕没有）。根因：Alpine 内核带 `CONFIG_SYSFB_SIMPLEFB=y`，开机把 UEFI GOP 帧缓冲注册成 "simple-framebuffer" 平台设备，**因此内建 `efifb`（`CONFIG_FB_EFI=y`）不绑定**；能接管它的只有 `simpledrm`（`CONFIG_DRM_SIMPLEDRM=m`），而 `build-alpine-initramfs.py` 的 `MODULE_EXCLUDES` 把整个 `kernel/drivers/gpu` 排除了（旧注释写"文字控制台用内建 efifb/vesafb"——**该假设在 UEFI 下不成立**）。**修复**：①构建脚本新增 `EXTRA_MODULES = ['kernel/drivers/gpu/drm/tiny/simpledrm.ko.gz']`（依赖闭包自动带回 `drm.ko`/`drm_kms_helper.ko`/`drm_shmem_helper.ko`，整包只 +0.13MB）；②`bootfiles/alpine/init` 里提前 `ldmod simpledrm`；③cmdline 仍是 `console=tty0`。**回归测试**：`tools/vmtest/uefi-screen.ps1`（QEMU+OVMF，`-display none` + monitor `screendump` 抓两次，字节差异 8.4% ⇒ 控制台活着；PASS）。**屏上文字只能 ASCII**：内核内置字体没有中文字形（中文显示成方框，同 PIT-036 GRUB4DOS 的教训），所以救援横幅一律英文、中文细节进日志。**BIOS 路径不受影响**（走 `vgacon`，`CONFIG_VGA_CONSOLE=y`）。✅ 2026-09-19（QEMU 截图实证 + 用户 VM 实证还原成功）
 
@@ -460,10 +461,10 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 | Alpine ntfs-3g/ntfsprogs 2026.2.25 | `ntfs-3g` + `mkntfs` | GPLv2 | 仅分发二进制 |
 | Alpine wimlib 1.14.4 | `wimlib-imagex`（动态链接 libwim） | LGPLv3 | **动态链接**，随包放 `libwim.so.15`，允许用户替换 |
 | Alpine util-linux 2.40.1 | `blkid` + `libblkid`/`libuuid`/`libeconf` | GPLv2 / LGPL | 仅分发二进制 |
-| **Ubuntu 内核** `linux-image-6.8.0-31-generic` | `vmlinuz-zjrestore` | GPLv2 | 仅分发二进制（未修改，**Canonical 签名**），独立聚合（PIT-066） |
-| **Ubuntu 内核模块** `linux-modules-6.8.0-31-generic` | 999 个 `.ko.gz` | GPLv2 | 同上（均带 Canonical 签名） |
-| **GRUB**（Ubuntu `grub-efi-amd64-signed` 1.215） | `grub-ubuntu.efi` | GPLv3 | 仅分发已签名二进制（未修改），独立聚合；Secure Boot 链（PIT-066） |
-| shim（Ubuntu `shim-signed` 1.59） | `shimx64.efi`（+`mmx64.efi` 仅在备选线） | **BSD-2-Clause** | 仅分发已签名二进制（未修改）；Secure Boot 链入口（PIT-066） |
+| **Debian 内核** `linux-image-6.12.107+deb13-amd64` | `vmlinuz-zjrestore` | GPLv2 | 仅分发二进制（未修改，**Debian 签名**），独立聚合（PLAN §11.1） |
+| **Debian 内核模块**（同一包内的存储/文件系统子集）| `initramfs` 里 **779** 个 `.ko.gz` | GPLv2 | 同上（均带 Debian 签名） |
+| **GRUB**（Debian `grub-efi-amd64-signed` 1+2.12+9+deb13u2）| `bootfiles/sb/grubx64.efi` | GPLv3 | 仅分发已签名二进制（未修改），独立聚合；Secure Boot 链（PLAN §11.1） |
+| shim（Debian `shim-signed` 1.51+16.1-2）| `bootfiles/sb/shimx64.efi` | **BSD-2-Clause** | 仅分发已签名二进制（未修改，**微软 CA2011+CA2023 双签**）；Secure Boot 链入口 |
 | ~~systemd-stub / UKI / efiloader~~ | 随 MOK 备选线**停止分发**（`ZJ_ENABLE_MOK_PATH=0`） | — | 仅仓库留存，`dist` 不含 |
 | osslsigncode 2.9 | 构建期给 UKI 签名（备选线用） | GPLv3 | **仅构建工具，不进产品** |
 | ~~BG-Rescue 9.0.0~~ | 已弃用（PIT-044） | — | — |
