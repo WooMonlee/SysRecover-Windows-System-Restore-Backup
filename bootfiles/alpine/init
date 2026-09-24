@@ -30,7 +30,7 @@ mkdir -p /proc /sys /dev /tmp /mnt
 LOG=/tmp/zjrestore.log
 say(){ echo "SR: $*"; echo "$(date '+%F %T') $*" >> "$LOG"; }
 
-say "SysRecover rescue (Alpine $(uname -r))"
+say "SysRecover rescue (kernel $(uname -r))"
 
 # ── 加载存储 / 文件系统模块（覆盖 SATA/AHCI、NVMe、各厂商 HBA、虚拟化、USB）──
 # 注意：不要跑 depmod（busybox depmod 可能写坏 modules.dep）；直接用镜像里
@@ -58,7 +58,7 @@ ldmod(){
 # 只有 simpledrm 能接管 GOP 帧缓冲。不加载它 → UEFI 下 `console=tty0` 全程黑屏
 # （表现为"EFI stub: Loaded initrd..."后像卡死，其实内核在正常跑）。
 ldmod simpledrm
-for m in t10-pi usb-common scsi_mod crc32c libcrc32c nls_cp437 nls_iso8859-1 nls_ascii nls_base; do
+for m in t10-pi usb-common scsi_mod crc32c_generic libcrc32c nls_cp437 nls_iso8859-1 nls_ascii nls_base; do
     ldmod "$m"
 done
 # 依赖在前、被依赖者在后；跑两轮以防某轮顺序导致依赖未就绪而失败。

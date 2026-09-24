@@ -447,6 +447,15 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 
 - PIT-071 **任务执行中点关闭"完全没反应"：`Notify` 的 `m_busy` 早退把关闭点击吞成死代码，而唯一的取消通道只在析构函数里**（2026-09-20 用户实测踩到）：用户在朋友机器上测试备份、CPU 占用高想退出，**点右上角叉叉没有任何反应**，只能干等任务跑完。根因两处叠加：① `CMainForm::Notify` 开头就是 `if (m_busy) return;`，把 `CloseBtn` 的点击也一起吞掉 → 下面那段"忙时弹框拒绝"的分支**永远执行不到**（死代码）；② 真正能停任务的 `m_cancel = true` 全文件**只出现在析构函数**（`main_form.cpp` 头部）→ 关闭被拦 ⇒ 窗口不销毁 ⇒ 析构永不执行 ⇒ **取消信号永远设不上**。次要因素：worker 是默认线程优先级 + wimlib 吃满所有核 → 界面点击发飘。**修复**（用户规格：默认「继续等待」，可选「终止并退出」）：① `Notify` 把关闭按钮**提到 `m_busy` 早退之前**处理；② 新增 `AskBusyClose()`（`CConfirmDlg` 通用化为 `Ask2`：两按钮文案 + 默认项可指定；此处左=「继续等待」[默认，回车/ESC 均落安全项]、右=「终止并退出」）；③ 新增 `CancelAndExit()`：置取消位 → 保持消息泵地等 worker 收手（正常 <1s）→ `join()` → `CleanupIncompleteOutput()` 删除未写完的**临时文件** `<目标>.tmp`（**不是**最终路径：产物是原子写的，`wim.cpp::Capture` 先写 tmp、成功才改名 → 取消既不损坏旧同名镜像、也留不下半截成品）→ 关窗；10s 仍未停 → 兜底 `TerminateProcess` + `MoveFileEx(..., MOVEFILE_DELAY_UNTIL_REBOOT)` 登记开机删除；④ `OnTaskComplete` 见 `m_cancel` 只记日志、**不弹失败框**（否则会挡住关窗）；⑤ 两个 worker 入口 `SetThreadPriority(THREAD_PRIORITY_BELOW_NORMAL)`。✅ 2026-09-20（编译通过，版本 `0.1.4`；**待用户实测**：备份中点叉叉应立即弹框；选「终止并退出」应 1 秒内退出且半截镜像被删）
 
+- PIT-079 **救援层模块裁剪：白名单里 `kernel/fs/` 是"整目录" → 把网络/集群/嵌入式文件系统全拉了进来；加 EXCLUDE + 键盘补收后 779→494 模块、initramfs 36.3→20.5MB（dist 54.2→38.5MB）**（2026-09-24 调研 + 实施）：
+  · **调研方法（可复用）**：解出包内全部 4225 个 `.ko.xz` 的 `depends=` 建依赖图 → 模拟"白名单 + 闭包" → 对候选删除集做**反向依赖校验**（保留下来的模块是否依赖被删模块）。这一步是"不破坏兼容性"的唯一依据。
+  · **关键事实**：① `fuse`、`atkbd`/`i8042`/`libps2`/`serio`/`input-core`、`fb_efi`/`fb_simple`/`framebuffer_console`/`vt` 在 Debian 内核里都是**内建**（`modules.builtin` + `/boot/config-*` 可证）→ 不需要对应模块，PS/2 键盘本来就可用；② **PIT-061 的"UEFI 黑屏"是 Alpine 内核特有的**（它 `SYSFB_SIMPLEFB=y` 顶掉内建 efifb），Debian 的 `FB_EFI=y` 直接接管 → **整条 DRM/KMS 链（含 `gpu/drm/tiny` 的 bochs/cirrus）可删**；③ `lpfc`/`qla2xxx`（在 PLAN 的"关键 31 项"里）的 `depends=` 含 `nvme-fc`/`nvmet-fc` → 必须**连带保留** `nvme-fc/nvme-fabrics/nvmet-fc/nvmet/configfs/nvme-auth/nvme-keyring`，否则破坏 31/31；④ iSCSI/FCoE offload 卡（bnx2fc/bnx2i/cxgb3i/cxgb4i/qedf/qedi/qla4xxx）会经闭包拉进 `drivers/net`+`infiniband`+`target`+`libfc` 一大串 → 删卡即删整串。
+  · **实施**：`build-debian-rescue.py` 新增 `EXCLUDE_PREFIXES`（对白名单**和**闭包**同时**生效）+ `EXTRA_KEEP`（USB HID：`hid`/`hid-generic`/`usbhid`，让救援 `#` shell 能用 USB 键盘）+ **构建期断言**：① 被排除却被保留模块需要 → 直接 `raise`；② 保留模块的依赖缺失 → `raise`。fail-fast，杜绝"静默产出缺依赖的坏包"。
+  · **结果**：779 → **494** 模块；33.48 → 14.10 MB（`.ko.gz`）；initramfs 36.32 → **20.47 MB**；dist 54.17 → **≈38.5 MB**。
+  · **有意保留**（判断项，用户 2026-09-24 拍板）：`xfs/btrfs/bcachefs/f2fs`（镜像放这些分区时用得到）、`ext4`、FC HBA（维持 31/31）。
+  · **附带发现（未处理）**：`kernel/drivers/ufs/` 从来不在白名单 → `ufshcd-core` 一直没进救援层（x86 Windows 上罕见，暂不加；init 里 `ldmod ufshcd-core` 一直静默降级）。
+  · ✅ 2026-09-24（构建断言通过 + 产物自检：`hid`/`usbhid`/`hid-generic` 与全部关键存储/fs 模块 present，`nfs`/`cifs`/`ocfs2`/`kvm`/`ib_core`/`drm` 等 absent；**待 QEMU/VM 回归**）
+
 ---
 
 ## 14. License 合规（SBOM，随版本更新）
@@ -464,7 +473,7 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 | Alpine wimlib 1.14.4 | `wimlib-imagex`（动态链接 libwim） | LGPLv3 | **动态链接**，随包放 `libwim.so.15`，允许用户替换 |
 | Alpine util-linux 2.40.1 | `blkid` + `libblkid`/`libuuid`/`libeconf` | GPLv2 / LGPL | 仅分发二进制 |
 | **Debian 内核** `linux-image-6.12.107+deb13-amd64` | `vmlinuz-zjrestore` | GPLv2 | 仅分发二进制（未修改，**Debian 签名**），独立聚合（PLAN §11.1） |
-| **Debian 内核模块**（同一包内的存储/文件系统子集）| `initramfs` 里 **779** 个 `.ko.gz` | GPLv2 | 同上（均带 Debian 签名） |
+| **Debian 内核模块**（同一包内的存储/文件系统子集；2026-09-24 经 EXCLUDE 裁剪）| `initramfs` 里 **494** 个 `.ko.gz` | GPLv2 | 同上（均带 Debian 签名） |
 | **GRUB**（Debian `grub-efi-amd64-signed` 1+2.12+9+deb13u2）| `bootfiles/sb/grubx64.efi` | GPLv3 | 仅分发已签名二进制（未修改），独立聚合；Secure Boot 链（PLAN §11.1） |
 | shim（Debian `shim-signed` 1.51+16.1-2）| `bootfiles/sb/shimx64.efi` | **BSD-2-Clause** | 仅分发已签名二进制（未修改，**微软 CA2011+CA2023 双签**）；Secure Boot 链入口 |
 | ~~systemd-stub / UKI / efiloader~~ | 随 MOK 备选线**停止分发**（`ZJ_ENABLE_MOK_PATH=0`） | — | 仅仓库留存，`dist` 不含 |

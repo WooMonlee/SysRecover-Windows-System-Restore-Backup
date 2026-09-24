@@ -303,11 +303,11 @@ Debian 的模块也是 `.ko.xz`）② 先验"能组装出可启动 initramfs"（
 （QEMU+OVMF+SB 开）④ 最后替换 `bootfiles/`（shim/GRUB/内核/initramfs）+ 更新 SBOM/文档 + 回归。
 
 **✅ 实施结果（2026-09-23 完成）**：
-- ① `tools/build-debian-rescue.py` ✓（按路径白名单裁剪 + 依赖闭包；**779 模块**；initramfs 34.6MB + 内核 11.6MB）
+- ① `tools/build-debian-rescue.py` ✓（路径白名单 + 依赖闭包；**2026-09-24 加 EXCLUDE 裁剪后 494 模块**，initramfs 20.5MB + 内核 11.6MB；见 PIT-079）
 - ② QEMU 启动 ✓（`Linux 6.12.107+deb13-amd64` → `SR: block devs: sda sda1 sr0` 认盘成功）
 - ③ SB 资产已换 Debian ✓（shim 双签 + Debian 签名 GRUB）；QEMU 链验证 shim→GRUB→内核→我们的 initramfs ✓；
       **用户 VMware（Secure Boot 开）实测还原成功** ✓（注意：其固件同时信任 CA2011，故"CA2023-only 新硬件"场景仍需将来在新固件上验证 🚧）
-- ④ SBOM/文档已同步 ✓；`dist` **54.3MB**（比 Ubuntu 版更小）；`ZJ_SB_MODE` 默认 `grub` 不变
+- ④ SBOM/文档已同步 ✓；`dist` **38.5MB**（2026-09-24 模块裁剪后，原 54.3MB）；`ZJ_SB_MODE` 默认 `grub` 不变
 - 遗留：`libcrc32c` 加载告警（softdep 未覆盖，与本产品路径无关，待补）；`bootfiles/sb/` 的 mmx64/fbx64
   仅留在仓库（不再随包/不再部署）
 
