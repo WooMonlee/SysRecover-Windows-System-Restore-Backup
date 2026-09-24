@@ -76,11 +76,16 @@
 **规则见 `PLAN.md`「版本号规则」**：主/次版本**由用户指定**（`python tools/version.py --set X.Y.Z`），
 **修订号每解决一个问题 +1**（提交前跑 `python tools/version.py --bump`）。发布时与 git tag `vX.Y.Z` 对齐。
 
-> **架构：目前只出 x64**（2026-09-20 用户实测：32 位 Win7 上 exe 直接起不来，系统层面拒绝、程序内无法提示）。
-> 要出 x86 需三样：① 另装 **i686-w64-mingw32** 工具链；② 官方 **32 位 `libwim-15.dll`**
-> （wimlib 同时发布 `windows-i686` / `windows-x86_64` 包）；③ Makefile 加 `ARCH=x86` 分支。
+> **架构：`0.3` 起 Windows 侧出 x86（单包通吃 32/64 位 Windows）**。背景：2026-09-20 用户实测 32 位 Win7
+> 上 x64 exe 直接起不来（系统层面拒绝、程序内无法提示）。2026-09-24 用户拍板：目标机器 **CPU/主板都是
+> 64 位**，只是**系统**可能是 Win7 x86 → **只改 Windows 侧 exe 位数，救援层（x86_64）不动**；不考虑真正的
+> 32 位 CPU 老机器。需四样：① 另装 **i686-w64-mingw32** 工具链；② 官方 **32 位 `libwim-15.dll`**
+> （wimlib 同时发布 `windows-i686` / `windows-x86_64` 包）；③ Makefile 加 `ARCH=x86` 分支；④ **x86 版 UCRT**
+> （Win7 无 UCRT，`third_party/ucrt/x86/`，见该目录 README）。代价：备份压缩慢（`fast`≈0~10%，
+> `recovery`≈20~35%），**还原 0%**；想零损失用方案 C（x86+x64 + 启动器，+4MB）。详见 `docs/08` §0。
 > **救援层与宿主位数无关**（Linux 侧照旧）；但 **UEFI 引导资产是 x64**（`shimx64.efi` + 64 位内核），
-> 32 位 UEFI（IA32）需另找 `shimia32.efi` + 32 位内核 —— 极少见，32 位机器基本都走 **BIOS + GRUB4DOS** ✓。
+> 32 位 UEFI（IA32）需另找 `shimia32.efi` + 32 位内核 —— 极少见，32 位机器基本都走 **BIOS + GRUB4DOS** ✓
+> （Win7 x86 **不支持 UEFI**，必然走 BIOS/MBR，正好是我们最成熟的路径）。
 
 ---
 
