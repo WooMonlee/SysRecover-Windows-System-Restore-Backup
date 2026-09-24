@@ -78,7 +78,8 @@ bool SameDrive(wchar_t a, wchar_t b) {
 // 就地还原：快速格式化 → wimlib 目录模式应用（PIT-008）→ 系统镜像才 bcdboot
 // 修引导。**全程不重启**。
 int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
-                     const std::wstring& imagePath, std::string& err) {
+                     const std::wstring& imagePath, std::string& err,
+                     ProgressFn progress) {
     std::wstring letter(1, target.letter[0]);
     LogInfo("in-place restore -> " + W2U(letter) + ": (" + W2U(imagePath) +
             ", index=" + std::to_string(req.index) + ")");
@@ -103,12 +104,11 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
         return 1;
     }
     int arc = wim.Apply(imagePath, req.index, letter + L":\\",
-                        [](int pct, const std::string& st) {
+                        [progress](int pct, const std::string& st) {
                             ProgressUpdate("restore", pct, st);
-                            // ⚠️ 语义：**返回 true = 请求中止**（wim.cpp 里
-                            //    `(*c->fn)(...) ? ABORT : CONTINUE`）。这里必须
-                            //    return false 才会继续！曾写成 true → 第一次进度
-                            //    回调就中止 → rc=76 (ABORTED_BY_PROGRESS)。
+                            // 转投给上层（GUI 用来刷新进度条/百分比）；返回 true = 中止。
+                            if (progress)
+                                return progress(pct, st);
                             return false;
                         });
     if (arc != 0) {
@@ -386,7 +386,7 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
 }
 
 int StageRestore(const RestoreRequest& req, std::string& err,
-                 bool* needReboot) {
+                 bool* needReboot, ProgressFn progress) {
     if (req.image.empty()) {
         err = "缺少镜像路径";
         return 1;
@@ -494,7 +494,7 @@ int StageRestore(const RestoreRequest& req, std::string& err,
         if (CanRestoreInPlace(target, why)) {
             LogInfo(std::string("restore mode: in-place (") + why + ")");
             const ULONGLONG t1 = GetTickCount64();
-            int rc = RunDirectRestore(req, target, imagePath, err);
+            int rc = RunDirectRestore(req, target, imagePath, err, progress);
             if (needReboot)
                 *needReboot = false;
             ReleaseOpLock();

@@ -90,10 +90,26 @@ mnt_dev(){
             mount "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
             ;;
         "")
+            # blkid 认不出类型（用户 2026-09-23 实测：D: 分区报 fs= 空，内核自动
+            # 探测只试了 ntfs3/exfat 两次、都失败 → 镜像找不到，停在 #）。这里把
+            # 常见文件系统**逐个显式试**，尤其 FUSE 的 ntfs-3g —— 它比内核 ntfs3
+            # 宽容，能挂某些引导扇区被改过的 NTFS（ntfs3 会报 "Primary boot
+            # signature is not NTFS"）。
+            mount -t ntfs3 "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            ntfs-3g -o remove_hiberfile "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            ntfs-3g -o force "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            mount -t ntfs-3g "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            mount -t exfat "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            mount -t vfat "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            mount -t iso9660 "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            mount -t udf "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
             mount "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
             ;;
         *)
             mount -t "$_fs" "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            # 未知/非标准类型再兜两下（同上理由）
+            ntfs-3g -o force "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            mount "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
             ;;
     esac
     return 1
@@ -199,15 +215,17 @@ for _d in $(list_parts); do
     #    反馈）。只跳过 loop/ram 这类伪设备。目标分区扫描那边才该跳过 sr*。
     case "$_d" in *loop*|*ram*) continue ;; esac
     [ "$_d" = "$TARGET_DEV" ] && continue
+    _typ=$(blkid -s TYPE -o value "$_d" 2>/dev/null)
     if mnt_dev "$_d" "$SRC_M"; then
         if [ -f "$SRC_M/$IMG_REL" ]; then
             IMG_FILE="$SRC_M/$IMG_REL"
             say "found image: $IMG_FILE"
             break
         fi
+        say "  no image on $_d (type=${_typ:-none})"
         umount "$SRC_M" 2>/dev/null
     else
-        say "mount FAILED $_d ($(cat /tmp/zjmnt.err 2>/dev/null | tr '\n' ' '))"
+        say "mount FAILED $_d (type=${_typ:-none}; $(cat /tmp/zjmnt.err 2>/dev/null | tr '\n' ' '))"
     fi
 done
 [ -n "$IMG_FILE" ] || { say "ERROR: image not found: $IMAGE_PATH"; exit 1; }

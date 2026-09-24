@@ -804,6 +804,24 @@ void CMainForm::StartRestore() {
         // 实测被误导。判断复用 ops 层同一个函数（CanRestoreInPlace），两边不漂移。
         std::string why;
         bool needReboot = !CanRestoreInPlace(part, why);
+        // 日志落点：（用户 2026-09-23）**合并进本确认框**，不要再弹第二个 MessageBox。
+        // 只在"程序在目标盘或只读盘上"时才需要提这一句。
+        std::wstring logNote;
+        {
+            std::wstring ed = ExeDir();
+            wchar_t exL = ed.empty() ? 0 : ed[0];
+            wchar_t tgL = part.letter.empty() ? 0 : part.letter[0];
+            wchar_t exRoot[4] = {exL, L':', L'\\', 0};
+            bool onTarget = exL && tgL && towupper(exL) == towupper(tgL);
+            bool fixedDisk = exL && GetDriveTypeW(exRoot) == DRIVE_FIXED;
+            if (onTarget || !fixedDisk) {
+                std::wstring dd = FindDataDrive();
+                logNote = dd.empty() ? std::wstring()
+                                     : (L"（还原日志将放到 " + dd.substr(0, 1) + L": 盘）");
+                LogInfo("logs will be placed on data drive (exe dir is target/"
+                        "read-only)");
+            }
+        }
         wchar_t confirm[640];
         if (needReboot) {
             // 把**判定原因**也显示出来（用户 2026-09-23：PE 里系统盘是 X:，还原 C:
@@ -815,47 +833,28 @@ void CMainForm::StartRestore() {
                     : L"目标分区当前被占用";
             swprintf(confirm, 640,
                      L"即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n"
-                     L"该分区上的所有数据将被覆盖！\n"
+                     L"该分区上的所有数据将被覆盖！%ls\n"
                      L"原因：%ls；将暂存任务并在重启后执行。",
                      part.letter.empty() ? L"?" : part.letter.c_str(),
-                     part.diskIndex, part.partNumber, shortWhy.c_str());
+                     part.diskIndex, part.partNumber, logNote.c_str(),
+                     shortWhy.c_str());
             if (CConfirmDlg::Ask2(m_hWnd, L"确认还原", confirm, L"退出",
                                   L"退出并重启", /*defaultIsRight=*/true) != 1)
                 return;
         } else {
             swprintf(confirm, 640,
                      L"即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n"
-                     L"该分区上的所有数据将被覆盖！\n"
+                     L"该分区上的所有数据将被覆盖！%ls\n"
                      L"目标分区当前未被占用，将立即就地还原，不需要重启。",
                      part.letter.empty() ? L"?" : part.letter.c_str(),
-                     part.diskIndex, part.partNumber);
+                     part.diskIndex, part.partNumber, logNote.c_str());
             if (CConfirmDlg::Ask2(m_hWnd, L"确认还原", confirm, L"取消",
                                   L"开始还原", /*defaultIsRight=*/true) != 1)
                 return;
         }
     }
-    // 软件在目标盘（会被格式化）或只读介质上 → 日志要回退到数据盘，先让用户确认
-    {
-        std::wstring ed = ExeDir();
-        wchar_t exL = ed.empty() ? 0 : ed[0];
-        wchar_t tgL = part.letter.empty() ? 0 : part.letter[0];
-        wchar_t exRoot[4] = {exL, L':', L'\\', 0};
-        bool onTarget = exL && tgL && towupper(exL) == towupper(tgL);
-        bool fixedDisk = exL && GetDriveTypeW(exRoot) == DRIVE_FIXED;
-        if ((onTarget || !fixedDisk) && !IsSilent()) {
-            // 用户 2026-09-23 反馈：只说"数据盘"不知道是哪个盘 → 把盘符带上
-            std::wstring dataDrive = FindDataDrive();
-            std::wstring where = dataDrive.empty()
-                                     ? std::wstring(L"数据盘的 ZJRESTORE 目录")
-                                     : (dataDrive.substr(0, 1) + L": 盘的 ZJRESTORE 目录");
-            if (MessageBoxW(m_hWnd,
-                    (L"程序所在目录在要还原的系统盘上（或只读盘），\n"
-                     L"本次还原的日志将改放到 " + where + L"。\n是否继续？")
-                        .c_str(),
-                    L"提示", MB_OKCANCEL | MB_ICONWARNING) != IDOK)
-                return;
-        }
-    }
+    // （日志落点的提示已**合并进上面的确认框**，不再单独弹窗 —— 用户 2026-09-23
+    //   反馈连续两个提示框很烦。这里只留一行日志备查。）
     m_busy = true;
     UpdateMainAction();
     SetStatus(L"正在校验镜像并暂存还原任务...");
@@ -888,7 +887,23 @@ void CMainForm::StartRestoreAsync() {
     req.repairBoot = true;
     std::string err;
     bool needReboot = true;
-    int rc = StageRestore(req, err, &needReboot);
+    // 进度：把 ops 层 apply 的进度转投到界面 —— 用户 2026-09-23 反馈"还原时进度条
+    // 和百分比全程不动、最后才一下跳满"，因为这条链路以前**根本没接** ✗
+    //（备份那条接了、还原这条漏了）。约定：回调返回 **true = 请求中止**。
+    auto progressFn = [this](int pct, const std::string& stage) -> bool {
+        if (m_cancel) return true;
+        auto now = std::chrono::steady_clock::now();
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      now - m_lastProgressPost)
+                      .count();
+        if (ms < kProgressThrottleMs && pct < 100) return false;  // 100ms 节流
+        m_lastProgressPost = now;
+        PostMessage(WM_PROGRESS_UPDATE, (WPARAM)pct,
+                    (LPARAM)new std::wstring(U2W(stage)));
+        return false;
+    };
+    m_lastProgressPost = std::chrono::steady_clock::now();
+    int rc = StageRestore(req, err, &needReboot, progressFn);
     last_err_ = err;
     m_needReboot = needReboot;
     PostMessage(WM_TASK_COMPLETE, (WPARAM)rc, 0);
@@ -1078,8 +1093,7 @@ void CMainForm::UpdateMainAction() {
     // 完全无从判断缺哪一步）。只在空闲且确实不可用时提示，避免覆盖任务中的状态。
     if (!ok && !m_busy) {
         if (m_wimPath.empty())
-            SetStatus(m_backupMode ? L"请先选择保存位置（或手动输入 / 拖入）"
-                                   : L"请先选择镜像文件（或手动输入 / 拖入）");
+            SetStatus(m_backupMode ? L"请先选择保存位置" : L"请先选择镜像文件");
         else if (m_selPart < 0)
             SetStatus(m_backupMode ? L"请选择第二步的源分区"
                                    : L"请选择第二步的目标分区");
