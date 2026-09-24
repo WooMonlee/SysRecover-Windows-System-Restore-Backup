@@ -292,8 +292,20 @@ std::vector<DiskInfo> EnumerateDisks() {
     return disks;
 }
 
-bool IsUefiFirmware() {
-    // Win8+: GetFirmwareType（Win7 的 headers 没有该枚举，自己定义一个）
+// 是否运行在 WinPE 里（见 disk.h）。标准判据：Control\MiniNT 键存在。
+bool IsWinPE() {
+    HKEY k = nullptr;
+    LONG r = RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+                           L"SYSTEM\\CurrentControlSet\\Control\\MiniNT", 0,
+                           KEY_READ, &k);
+    if (r == ERROR_SUCCESS) {
+        RegCloseKey(k);
+        return true;
+    }
+    return false;
+}
+
+bool IsUefiFirmware() {    // Win8+: GetFirmwareType（Win7 的 headers 没有该枚举，自己定义一个）
     enum { FW_UNKNOWN = 0, FW_BIOS = 1, FW_UEFI = 2 };
     typedef BOOL(WINAPI * GetFirmwareTypeFn)(int*);
     HMODULE k32 = GetModuleHandleW(L"kernel32.dll");

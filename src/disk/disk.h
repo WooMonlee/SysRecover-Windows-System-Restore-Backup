@@ -42,6 +42,12 @@ const char* StyleName(PartitionStyle s);
 // 当前固件是 UEFI 还是 BIOS（Win8+ 用 GetFirmwareType；Win7 回退用固件变量探测）。
 bool IsUefiFirmware();
 
+// 是否运行在 WinPE 里（标准判据：HKLM\SYSTEM\CurrentControlSet\Control\MiniNT 存在）。
+// 用途（用户 2026-09-23 规格）：PE 下放宽"就地还原"的**卷锁**判定 —— PE 里目标分区
+// 通常没被真正使用，但 FSCTL_LOCK_VOLUME 仍可能因杂七杂八的句柄失败，导致误判成
+// "必须重启"。PE 里只要目标不是正在运行的系统盘，就应该就地还原、不重启也不提示。
+bool IsWinPE();
+
 // 找 ESP（EFI System Partition）。注意：正常 Windows 下 ESP 无盘符（需临时挂载）。
 bool FindEspPartition(PartitionInfo& out);
 
