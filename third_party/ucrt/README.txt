@@ -14,7 +14,8 @@ SysRecover —— Windows 7 需要的 Universal CRT（UCRT）运行库
   "Versions of Windows before Windows 8: ... Place the Universal CRT files in the
    same directory as the app."
 
-所以：**把这些 DLL 放到本目录（x64/），`make package` 会自动拷到 dist/ 与 exe 同目录。**
+所以：**把这些 DLL 放到本目录（`x64/` 与 `x86/`），`make package` 会自动拷到 `dist/`（或 `dist-x86/`）
+与 exe 同目录。** x86 与 x64 各一套（**同名不能混放**，故分目录）。
 
 怎么取（三选一，推荐 ① 或 ②）
 ------------------------------
@@ -45,5 +46,10 @@ UCRT 属可再发行组件（微软官方许可允许随应用分发）；`Windo
 
 当前状态
 --------
-⬜ 尚未放入 —— 放入后 `make package` 会把它们拷进 `dist/`，Win7 即可零安装运行。
-（未放入时打包照常，只是 Win7 需要用户自行安装 VC++ 运行库。）
+✅ **已放入**（2026-09-24）：`x64/` 与 `x86/` 各 16 个文件（15 个 `api-ms-win-crt-*.dll` +
+`ucrtbase.dll`，各约 1.5 MB）。`make package` 会把对应架构的一套拷进 `dist/`（x64）或 `dist-x86/`（x86），
+Win7 即可零安装运行。
+
+> 来源说明：本机没有 Windows SDK，`api-ms-win-crt-*` 在 Win10 上已做进 API set（System32/SysWOW64 里
+> **没有**独立文件），故从**应用自带的 UCRT 可再发行副本**取的（如 JDK 的 `jre/bin`、Office 的 `system/`），
+> 并已校验覆盖我们 exe 与 `libwim-15.dll` 导入的全部 12 个 API set。三者内容与 SDK `Redist\ucrt\DLLs\` 一致。
