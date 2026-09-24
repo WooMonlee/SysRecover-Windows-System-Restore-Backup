@@ -118,7 +118,8 @@ package: all
 	@copy /Y bootfiles\initramfs-zjrestore.cpio.gz dist\bootfiles\ >nul
 	@copy /Y bootfiles\zjrestore-lite.sh dist\bootfiles\ >nul
 	@if not exist dist\bootfiles\sb mkdir dist\bootfiles\sb
-	:: package 只增不删 → 换链时旧资产会残留（grub-ubuntu.efi 曾与 grubx64.efi 并存）
+# package 只增不删 → 换链时旧资产会残留（grub-ubuntu.efi 曾与 grubx64.efi 并存）。
+# 注意：这里必须用 make 的 `#` 注释；命令行注释 `::` 在「单独一条 cmd /c」下不是合法命令。
 	@if exist dist\bootfiles\sb\grub-ubuntu.efi del /Q dist\bootfiles\sb\grub-ubuntu.efi >nul
 	@copy /Y bootfiles\sb\shimx64.efi dist\bootfiles\sb\ >nul
 	@copy /Y bootfiles\sb\grubx64.efi dist\bootfiles\sb\ >nul
