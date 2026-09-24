@@ -67,12 +67,19 @@ int main() {
     std::wstring child = L"\"" + target + L"\"" + args;
     std::wstring cwd = root;  // 子进程工作目录 = 发布包根（相对资源不受影响，见 process/ExeDir）
 
-    STARTUPINFOW si = {sizeof(si)};
+    STARTUPINFOW si = {};
+    si.cb = sizeof(si);
     PROCESS_INFORMATION pi = {};
     if (!CreateProcessW(target.c_str(), child.empty() ? nullptr : &child[0],
                         nullptr, nullptr, FALSE, 0, nullptr, cwd.c_str(), &si,
                         &pi)) {
-        std::wstring msg = L"找不到或无法启动 " + target +
+        DWORD err = GetLastError();
+        // 常见错误码：740=需要提权（若本启动器清单没嵌 requireAdministrator 就会这样，
+        // 因为真程序是 requireAdministrator，非提权进程 CreateProcess 它必失败）；
+        // 2=找不到文件；126=找不到模块（缺 DLL）；193=不是有效的 Win32 程序（位数不符）。
+        wchar_t eb[64] = {};
+        wsprintfW(eb, L"\n错误码：%lu", err);
+        std::wstring msg = L"找不到、无法启动或缺少依赖：\n" + target + eb +
                            L"\n请确认发布包完整（x86\\ 与 x64\\ 两个子目录都在）。";
         MessageBoxW(nullptr, msg.c_str(), L"知鉴一键还原",
                     MB_OK | MB_ICONERROR);

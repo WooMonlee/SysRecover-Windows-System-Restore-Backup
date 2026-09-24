@@ -40,6 +40,8 @@ endif
 MINGW32    ?= D:/Prog/ProgIDE/mingw32
 LAUNCH_CXX = $(MINGW32)/bin/i686-w64-mingw32-g++
 LAUNCH_OBJ = build/launcher.o
+# x86 的对象目录（固定名，供双架构 package 在任意 ARCH 下引用 x86 的清单资源对象）
+OBJDIR_X86 = build-x86
 
 # 构建脚本用的 Python（PATH 上的 python 可能是 Microsoft Store 占位符，不可用）
 PYTHON   ?= D:/Prog/ProgIDE/Python/Python313/python.exe
@@ -167,8 +169,11 @@ package:
 	$(MAKE) -f Makefile ARCH=x86 all
 	@echo === [3/4] 构建启动器（x86，通吃）===
 	$(LAUNCH_CXX) -O2 -std=c++17 -Wall -Wextra -D_WIN32_WINNT=0x0601 -DUNICODE -D_UNICODE -c src/launcher/launcher.cpp -o $(LAUNCH_OBJ)
-	$(LAUNCH_CXX) $(LAUNCH_OBJ) -o dist/SysRecover.exe -static -s -mconsole -lshell32
-	$(LAUNCH_CXX) $(LAUNCH_OBJ) -o dist/SysRecoverUI.exe -static -s -mwindows -lshell32
+# 启动器**必须**嵌 requireAdministrator 清单：真程序是 requireAdministrator，非提权进程用
+# CreateProcess 启动它会失败(ERROR_ELEVATION_REQUIRED=740)（只有 ShellExecute runas 才会自动提权）。
+# 复用既有的清单资源对象（x86 构建已产出）：CLI=SysRecover_rc.o、GUI=SysRecoverUI_rc.o。
+	$(LAUNCH_CXX) $(LAUNCH_OBJ) $(OBJDIR_X86)/SysRecover_rc.o   -o dist/SysRecover.exe   -static -s -mconsole -lshell32
+	$(LAUNCH_CXX) $(LAUNCH_OBJ) $(OBJDIR_X86)/SysRecoverUI_rc.o -o dist/SysRecoverUI.exe -static -s -mwindows -lshell32
 	@echo === [4/4] 组装 dist/ ===
 	@if not exist dist\bootfiles mkdir dist\bootfiles
 	@copy /Y bootfiles\grldr dist\bootfiles\ >nul
