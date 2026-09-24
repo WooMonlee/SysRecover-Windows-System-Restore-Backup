@@ -211,6 +211,7 @@ shutdown /r /t 0
 ```bash
 mingw32-make -f Makefile all        # CLI + GUI
 mingw32-make -f Makefile package    # 再部署 bootfiles/皮肤/许可到 dist/
+mingw32-make -f Makefile check      # 单元测试（纯逻辑，零依赖）
 mingw32-make -f Makefile clean
 ```
 

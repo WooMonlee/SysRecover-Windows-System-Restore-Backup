@@ -99,21 +99,21 @@ const wchar_t* ChineseEdition(const std::wstring& id) {
 
 }  // namespace
 
-SystemDescription DescribeRunningSystem() {
+SystemDescription ComposeSystemDescription(const RawSysInfo& raw) {
     SystemDescription d;
-    std::wstring product = ReadStr(L"ProductName");
+    std::wstring product = raw.productName;
     if (product.empty())
-        product = ReadStr(L"EditionID");
-    std::wstring edition = ReadStr(L"EditionID");
-    std::wstring version = ReadStr(L"DisplayVersion");   // Win10 2004+："21H2"
+        product = raw.editionId;
+    std::wstring edition = raw.editionId;
+    std::wstring version = raw.displayVersion;   // Win10 2004+："21H2"
     if (version.empty())
-        version = ReadStr(L"ReleaseId");                 // 旧版："1909" 等
+        version = raw.releaseId;                 // 旧版："1909" 等
     if (version.empty())
-        version = ShortServicePack(ReadStr(L"CSDVersion"));  // Win7："SP1"
-    std::wstring build = ReadStr(L"CurrentBuildNumber");
+        version = ShortServicePack(raw.csdVersion);  // Win7："SP1"
+    std::wstring build = raw.currentBuildNumber;
     if (build.empty())
-        build = ReadStr(L"CurrentBuild");
-    DWORD ubr = ReadDword(L"UBR", 0xFFFFFFFFu);
+        build = raw.currentBuild;
+    DWORD ubr = raw.hasUbr ? (DWORD)raw.ubr : 0xFFFFFFFFu;
 
     // Windows 11 的 ProductName 仍写 "Windows 10"（微软历史遗留），
     // 所以家族号一律以 build 为准：>= 22000 就是 11。
@@ -170,10 +170,30 @@ SystemDescription DescribeRunningSystem() {
     }
     if (!build.empty()) {
         wchar_t tag[32];
-        swprintf(tag, 32, L"Win%d.%s", family, build.c_str());
+        // ⚠️ MinGW 的 swprintf 把 `%s` 当**窄**字符串（PIT-007）→ 必须 `%ls`，
+        // 否则 build 只剩首字符（"Win10.1" 而不是 "Win10.19044"）。
+        // 单元测试 tests/unit_tests.cpp::sysinfo_* 就是这条的回归守卫。
+        swprintf(tag, 32, L"Win%d.%ls", family, build.c_str());
         d.shortTag = tag;
     }
     return d;
+}
+
+SystemDescription DescribeRunningSystem() {
+    RawSysInfo raw;
+    raw.productName = ReadStr(L"ProductName");
+    raw.editionId = ReadStr(L"EditionID");
+    raw.displayVersion = ReadStr(L"DisplayVersion");
+    raw.releaseId = ReadStr(L"ReleaseId");
+    raw.csdVersion = ReadStr(L"CSDVersion");
+    raw.currentBuildNumber = ReadStr(L"CurrentBuildNumber");
+    raw.currentBuild = ReadStr(L"CurrentBuild");
+    DWORD u = ReadDword(L"UBR", 0xFFFFFFFFu);
+    if (u != 0xFFFFFFFFu) {
+        raw.hasUbr = true;
+        raw.ubr = u;
+    }
+    return ComposeSystemDescription(raw);
 }
 
 }  // namespace sysrecover
