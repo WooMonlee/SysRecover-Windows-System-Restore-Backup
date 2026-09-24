@@ -473,6 +473,8 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 
 - PIT-081 **单元测试（`make check`）第一次运行就抓到真 bug：`sysinfo` 的 `shortTag` 用 `swprintf("%s")` → 默认文件名变成 `Win10.1`（PIT-007 重演）**（2026-09-24）：实现 PLAN §12 第 3 项的**零依赖单元测试**（`tests/`：自写微框架 `tiny_test.h` + `make check`，不引 gtest）。为可测，把**纯逻辑从 Windows 调用里抽出来**：`ComposeSystemDescription(RawSysInfo)`（sysinfo）、`DefaultExclusionConfig/BuildExclusionContent/CloudFolderNames`（exclude）、`BuildTaskConf/BuildTaskJson/BuildRestoreLogText`（task 契约文本）、`Crc32`（zip）。**首次运行 4 个用例失败**：`shortTag` 得 `Win10.1` 而非 `Win10.19044` —— 根因 `swprintf(tag, 32, L"Win%d.%s", family, build.c_str())`，MinGW 下 `%s` 当**窄**串（PIT-007）→ `build` 只剩首字符。**影响**：备份模式默认文件名（`<日期>Win10.<build>备份.esd`）一直是错的（`Win10.1`）。修 `%ls`。**附带收益**：`exclude` 测试里加了 **PIT-056 回归守卫**（默认排除清单绝不能含 `.LOG1/.LOG2/regtrans-ms/NTUSER.DAT/TM.blf`）。✅ 2026-09-24（17 C++ 用例 / 57 断言 + 13 Python 断言全绿；`0.3.1`）
 
+- PIT-082 **启动器未嵌 `requireAdministrator` → 在 UAC 开启的机器上 `CreateProcessW` 真程序必失败（740）**（2026-09-24 用户 VM 实测）：新的发布形态「x86 启动器 + `x86/` + `x64/`」上线后，**Win7 x86（UAC 关）正常**，但 **Win10 x64 双击启动器报「找不到或无法启动 …\x64\SysRecoverUI.exe」**（而 `x64/` 下文件其实都在）。根因：真程序清单是 **`requireAdministrator`**，而非提权的启动器用 **`CreateProcessW`** 启动它 → **`ERROR_ELEVATION_REQUIRED(740)`**（`CreateProcess` **不会**自动提权，只有 `ShellExecute … runas` 才会）。**修复**：给**两个启动器也嵌入 `requireAdministrator` 清单**（复用既有清单资源对象 `SysRecover_rc.o` / `SysRecoverUI_rc.o`，与真程序一致 → 双击时由加载器弹一次 UAC，之后 `CreateProcess` 子程序因父进程已提权而成功）；并在启动器错误框里带上 `GetLastError()` 错误码（740/2/126/193 一眼可判）。✅ 2026-09-24（`0.3.4`；**待用户 Win10 x64 复测**）
+
 ---
 
 ## 14. License 合规（SBOM，随版本更新）
