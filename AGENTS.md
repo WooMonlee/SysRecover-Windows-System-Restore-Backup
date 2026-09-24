@@ -66,7 +66,7 @@
 | 配置 | **Release + x64**（另需 x86 构建时再加）；`-O2`；静态链接优先 **`-static`**（PE 零依赖，MinGW 无 `/MT` 概念）；子系统按 exe 区分（CLI=`-mconsole`，GUI=`-mwindows`）；提权清单用 windres 编入 **GUI 与 CLI 两个 exe**（`src/gui/SysRecoverUI.rc` / `src/cli/SysRecover.rc` + 同名 `.manifest` → `build/*_rc.o`，见 PIT-018） |
 | libwim 引入 | 预编译 `wimlib.h + libwim.lib + libwim-15.dll` 放 `third_party/wimlib/`；运行时 DLL 与 EXE 同目录分发；**严禁静态链接 libwim，严禁抄 `wimlib-imagex.c`** |
 | Duilib 引入 | **已换库：经典 `Duilib`（MIT/BSD）**，`third_party/duilib-master/`（35 cpp，静态库 `build/libduilib.a`）。原因：`nim_duilib` 运行时强制 Skia（`GlobalManager` 无 GDI 回退），Skia 体积违背 <10MB 目标，弃用（源码留存 `third_party/nim_duilib-main/` 不再编译）；MinGW 移植补丁见 PIT-012；XML 皮肤随包 `dist/skin/`，禁止依赖外部散文件 |
-| 构建命令 | `mingw32-make -f Makefile all` / `mingw32-make -f Makefile clean` / `mingw32-make -f Makefile package` / `mingw32-make -f Makefile check`（Makefile 头部写死 MinGW 路径 `D:/Prog/ProgIDE/mingw64`，其余用相对路径）。**`check` = 单元测试**（零依赖，`tests/`：纯逻辑 + `tools/version.py`） |
+| 构建命令 | **`mingw32-make -f Makefile package`** = ★**双架构发布包**（启动器 + `dist/x86` + `dist/x64` + 共享资源；需两套工具链）/ `... all`（仅 x64 → `dist/x64`）/ `... ARCH=x86 all`（仅 x86 → `dist/x86`）/ `... check`（单元测试，零依赖 `tests/`）/ `... clean`（Makefile 写死两套 MinGW 路径，其余用相对路径）|
 | 救援层构建 | `python tools/build-debian-rescue.py`（**当前**：Debian 签名内核 + 存储子集模块 + Alpine 用户态；纯 Windows/Python，无需 Linux 环境）。用户态组装复用 `tools/vmtest/build-alpine-initramfs.py`（从 `tools/vmtest/dl/alpine/*.apk`），见 PIT-044/045/046、PLAN §11 |
 | 输出物 | `SysRecover.exe` + `libwim-15.dll` + `boot/{vmlinuz,initramfs,restore.sh,grldr,grldr.mbr,menu.lst模板}` + `version.json` + SHA256 |
 | 门禁 | 体积检查（见 PLAN.md §1 体积目标 < 10 MB）+ `objdump -p` / `x86_64-w64-mingw32-objdump` 或 Dependencies 零依赖检查 + `diag` 自检通过 |
@@ -76,14 +76,15 @@
 **规则见 `PLAN.md`「版本号规则」**：主/次版本**由用户指定**（`python tools/version.py --set X.Y.Z`），
 **修订号每解决一个问题 +1**（提交前跑 `python tools/version.py --bump`）。发布时与 git tag `vX.Y.Z` 对齐。
 
-> **架构（2026-09-24 起）：Windows 侧支持 x86**（`mingw32-make -f Makefile ARCH=x86 package`，独立输出
-> `build-x86`/`dist-x86`，x64 不受影响）。背景：2026-09-20 用户实测 32 位 Win7 上 x64 exe 直接起不来
-> （系统层面拒绝、程序内无法提示）。2026-09-24 用户拍板：目标机器 **CPU/主板都是 64 位**，只是**系统**可能是
-> Win7 x86 → **只改 Windows 侧 exe 位数，救援层（x86_64）不动**；不考虑真正的 32 位 CPU 老机器。
-> 四样前置：① i686 工具链 ✅（winlibs **i686 UCRT** GCC 14.2.0，`D:\Prog\ProgIDE\mingw32`）；
-> ② 官方 32 位 `libwim-15.dll` ✅（`third_party/wimlib/x86/`，1.14.5）；③ Makefile `ARCH=x86` ✅；
-> ④ **x86 版 UCRT ⬜**（Win7 无 UCRT，`third_party/ucrt/x86/`，见该目录 README）。代价：备份压缩慢
-> （`fast`≈0~10%，`recovery`≈20~35%），**还原 0%**；想零损失用方案 C（x86+x64 + 启动器，+4MB）。详见 `docs/08` §0。
+> **架构（2026-09-24）：Windows 侧位数跟随系统**（32 位系统跑 x86、64 位系统跑 x64，主要为备份压缩速度），
+> 由发布包**根目录的 x86 启动器**（`src/launcher/launcher.cpp`）按 `GetNativeSystemInfo` 自动选
+> `x86\` / `x64\` 下的真程序；**Linux 救援层固定 x86_64**（与宿主位数无关）。发布形态 = **x86 启动器 +
+> x86/ + x64/ + 根目录共享资源**（`ExeDir()` 在 exe 位于 `x86`/`x64` 子目录时自动上移一级 →
+> `bootfiles/`、`skin/` 等放根目录）。背景：2026-09-20 用户实测 32 位 Win7 上 x64 exe 直接起不来
+> （系统层面拒绝、程序内无法提示）。四样前置：① i686 工具链 ✅（winlibs **i686 UCRT** GCC 14.2.0，
+> `D:\Prog\ProgIDE\mingw32`）；② 官方 32 位 `libwim-15.dll` ✅（`third_party/wimlib/x86/`，1.14.5）；
+> ③ Makefile `ARCH=x86` ✅；④ **x86 版 UCRT** ✅（`third_party/ucrt/x86/`，与 `x64/` 各 16 个文件）。
+> 代价：32 位系统上备份压缩慢（`fast`≈0~10%，`recovery`≈20~35%），**还原 0%**。详见 `docs/08` §0。
 > **⚠️ WOW64 坑（必记）**：32 位 exe 在 64 位 Windows 上，`GetSystemDirectoryW` 的**字面量仍是 `System32`**，
 > 但 32 位进程访问它会被重定向到 `SysWOW64` —— 而 `bcdedit`/`bcdboot`/`manage-bde` **只在原生 System32**
 > （实测 SysWOW64 里没有）→ 写 BCD / 修引导会"找不到文件"。必须用 `%windir%\Sysnative` 取原生 System32

@@ -3,16 +3,16 @@
 #         x86 = D:\Prog\ProgIDE\mingw32 (GCC 14.2.0, i686-w64-mingw32,  UCRT)
 # 用法（PowerShell）：
 #   $env:Path = "D:\Prog\ProgIDE\mingw64\bin;" + $env:Path
-#   mingw32-make -f Makefile all            # CLI + GUI（x64）
-#   mingw32-make -f Makefile ARCH=x86 all   # CLI + GUI（x86；需 i686 工具链）
-#   mingw32-make -f Makefile cli            # 仅 CLI
-#   mingw32-make -f Makefile gui            # 仅 GUI（含 duilib 静态库）
-#   mingw32-make -f Makefile clean          # 清理（当前 ARCH）
-#   mingw32-make -f Makefile package        # 构建 + 部署到 dist[-x86]/
+#   mingw32-make -f Makefile package        # ★ 双架构发布包 → dist/（启动器 + x86/ + x64/ + 共享）
+#   mingw32-make -f Makefile all            # 仅 x64 构建 → dist/x64
+#   mingw32-make -f Makefile ARCH=x86 all   # 仅 x86 构建 → dist/x86（需 i686 工具链）
 #   mingw32-make -f Makefile check          # 单元测试（纯逻辑，零依赖）
+#   mingw32-make -f Makefile clean          # 清理（当前 ARCH）
 #
-# 架构开关 ARCH（默认 x64）：x86 用**独立的输出目录**（build-x86 / dist-x86），
-# 不会污染 x64 产物；两套可共存。32 位只影响 Windows 侧 exe，救援层与宿主位数无关。
+# 架构设计（2026-09-24）：Windows 侧位数**跟随系统**（32 位系统跑 x86、64 位系统跑 x64，
+# 主要为备份压缩速度）；发布包根目录放 **x86 启动器**（`SysRecover.exe`/`SysRecoverUI.exe`，
+# 无第三方依赖），由它按系统位数调用 `x86\` 或 `x64\` 下的真程序。**Linux 救援层固定 x86_64**
+# （与宿主位数无关）。见 docs/08 §0 与 src/launcher/launcher.cpp。
 
 ARCH ?= x64
 ifeq ($(ARCH),x86)
@@ -22,7 +22,7 @@ ifeq ($(ARCH),x86)
   AR       = $(MINGW)/bin/ar.exe
   WINDRES  = $(MINGW)/bin/windres.exe
   OBJDIR   = build-x86
-  DISTDIR  = dist-x86
+  DISTDIR  = dist/x86
   WIMLIB   = third_party/wimlib/x86
   UCRT     = third_party/ucrt/x86
 else
@@ -31,10 +31,15 @@ else
   AR       = ar
   WINDRES  = windres
   OBJDIR   = build
-  DISTDIR  = dist
+  DISTDIR  = dist/x64
   WIMLIB   = third_party/wimlib
   UCRT     = third_party/ucrt/x64
 endif
+
+# 启动器**始终 x86**（要能在 32 位系统上跑），独立于 ARCH；只用 kernel32/shell32。
+MINGW32    ?= D:/Prog/ProgIDE/mingw32
+LAUNCH_CXX = $(MINGW32)/bin/i686-w64-mingw32-g++
+LAUNCH_OBJ = build/launcher.o
 
 # 构建脚本用的 Python（PATH 上的 python 可能是 Microsoft Store 占位符，不可用）
 PYTHON   ?= D:/Prog/ProgIDE/Python/Python313/python.exe
@@ -91,10 +96,12 @@ GUI_RC     = src/gui/SysRecoverUI.rc
 GUI_RC_OBJ = $(OBJDIR)/SysRecoverUI_rc.o
 
 all: cli gui
+	@copy /Y $(subst /,\,$(WIMLIB))\libwim-15.dll $(subst /,\,$(DISTDIR))\ >nul
+	@if exist $(subst /,\,$(UCRT))\*.dll copy /Y $(subst /,\,$(UCRT))\*.dll $(subst /,\,$(DISTDIR))\ >nul
 
 cli: $(CLI_OUT)
 
-# x86 用独立输出目录，需先建好（x64 的 build/ 因含 duilib.mk 必然存在，此规则为空跑）
+# 独立输出目录（cmd 的 mkdir 会自动建中间目录，故 dist\x64 可直接建）
 $(OBJDIR):
 	@if not exist $(subst /,\,$(OBJDIR)) mkdir $(subst /,\,$(OBJDIR))
 
@@ -151,31 +158,42 @@ check: $(TEST_BIN)
 $(TEST_BIN): $(TEST_SRC) $(TEST_UNITS) src/common/version.h | $(OBJDIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(TEST_SRC) $(TEST_UNITS) -o $(TEST_BIN) -static -mconsole -ladvapi32 -lole32 -luuid
 
-package: all
-	@copy /Y $(subst /,\,$(WIMLIB))\libwim-15.dll $(subst /,\,$(DISTDIR))\ >nul
-	@if not exist $(subst /,\,$(DISTDIR))\bootfiles mkdir $(subst /,\,$(DISTDIR))\bootfiles
-	@copy /Y bootfiles\grldr $(subst /,\,$(DISTDIR))\bootfiles\ >nul
-	@copy /Y bootfiles\grldr.mbr $(subst /,\,$(DISTDIR))\bootfiles\ >nul
-	@copy /Y bootfiles\vmlinuz-zjrestore $(subst /,\,$(DISTDIR))\bootfiles\ >nul
-	@copy /Y bootfiles\initramfs-zjrestore.cpio.gz $(subst /,\,$(DISTDIR))\bootfiles\ >nul
-	@copy /Y bootfiles\zjrestore-lite.sh $(subst /,\,$(DISTDIR))\bootfiles\ >nul
-	@if not exist $(subst /,\,$(DISTDIR))\bootfiles\sb mkdir $(subst /,\,$(DISTDIR))\bootfiles\sb
+# ---- ★ 双架构发布包：启动器 + x86/ + x64/ + 与位数无关的共享资源 ----
+# 需要**两套工具链**：x64 走 PATH 上的 g++（请先把 mingw64\bin 加到 PATH），x86/启动器走绝对路径。
+package:
+	@echo === [1/4] 构建 x64 ===
+	$(MAKE) -f Makefile ARCH=x64 all
+	@echo === [2/4] 构建 x86 ===
+	$(MAKE) -f Makefile ARCH=x86 all
+	@echo === [3/4] 构建启动器（x86，通吃）===
+	$(LAUNCH_CXX) -O2 -std=c++17 -Wall -Wextra -D_WIN32_WINNT=0x0601 -DUNICODE -D_UNICODE -c src/launcher/launcher.cpp -o $(LAUNCH_OBJ)
+	$(LAUNCH_CXX) $(LAUNCH_OBJ) -o dist/SysRecover.exe -static -s -mconsole -lshell32
+	$(LAUNCH_CXX) $(LAUNCH_OBJ) -o dist/SysRecoverUI.exe -static -s -mwindows -lshell32
+	@echo === [4/4] 组装 dist/ ===
+	@if not exist dist\bootfiles mkdir dist\bootfiles
+	@copy /Y bootfiles\grldr dist\bootfiles\ >nul
+	@copy /Y bootfiles\grldr.mbr dist\bootfiles\ >nul
+	@copy /Y bootfiles\vmlinuz-zjrestore dist\bootfiles\ >nul
+	@copy /Y bootfiles\initramfs-zjrestore.cpio.gz dist\bootfiles\ >nul
+	@copy /Y bootfiles\zjrestore-lite.sh dist\bootfiles\ >nul
+	@if not exist dist\bootfiles\sb mkdir dist\bootfiles\sb
 # package 只增不删 → 换链时旧资产会残留（grub-ubuntu.efi 曾与 grubx64.efi 并存）。
 # 注意：这里必须用 make 的 `#` 注释；命令行注释 `::` 在「单独一条 cmd /c」下不是合法命令。
-	@if exist $(subst /,\,$(DISTDIR))\bootfiles\sb\grub-ubuntu.efi del /Q $(subst /,\,$(DISTDIR))\bootfiles\sb\grub-ubuntu.efi >nul
-	@copy /Y bootfiles\sb\shimx64.efi $(subst /,\,$(DISTDIR))\bootfiles\sb\ >nul
-	@copy /Y bootfiles\sb\grubx64.efi $(subst /,\,$(DISTDIR))\bootfiles\sb\ >nul
-	@copy /Y bootfiles\sb\grub.cfg $(subst /,\,$(DISTDIR))\bootfiles\sb\ >nul
-	@copy /Y THIRD_PARTY_LICENSES.txt $(subst /,\,$(DISTDIR))\ >nul
-	@if exist $(subst /,\,$(UCRT))\*.dll copy /Y $(subst /,\,$(UCRT))\*.dll $(subst /,\,$(DISTDIR))\ >nul
-	@if not exist $(subst /,\,$(DISTDIR))\resources\themes\default\main mkdir $(subst /,\,$(DISTDIR))\resources\themes\default\main
-	@copy /Y resources\themes\default\global.xml $(subst /,\,$(DISTDIR))\resources\themes\default\ >nul
-	@copy /Y resources\themes\default\main\main.xml $(subst /,\,$(DISTDIR))\resources\themes\default\main\ >nul
-	@if not exist $(subst /,\,$(DISTDIR))\skin mkdir $(subst /,\,$(DISTDIR))\skin
-	@copy /Y skin\main.xml $(subst /,\,$(DISTDIR))\skin\ >nul
-	@copy /Y skin\instance.xml $(subst /,\,$(DISTDIR))\skin\ >nul
-	@copy /Y skin\confirm.xml $(subst /,\,$(DISTDIR))\skin\ >nul
-	@echo {"name":"SysRecover","version":"$(VERSION)","arch":"$(ARCH)"} > $(subst /,\,$(DISTDIR))\version.json
-	@dir $(subst /,\,$(DISTDIR))\SysRecover.exe $(subst /,\,$(DISTDIR))\SysRecoverUI.exe $(subst /,\,$(DISTDIR))\libwim-15.dll
+	@if exist dist\bootfiles\sb\grub-ubuntu.efi del /Q dist\bootfiles\sb\grub-ubuntu.efi >nul
+	@copy /Y bootfiles\sb\shimx64.efi dist\bootfiles\sb\ >nul
+	@copy /Y bootfiles\sb\grubx64.efi dist\bootfiles\sb\ >nul
+	@copy /Y bootfiles\sb\grub.cfg dist\bootfiles\sb\ >nul
+	@copy /Y THIRD_PARTY_LICENSES.txt dist\ >nul
+# 启动器本身也要 UCRT（Win7），故在**根目录**再放一套 x86 UCRT（启动器是 x86）
+	@if exist third_party\ucrt\x86\*.dll copy /Y third_party\ucrt\x86\*.dll dist\ >nul
+	@if not exist dist\resources\themes\default\main mkdir dist\resources\themes\default\main
+	@copy /Y resources\themes\default\global.xml dist\resources\themes\default\ >nul
+	@copy /Y resources\themes\default\main\main.xml dist\resources\themes\default\main\ >nul
+	@if not exist dist\skin mkdir dist\skin
+	@copy /Y skin\main.xml dist\skin\ >nul
+	@copy /Y skin\instance.xml dist\skin\ >nul
+	@copy /Y skin\confirm.xml dist\skin\ >nul
+	@echo {"name":"SysRecover","version":"$(VERSION)","arch":"x86+x64"} > dist\version.json
+	@dir dist\SysRecover.exe dist\SysRecoverUI.exe dist\x86\SysRecover.exe dist\x64\SysRecover.exe
 
 .PHONY: all cli gui clean package check
