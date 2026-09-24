@@ -43,6 +43,7 @@ EOF
 "$MCOPY" -o -i "$IMG@@$OFFSET" base/menu.lst ::menu.lst
 "$MCOPY" -o -i "$IMG@@$OFFSET" "$BOOT/vmlinuz-zjrestore" ::vmlinuz-zjrestore
 "$MCOPY" -o -i "$IMG@@$OFFSET" "$BOOT/initramfs-zjrestore.cpio.gz" ::initramfs-zjrestore.cpio.gz
-"$MCOPY" -o -i "$IMG@@$OFFSET" "$BOOT/restore.sh" ::restore.sh
+# 注：bootfiles/restore.sh 已不存在（救援脚本打进 initramfs 内）——2026-09-24 修正。
+#     本脚本仅供老的单分区引导测试；更完整的 BIOS 冒烟见 bios-smoke.ps1。
 
 echo "testdisk.raw ready."
