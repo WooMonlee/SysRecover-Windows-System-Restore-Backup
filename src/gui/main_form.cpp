@@ -131,6 +131,7 @@ void CMainForm::InitWindow() {
     PopulatePartitions();
     ApplyModeUi();
     RefreshBootMenuBtn();
+    SetTimer(m_hWnd, 2, 500, nullptr);  // 路径输入兜底同步（见 WM_TIMER/wParam==2）
 }
 
 // ────────────────── HandleMessage（worker 线程安全回调） ──────────────────
@@ -172,6 +173,13 @@ LRESULT CMainForm::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                 UpdateMainAction();
             }
         }
+        return 0;
+    }
+    if (msg == WM_TIMER && wParam == 2) {
+        // 兜底同步：不管路径是手打/粘贴/拖入/浏览进来的，每 500ms 回读一次原生 EDIT，
+        // 有变化就更新 m_wimPath、必要时解析镜像、刷新主按钮。只靠 EN_CHANGE 不够稳
+        // （焦点/时序/事件路径都可能漏，用户 2026-09-23 实测按钮仍不亮）。
+        SyncImagePathFromUi();
         return 0;
     }
     if (msg == WM_TIMER && wParam == 1) {
@@ -1063,9 +1071,50 @@ void CMainForm::UpdateMainAction() {
     p->SetBkColor(ok ? ui_skin::C_PRIMARY : ui_skin::C_DISABLED);
     p->SetTextColor(ok ? 0xFFFFFFFF : ui_skin::C_DIS_TEXT);
     p->Invalidate();
+    // 按钮为什么是灰的？在状态栏说清楚（用户 2026-09-23：手输路径后按钮不亮，
+    // 完全无从判断缺哪一步）。只在空闲且确实不可用时提示，避免覆盖任务中的状态。
+    if (!ok && !m_busy) {
+        if (m_wimPath.empty())
+            SetStatus(m_backupMode ? L"请先选择保存位置（或手动输入 / 拖入）"
+                                   : L"请先选择镜像文件（或手动输入 / 拖入）");
+        else if (m_selPart < 0)
+            SetStatus(m_backupMode ? L"请选择第二步的源分区"
+                                   : L"请选择第二步的目标分区");
+        else if (!m_backupMode && !m_imageOk)
+            SetStatus(L"镜像不可用（解析失败或文件不存在）");
+    }
 }
 
 // ────────────────── UI 辅助 ──────────────────
+
+// 从界面回读镜像路径（原生 EDIT 才是"真身"，见 PIT-077），同步状态并刷新按钮。
+void CMainForm::SyncImagePathFromUi() {
+    CControlUI* pEdit = m_PaintManager.FindControl(_T("ImagePath"));
+    if (!pEdit)
+        return;
+    std::wstring p;
+    HWND hNative = static_cast<CSkinEditUI*>(pEdit)->GetNativeEditHWND();
+    if (hNative) {
+        int n = ::GetWindowTextLengthW(hNative);
+        if (n > 0) {
+            std::wstring buf(static_cast<size_t>(n) + 1, L'\0');
+            ::GetWindowTextW(hNative, &buf[0], n + 1);
+            buf.resize(static_cast<size_t>(n));
+            p = buf;
+        }
+    }
+    if (p.empty())
+        p = pEdit->GetText().GetData();
+    if (p == m_wimPath)
+        return;
+    m_wimPath = p;
+    if (!m_backupMode && !m_wimPath.empty() && m_wimPath != m_lastLoadedWim &&
+        GetFileAttributesW(m_wimPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        m_lastLoadedWim = m_wimPath;
+        LoadWimImages(m_wimPath);
+    }
+    UpdateMainAction();
+}
 
 void CMainForm::RebootNow() {
     // 不用 shutdown.exe：带 /t 时它会弹「Windows 将在一分钟后关闭」对话框
