@@ -55,6 +55,9 @@ private:
     void StartBackupAsync();   // worker 线程：RunBackup
     void ApplyModeUi();
     void UpdateMainAction();
+    // 从界面（原生 EDIT 子窗口）回读镜像路径 → 同步 m_wimPath、必要时解析镜像、刷新按钮。
+    // 供 EN_CHANGE 与 500ms 兜底定时器共用（用户 2026-09-23：手输/粘贴后按钮不亮）。
+    void SyncImagePathFromUi();
     void ToggleBootMenu();       // 「安装/删除启动还原」按钮
     void RefreshBootMenuBtn();   // 按是否已安装刷新按钮文字
     void RebootNow();
