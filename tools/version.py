@@ -20,20 +20,31 @@ PAT = re.compile(r'#define\s+SYSRECOVER_VERSION\s+"([^"]+)"')
 SEMVER = re.compile(r"\d+\.\d+\.\d+")
 
 
-def read_version() -> str:
-    m = PAT.search(VERSION_H.read_text(encoding="utf-8"))
+def is_semver(v: str) -> bool:
+    return bool(SEMVER.fullmatch(v))
+
+
+def bump(v: str) -> str:
+    """修订号 +1（主/次不动）。"""
+    major, minor, patch = (int(x) for x in v.split("."))
+    return "%d.%d.%d" % (major, minor, patch + 1)
+
+
+def read_version(path: Path = VERSION_H) -> str:
+    m = PAT.search(Path(path).read_text(encoding="utf-8"))
     if not m:
-        sys.exit("ERROR: 在 %s 里找不到 SYSRECOVER_VERSION" % VERSION_H)
+        sys.exit("ERROR: 在 %s 里找不到 SYSRECOVER_VERSION" % path)
     return m.group(1)
 
 
-def write_version(new: str) -> None:
-    text = VERSION_H.read_text(encoding="utf-8")
+def write_version(new: str, path: Path = VERSION_H) -> None:
+    path = Path(path)
+    text = path.read_text(encoding="utf-8")
     text, n = PAT.subn('#define SYSRECOVER_VERSION "%s"' % new, text, count=1)
     if n != 1:
-        sys.exit("ERROR: 写入 %s 失败" % VERSION_H)
+        sys.exit("ERROR: 写入 %s 失败" % path)
     # 必须用 \n（这是 C++ 源文件，CRLF 无意义；Windows 上文本模式会写成 \r\n）
-    VERSION_H.write_text(text, encoding="utf-8", newline="\n")
+    path.write_text(text, encoding="utf-8", newline="\n")
     print(new)
 
 
@@ -46,18 +57,17 @@ def main() -> None:
 
     cur = read_version()
     if a.check:
-        if not SEMVER.fullmatch(cur):
+        if not is_semver(cur):
             sys.exit("ERROR: 版本号格式不对: " + cur)
         print("OK " + cur)
         return
     if a.set:
-        if not SEMVER.fullmatch(a.set):
+        if not is_semver(a.set):
             sys.exit("ERROR: 需要 X.Y.Z 格式，收到: " + a.set)
         write_version(a.set)
         return
     if a.bump:
-        major, minor, patch = (int(x) for x in cur.split("."))
-        write_version("%d.%d.%d" % (major, minor, patch + 1))
+        write_version(bump(cur))
         return
     print(cur)
 

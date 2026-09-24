@@ -6,8 +6,8 @@
 #include <cstring>
 
 namespace sysrecover {
-namespace {
 
+// CRC-32（IEEE 802.3，ZIP 用的那种）。公开出来便于单元测试。
 uint32_t Crc32(const void* data, size_t n) {
     static uint32_t table[256];
     static bool init = false;
@@ -26,6 +26,8 @@ uint32_t Crc32(const void* data, size_t n) {
         crc = table[(crc ^ p[i]) & 0xFF] ^ (crc >> 8);
     return crc ^ 0xFFFFFFFFu;
 }
+
+namespace {
 
 // MS-DOS 时间/日期（ZIP 用的老格式）
 void DosTimeDate(uint16_t* t, uint16_t* d) {

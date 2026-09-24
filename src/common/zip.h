@@ -10,6 +10,9 @@
 
 namespace sysrecover {
 
+// CRC-32（IEEE 802.3 / ZIP）。公开出来便于单元测试。
+uint32_t Crc32(const void* data, size_t n);
+
 class ZipWriter {
 public:
     explicit ZipWriter(const std::wstring& zipPath);

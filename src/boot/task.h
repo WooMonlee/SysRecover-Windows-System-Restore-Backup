@@ -37,6 +37,16 @@ struct RestoreTask {
 bool WriteRestoreTask(const std::wstring& dir, const RestoreTask& t,
                       std::string& log);
 
+// —— 以下三个是**纯函数**（不碰文件系统），抽出来便于单元测试契约文本 ——
+// 任务 sidecar（key=value，Linux restore.sh 读）。
+std::string BuildTaskConf(const RestoreTask& t);
+// 任务的 JSON 形态（同内容，供 Windows 侧/GUI 读）。
+std::string BuildTaskJson(const RestoreTask& t);
+// _zjresy 恢复日志文本（主发现契约，AGENTS.md §5）。
+// isoTimestamp 由调用方给（便于测试；生产用当前本地时间）。
+std::string BuildRestoreLogText(const RestoreTask& t,
+                                const std::string& isoTimestamp);
+
 // 写 _zjresy{日时分}.log 到目标分区根目录，写前先清同模式旧文件。
 // letter=目标盘符（如 L"C"）。这是 restore.sh 的主发现契约：
 // Linux 侧扫描各分区根目录，含 action=restore 的日志所在分区即还原目标。

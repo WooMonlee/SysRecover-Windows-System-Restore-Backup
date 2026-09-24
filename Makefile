@@ -7,6 +7,7 @@
 #   mingw32-make -f Makefile gui       # 仅 GUI（含 duilib 静态库）
 #   mingw32-make -f Makefile clean     # 清理
 #   mingw32-make -f Makefile package   # 构建 + 部署 bootfiles/皮肤 + version.json
+#   mingw32-make -f Makefile check     # 单元测试（纯逻辑，零依赖）
 
 CXX      = g++
 CC       = gcc
@@ -108,6 +109,20 @@ clean:
 	-del /Q build\duilib\*.o build\libduilib.a 2>nul
 	-del /S /Q build\app\*.o build\libapp.a 2>nul
 	-del /Q build\SysRecoverUI_rc.o build\SysRecover_rc.o 2>nul
+	-del /Q build\tests.exe 2>nul
+
+# ---- 单元测试（零依赖，纯逻辑；不链 duilib/wimlib，跑得快） ----
+# 只编译"被抽出来的纯逻辑"单元（见各头文件注释里的 refactor 说明）。
+TEST_SRC   = tests/tiny_test.cpp tests/unit_tests.cpp tests/main.cpp
+TEST_UNITS = src/common/sysinfo.cpp src/wim/exclude.cpp src/boot/task.cpp src/common/zip.cpp
+TEST_BIN   = build/tests.exe
+
+check: $(TEST_BIN)
+	$(TEST_BIN)
+	$(PYTHON) tests/test_version.py
+
+$(TEST_BIN): $(TEST_SRC) $(TEST_UNITS) src/common/version.h
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(TEST_SRC) $(TEST_UNITS) -o $(TEST_BIN) -static -mconsole -ladvapi32 -lole32 -luuid
 
 package: all
 	@copy /Y third_party\wimlib\libwim-15.dll dist\ >nul
@@ -136,4 +151,4 @@ package: all
 	@echo {"name":"SysRecover","version":"$(VERSION)"} > dist\version.json
 	@dir dist\SysRecover.exe dist\SysRecoverUI.exe dist\libwim-15.dll
 
-.PHONY: all cli gui clean package
+.PHONY: all cli gui clean package check

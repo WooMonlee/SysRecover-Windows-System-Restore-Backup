@@ -3,6 +3,8 @@ dist/
 *.o
 *.d
 *.a
+build/*.exe
+__pycache__/
 # BIOS/MBR 里程碑快照（含整份源码+dist 副本，103MB；要入库就删掉这行）
 BIOS版OK/
 # build/duilib.mk 是构建清单（Makefile include 依赖），须入库

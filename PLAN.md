@@ -323,7 +323,7 @@ Debian 的模块也是 `.ko.xz`）② 先验"能组装出可启动 initramfs"（
 |---|---|---|---|
 | 1 | CLI `backup --name` 默认改用系统描述（与 GUI 一致，复用 `src/common/sysinfo`）| 一致性 | 分钟级 |
 | 2 | `--append` 追加模式的**中断保护**（现为就地写，中断可能留下部分更新的文件）| 可靠性 | 1~2 小时 |
-| 3 | **`make check` + 单元测试**：`tools/version.py`、`sysinfo`（注册表解析/中文映射）、日志解析、`exclude` 清单 | **回归安全**（完工后最划算的投入）| 半天 |
+| 3 | ✅ **`make check` + 单元测试**（2026-09-24 完成）：`tools/version.py`、`sysinfo`（注册表值→描述组合/中文映射）、`exclude`（含 PIT-056 回归守卫）、`task` 契约文本、`zip` CRC32 | **回归安全**（完工后最划算的投入）| ✅ 已完成 |
 | 4 | **Secure Boot 备选 B：整链换 AlmaLinux**（见 §11）→ 解决 2026 新硬件兼容 | 兼容性 | 数小时 |
 | 5 | **x86 版 Windows 侧（`0.3`）**：i686 工具链 + 官方 32 位 `libwim-15.dll` + `Makefile ARCH=x86` + x86 UCRT + WOW64 复核 | **Win7/Win10 x86 覆盖面** | 1~2 天 |
 | 6 | 发布说明 / 下载页文案（明确"仅 64 位"等口径，避免用户误解）| 交付 | 1 小时 |
