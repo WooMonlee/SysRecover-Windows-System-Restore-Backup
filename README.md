@@ -246,9 +246,13 @@ skin/ resources/ version.json THIRD_PARTY_LICENSES.txt
 - **2026 新硬件 Secure Boot**：已换 **Debian 双签 shim（CA2011+CA2023）**，覆盖"只信新证书（CA2023）的
   2026 新固件"（Ubuntu 单签做不到）。机制见 [`PLAN.md` §11.1](PLAN.md)。用户 VMware（SB 开）实测还原成功 ✓，
   "只信 CA2023 的新固件"仍**待真机验证**。
-- **Windows 7 零安装**：exe 与 `libwim-15.dll` 依赖 UCRT。实测装 **VC++ 2015-2022 x64 运行库**即可；
-  想把 UCRT 随包带上（约 1.5MB，微软官方支持的本地部署方式），把 DLL 放进 `third_party/ucrt/x64/`，
-  `make package` 会自动复制到 `dist/`。取法见 `third_party/ucrt/README.txt`。
+- **Windows 7 零安装**：exe 与 `libwim-15.dll` 依赖 **UCRT**（Win7 无内置）→ 发布包**已随带 x64/x86 两套 UCRT**
+  （`third_party/ucrt/{x64,x86}`，`make package` 自动分发），Win7 无需另装 VC++ 运行库。
+- **Windows 2003 / XP / Vista 不支持**：exe 依赖 **UCRT**（要求 **Win7 SP1+**），且产品目标矩阵就是 Win7 / Win10 / Win11 / WinPE。
+  实测 Win2003 会报 `找不到 api-ms-win-core-errorhandling-l1-1-0.dll`（UCRT API set 不存在）。
+- **Win7 作目标 + UEFI 固件不稳**：Win7 的 UEFI 支持本身很弱，且 UEFI 还原时我们**不重刷 ESP 上的引导文件版本**
+  （救援层在 Linux，跑不了 `bcdboot`）→ 实测在"按 Win10 配的 UEFI VM"里还原 Win7 会出现**引导循环**。
+  **建议 Win7 目标走 BIOS/MBR**（Win7 的主流形态）。已列入待办（见 `docs/14` §3：还原后首次启动刷 `bcdboot`）。
 - **PE 就地还原 / RAID 真机 / 忙时关闭**：代码已就绪，**待实测**（[`docs/11` §3](docs/11-接手指南（读我优先）.md) 有清单）。
 - `ZJ_ENABLE_MOK_PATH`（备选线：我们自签的 UKI + MOK 注册）默认**不编译、不随包**
   （`src/boot/uefi.cpp` 里改成 1 可启用）。
