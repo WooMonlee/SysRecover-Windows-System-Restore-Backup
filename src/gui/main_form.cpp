@@ -39,6 +39,33 @@ std::string W2U(const std::wstring& ws) {
     return s;
 }
 
+// 路径是否"像镜像文件"（以 .wim/.esd/.swm 结尾，忽略大小写）。用**手写**比较，
+// 不引 locale（避免 <cwctype> 依赖）。
+bool LooksLikeImagePath(const std::wstring& p) {
+    if (p.size() < 4) return false;
+    size_t n = p.size();
+    auto eq = [&](const wchar_t* ext) {
+        for (int i = 0; i < 4; ++i) {
+            wchar_t a = p[n - 4 + i];
+            if (a >= L'A' && a <= L'Z') a = (wchar_t)(a - L'A' + L'a');
+            if (a != ext[i]) return false;
+        }
+        return true;
+    };
+    return eq(L".wim") || eq(L".esd") || eq(L".swm");
+}
+
+// 镜像路径是否"值得尝试打开"。
+// ⚠️ 不要只用 GetFileAttributesW 预筛：GUI 带 requireAdministrator 清单（提权进程），
+// 受 **UAC 会话隔离**影响，提权后的登录会话对 UNC 路径（\\server\share\...）常拿不到
+// 属性 → 返回 INVALID → 以前直接跳过 LoadWimImages → 主按钮**一直灰且无任何报错**
+// （用户 2026-09-23 实测：本地路径能变蓝，网络/UNC 路径不变蓝）。改为：只要路径
+// 像镜像文件就交给 wimlib 去开 —— 开得了按钮变蓝，开不了也会给出明确错误。
+bool ImagePathReady(const std::wstring& p) {
+    return ::GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES ||
+           LooksLikeImagePath(p);
+}
+
 std::wstring FormatSize(uint64_t bytes) {
     wchar_t buf[64];
     if (bytes < 1024ULL * 1024 * 1024)
@@ -164,9 +191,7 @@ LRESULT CMainForm::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             if (p != m_wimPath) {
                 m_wimPath = p;
                 if (!m_backupMode && !m_wimPath.empty() &&
-                    m_wimPath != m_lastLoadedWim &&
-                    GetFileAttributesW(m_wimPath.c_str()) !=
-                        INVALID_FILE_ATTRIBUTES) {
+                    m_wimPath != m_lastLoadedWim && ImagePathReady(m_wimPath)) {
                     m_lastLoadedWim = m_wimPath;
                     LoadWimImages(m_wimPath);
                 }
@@ -1126,7 +1151,7 @@ void CMainForm::SyncImagePathFromUi() {
         return;
     m_wimPath = p;
     if (!m_backupMode && !m_wimPath.empty() && m_wimPath != m_lastLoadedWim &&
-        GetFileAttributesW(m_wimPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        ImagePathReady(m_wimPath)) {
         m_lastLoadedWim = m_wimPath;
         LoadWimImages(m_wimPath);
     }
