@@ -1,6 +1,6 @@
 # SysRecover（知鉴一键还原 · 单机版）
 
-> 版本 `0.1.4`｜**仅 64 位（x64）**｜Windows 7 / 10 / 11 / WinPE｜发布包 ≈55 MB（其中 93% 是救援层）
+> 版本 `0.3.1`｜**64 位（x64）**，32 位（Win7/Win10 x86）计划中｜Windows 7 / 10 / 11 / WinPE｜发布包 ≈39 MB（其中 ≈90% 是救援层）
 > 许可：自有代码 + 第三方组件「单独分发」，清单与全文见 `THIRD_PARTY_LICENSES.txt`
 
 一句话：**把 Windows 系统备份成一个镜像文件，需要的时候一键还原回去。**
@@ -32,7 +32,7 @@
 | 分区管理 / 调整分区 / 克隆磁盘 | 我们不做磁盘工具，只处理"把系统写回去"这件事 |
 | 数据恢复 | 不做 |
 | **多点还原 / 差分秒还原** | 这条产品线**没有**，也不打算加（那是另一个产品线的事） |
-| 32 位系统 | 目前**只出 x64**（32 位系统上 exe 会被系统直接拒绝，程序内无法提示；见「已知限制」） |
+| 32 位系统 | **暂只出 x64**；32 位（Win7/Win10 x86）**计划中**（`0.3`，见「已知限制」与 [`docs/08`](docs/08-32位支持评估（待实施）.md)） |
 
 ---
 
@@ -41,8 +41,8 @@
 因为实际干活时会碰上这几件事，而很多工具在这几件事上会翻车：
 
 1. **阵列卡 / 服务器机器上，救援环境认不到硬盘** —— 很多 PE 的驱动覆盖不到 RAID 卡。
-   → 我们的救援层是完整 Linux 内核 + **1025 个存储模块**（`megaraid_sas`/`mpt3sas`/`isci`/`vmd`/`hpsa`/
-   `aacraid`/`arcmsr`/`virtio_scsi`… 都在），阵列卡机器上照样能干活。
+   → 我们的救援层是完整 Linux 内核 + **494 个存储/文件系统模块**（`megaraid_sas`/`mpt3sas`/`isci`/`vmd`/`hpsa`/
+   `aacraid`/`arcmsr`/`pm80xx`/`mvsas`/`lpfc`/`qla2xxx`/`virtio_scsi`… 都在），阵列卡机器上照样能干活。
 2. **还得准备 U 盘 / PE 启动盘** —— 多一道工序，也多一个出错的地方。
    → 救援层**内置在软件里**，部署一次，之后一条链走到底。
 3. **Secure Boot 机器上要进 BIOS 关安全启动**（部分同类工具就是这样要求的）。
@@ -81,10 +81,10 @@
 |---|---|
 | **BIOS / MBR** | `MBR → bootmgr → BCD（实模式启动扇区 → \grldr.mbr）→ \grldr → \menu.lst → 内核 + initramfs` |
 | **UEFI（Secure Boot 关）** | 直接写**固件启动项**（NVRAM `Boot####`），由固件加载内核，命令行走 `OptionalData` |
-| **UEFI + Secure Boot 开** | `固件 → shimx64.efi（微软签名）→ grubx64.efi（Canonical 签名的 GRUB）→ Canonical 签名的 Ubuntu 内核 + 我们的 initramfs` |
+| **UEFI + Secure Boot 开** | `固件 → shimx64.efi（**微软双签 CA2011+CA2023**）→ grubx64.efi（**Debian 签名**的 GRUB）→ Debian 签名内核 + 我们的 initramfs` |
 
-关于最后一条：它**没有绕过任何机制** —— 链上每个可执行文件都有合法签名，和 Ubuntu 正常开机走的是同一条路。
-所以**不需要用户注册 MOK、也不需要关闭 Secure Boot**。
+关于最后一条：它**没有绕过任何机制** —— 链上每个可执行文件都有合法签名，和 Debian 正常开机走的是同一条路。
+所以**不需要用户注册 MOK、也不需要关闭 Secure Boot**。shim 为 **CA2011+CA2023 双签**，覆盖 2026 新固件。
 
 ---
 
@@ -111,7 +111,7 @@
 | 热备份（VSS）→ 还原后正常进系统 | ✅ 2026-09-19 实测 |
 | **Win7 宿主**（装 VC++ 运行库后）运行工具 | ✅ 2026-09-20 实测 |
 | **Win7 宿主还原 Win10 镜像**（跨系统版本） | ✅ 2026-09-20 实测，还原后正常启动 |
-| 阵列卡/RAID 驱动入包（26 个） | ✅ 2026-09-20 QEMU 实测加载成功（**真机待验**） |
+| 阵列卡/RAID 驱动入包（Debian 内核，关键 HBA 全覆盖）| ✅ QEMU 实测加载成功（**真机待验**）|
 | QEMU 自动回归（UEFI 起救援、屏显、PBR 探针、BIOS/GRUB4DOS、全流程演练…）| ✅ 见 [`docs/07`](docs/07-测试矩阵与回归记录.md) |
 | **救援层模块裁剪**（779→494，dist 54→39MB）后的完整回归 | ✅ 2026-09-24 实测（含端到端还原演练，PIT-079/080） |
 | **PE / 非系统盘「就地还原」（不重启）** | 🚧 **待实测**（代码已就绪，验收清单见 [`docs/09`](docs/09-PE直装验收清单.md)） |
@@ -216,16 +216,16 @@ mingw32-make -f Makefile clean
 ```
 
 - 工具链：**MinGW-w64 GCC 14.2**（路径写死在 `Makefile` 头部，其余全相对路径）
-- 救援层组装：`tools/build-ubuntu-rescue.py`（**Ubuntu 签名内核 + 签名模块** + Alpine 用户态）
-- 回归测试：`tools/vmtest/*.ps1`（清单见 [`docs/07`](docs/07-测试矩阵与回归记录.md)）
+- 救援层组装：`tools/build-debian-rescue.py`（**Debian 签名内核 + 签名模块** + Alpine 用户态）
+- 回归测试：`tools/vmtest/*.ps1`（UEFI/SB、BIOS/GRUB4DOS、屏显、固件直启…）+ `mk-drill.py`/`run-drill.ps1`（端到端还原演练）；清单见 [`docs/07`](docs/07-测试矩阵与回归记录.md)
 - 换机器/换环境：见 [`docs/10-新环境交接说明`](docs/10-新环境交接说明.md)
 
-### 发布包内容（`dist/`，约 55 MB）
+### 发布包内容（`dist/`，约 39 MB）
 
 ```
 SysRecover.exe / SysRecoverUI.exe / libwim-15.dll
 bootfiles/{grldr, grldr.mbr, vmlinuz-zjrestore, initramfs-zjrestore.cpio.gz, zjrestore-lite.sh}
-bootfiles/sb/{shimx64.efi, grub-ubuntu.efi, grub.cfg}     # Secure Boot 链
+bootfiles/sb/{shimx64.efi, grubx64.efi, grub.cfg}         # Secure Boot 链
 skin/ resources/ version.json THIRD_PARTY_LICENSES.txt
 ```
 
@@ -233,11 +233,11 @@ skin/ resources/ version.json THIRD_PARTY_LICENSES.txt
 
 ## 十、已知限制与待验证
 
-- **仅 x64**：32 位 Windows / PE 上 exe 会被系统直接拒绝（不是我们能拦的）。三条可选路线与代价见
-  [`docs/08`](docs/08-32位支持评估（待实施）.md)。
-- **2026 新硬件 Secure Boot**：目前 shim 只带 **CA2011** 签名（CA2011 已于 2026-06-26 到期，但**不影响
-  已信任它的固件启动**）→ **只信新证书（CA2023）的新机器**暂时起不来。备选方案见
-  [`PLAN.md` §11](PLAN.md)（等 Ubuntu 发双签 / 整链换 AlmaLinux）。
+- **32 位 Windows 暂不支持**：现在只出 x64；`0.3` 计划出 **x86 单包**（通吃 32/64 位 Windows，救援层不动）。
+  代价与前置见 [`docs/08`](docs/08-32位支持评估（待实施）.md)。
+- **2026 新硬件 Secure Boot**：已换 **Debian 双签 shim（CA2011+CA2023）**，覆盖"只信新证书（CA2023）的
+  2026 新固件"（Ubuntu 单签做不到）。机制见 [`PLAN.md` §11.1](PLAN.md)。用户 VMware（SB 开）实测还原成功 ✓，
+  "只信 CA2023 的新固件"仍**待真机验证**。
 - **Windows 7 零安装**：exe 与 `libwim-15.dll` 依赖 UCRT。实测装 **VC++ 2015-2022 x64 运行库**即可；
   想把 UCRT 随包带上（约 1.5MB，微软官方支持的本地部署方式），把 DLL 放进 `third_party/ucrt/x64/`，
   `make package` 会自动复制到 `dist/`。取法见 `third_party/ucrt/README.txt`。
@@ -262,6 +262,7 @@ skin/ resources/ version.json THIRD_PARTY_LICENSES.txt
 |---|---|
 | [`docs/11-接手指南（读我优先）`](docs/11-接手指南（读我优先）.md) | **先读这个**：现状、下一步、文档地图 |
 | [`docs/00`](docs/00-项目简介（给协作者）.md)…[`docs/10`](docs/10-新环境交接说明.md) | 需求/架构/引导设计/跨层契约/磁盘与安全/构建合规/测试矩阵/32位评估/PE 验收/新环境 |
-| [`docs/12-相对优势与竞品对比`](docs/12-相对优势与竞品对比.md) | 和同类工具比，我们好在哪、差在哪（含对客户的话术） |
-| [`AGENTS.md`](AGENTS.md) | 操作手册：§0 五条红线、§7 引导 SOP、**§13 坑位册（PIT-001~071）** |
+| [`docs/12-相对优势与竞品对比`](docs/12-相对优势与竞品对比.md) | 和同类工具比，我们好在哪、差在哪（含对客户的话术、含 Image for Windows 专节） |
+| [`docs/13-开源同类调研（Clonezilla-Rescuezilla-FOG）`](docs/13-开源同类调研（Clonezilla-Rescuezilla-FOG）.md) | 开源同类（Clonezilla / Rescuezilla / FOG）调研 |
+| [`AGENTS.md`](AGENTS.md) | 操作手册：§0 五条红线、§7 引导 SOP、**§13 坑位册（PIT-001~081）** |
 | [`PLAN.md`](PLAN.md) | 路线图、版本号规则、待决事项 |
