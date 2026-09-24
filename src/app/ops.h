@@ -53,6 +53,6 @@ int CheckRestoreSpace(const std::wstring& imagePath, int index,
 //     （§2 禁令1），needReboot=true。
 // 返回：0 成功；1 失败（err=原因）；4 安全门禁拒绝（err=理由）。
 int StageRestore(const RestoreRequest& req, std::string& err,
-                 bool* needReboot = nullptr);
+                 bool* needReboot = nullptr, ProgressFn progress = nullptr);
 
 }  // namespace sysrecover
