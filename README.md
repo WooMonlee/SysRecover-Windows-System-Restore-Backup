@@ -32,7 +32,7 @@
 | 分区管理 / 调整分区 / 克隆磁盘 | 我们不做磁盘工具，只处理"把系统写回去"这件事 |
 | 数据恢复 | 不做 |
 | **多点还原 / 差分秒还原** | 这条产品线**没有**，也不打算加（那是另一个产品线的事） |
-| 32 位系统 | **暂只出 x64**；32 位（Win7/Win10 x86）**计划中**（`0.3`，见「已知限制」与 [`docs/08`](docs/08-32位支持评估（待实施）.md)） |
+| 32 位系统 | ✅ **支持**：Windows 侧**跟随系统位数**（32 位系统跑 x86、64 位系统跑 x64），发布包根目录的启动器自动选；**Linux 救援层固定 x64** |
 
 ---
 
@@ -209,32 +209,40 @@ shutdown /r /t 0
 ## 九、构建（给想自己编的人）
 
 ```bash
-mingw32-make -f Makefile all        # CLI + GUI
-mingw32-make -f Makefile package    # 再部署 bootfiles/皮肤/许可到 dist/
-mingw32-make -f Makefile check      # 单元测试（纯逻辑，零依赖）
+mingw32-make -f Makefile package        # ★ 双架构发布包 → dist/（启动器 + x86/ + x64/ + 共享资源）
+mingw32-make -f Makefile all            # 仅 x64 构建 → dist/x64
+mingw32-make -f Makefile ARCH=x86 all   # 仅 x86 构建 → dist/x86
+mingw32-make -f Makefile check          # 单元测试（纯逻辑，零依赖）
 mingw32-make -f Makefile clean
 ```
 
-- 工具链：**MinGW-w64 GCC 14.2**（路径写死在 `Makefile` 头部，其余全相对路径）
+- 工具链：**x64 = MinGW-w64 GCC 14.2**（`mingw64`）、**x86 = winlibs i686 UCRT GCC 14.2**（`mingw32`）；
+  `package` 需要两套（x64 走 PATH 上的 `g++`，x86 与启动器走 `Makefile` 里写死的绝对路径）。
 - 救援层组装：`tools/build-debian-rescue.py`（**Debian 签名内核 + 签名模块** + Alpine 用户态）
 - 回归测试：`tools/vmtest/*.ps1`（UEFI/SB、BIOS/GRUB4DOS、屏显、固件直启…）+ `mk-drill.py`/`run-drill.ps1`（端到端还原演练）；清单见 [`docs/07`](docs/07-测试矩阵与回归记录.md)
 - 换机器/换环境：见 [`docs/10-新环境交接说明`](docs/10-新环境交接说明.md)
 
-### 发布包内容（`dist/`，约 39 MB）
+### 发布包内容（`dist/`，约 48 MB）
 
 ```
-SysRecover.exe / SysRecoverUI.exe / libwim-15.dll
+SysRecover.exe / SysRecoverUI.exe    # ★ 启动器（x86，通吃）：按系统位数调用 x86\ 或 x64\ 的真程序
+x86/{SysRecover.exe, SysRecoverUI.exe, libwim-15.dll, UCRT(16)}
+x64/{同上}                            # Windows 侧位数跟随系统（主要为备份压缩速度）
 bootfiles/{grldr, grldr.mbr, vmlinuz-zjrestore, initramfs-zjrestore.cpio.gz, zjrestore-lite.sh}
-bootfiles/sb/{shimx64.efi, grubx64.efi, grub.cfg}         # Secure Boot 链
+bootfiles/sb/{shimx64.efi, grubx64.efi, grub.cfg}         # Secure Boot 链（x64，与宿主位数无关）
 skin/ resources/ version.json THIRD_PARTY_LICENSES.txt
+（根目录另有一套 x86 UCRT，供启动器在 Win7 上使用）
 ```
+
+> **位数策略**：Windows 侧跟随系统位数（32 位系统跑 x86、64 位系统跑 x64）；**Linux 救援层固定 x86_64**
+> （与宿主位数无关）。详见 [`docs/08`](docs/08-32位支持评估（待实施）.md) §0。
 
 ---
 
 ## 十、已知限制与待验证
 
-- **32 位 Windows 暂不支持**：现在只出 x64；`0.3` 计划出 **x86 单包**（通吃 32/64 位 Windows，救援层不动）。
-  代价与前置见 [`docs/08`](docs/08-32位支持评估（待实施）.md)。
+- **32 位 Windows**：已支持（Windows 侧跟随系统位数；发布包启动器自动选）。**Win7 x86 真机实测待做**；
+  代价：32 位系统上备份压缩比 64 位慢（`fast`≈0~10%、`recovery`≈20~35%），**还原 0%**。见 [`docs/08`](docs/08-32位支持评估（待实施）.md) §0。
 - **2026 新硬件 Secure Boot**：已换 **Debian 双签 shim（CA2011+CA2023）**，覆盖"只信新证书（CA2023）的
   2026 新固件"（Ubuntu 单签做不到）。机制见 [`PLAN.md` §11.1](PLAN.md)。用户 VMware（SB 开）实测还原成功 ✓，
   "只信 CA2023 的新固件"仍**待真机验证**。

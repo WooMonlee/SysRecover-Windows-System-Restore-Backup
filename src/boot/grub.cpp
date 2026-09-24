@@ -85,7 +85,30 @@ std::wstring ExeDir() {
     GetModuleFileNameW(nullptr, p, MAX_PATH);
     std::wstring s = p;
     size_t pos = s.find_last_of(L"\\/");
-    return pos == std::wstring::npos ? L"." : s.substr(0, pos);
+    std::wstring dir =
+        pos == std::wstring::npos ? std::wstring(L".") : s.substr(0, pos);
+    // 启动器布局（见 src/launcher/launcher.cpp）：真正的程序在 <root>\x86\ 或 <root>\x64\ 下，
+    // 而 bootfiles/ skin/ logs/ 等**与位数无关**的资源放在 <root>，所以"应用目录"要上移一级。
+    // 仅在目录名恰为 x86/x64 **且**上一级确实是应用根（含 version.json 或 bootfiles）时才上移，
+    // 保证老的扁平布局（exe 直接在根目录）行为不变。
+    size_t p2 = dir.find_last_of(L"\\/");
+    if (p2 != std::wstring::npos) {
+        std::wstring leaf = dir.substr(p2 + 1);
+        for (size_t i = 0; i < leaf.size(); ++i) {
+            wchar_t c = leaf[i];
+            if (c >= L'A' && c <= L'Z')
+                leaf[i] = (wchar_t)(c - L'A' + L'a');
+        }
+        if (leaf == L"x86" || leaf == L"x64") {
+            std::wstring parent = dir.substr(0, p2);
+            if (GetFileAttributesW((parent + L"\\version.json").c_str()) !=
+                    INVALID_FILE_ATTRIBUTES ||
+                GetFileAttributesW((parent + L"\\bootfiles").c_str()) !=
+                    INVALID_FILE_ATTRIBUTES)
+                return parent;
+        }
+    }
+    return dir;
 }
 
 std::wstring FindDataDrive() {

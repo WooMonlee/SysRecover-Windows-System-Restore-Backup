@@ -2,6 +2,7 @@
 // 注意：C++ 标准头已在 main_form.h 中先于 StdAfx.h 引入（PIT-012）。
 #include "main_form.h"
 
+#include "../boot/grub.h"  // sysrecover::ExeDir()（启动器布局下的应用根目录）
 #include "instance_dlg.h"
 
 using namespace DuiLib;
@@ -52,9 +53,10 @@ void ClosePrevAndWait(HWND hPrev) {
 
 int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     CPaintManagerUI::SetInstance(hInstance);
-    // 资源根 = exe 目录 + skin\（与 CMainForm::GetSkinFolder 一致）
-    CDuiString skinPath = CPaintManagerUI::GetInstancePath();
-    skinPath += _T("skin\\");
+    // 资源根 = **应用目录**（不是 exe 目录）：启动器布局下 exe 在 <root>\x86\ 或 \x64\ 子目录里，
+    // 而 skin\ 放在 <root>（与位数无关）→ 必须用 sysrecover::ExeDir()（它会自动上移一级）。
+    CDuiString skinPath = sysrecover::ExeDir().c_str();
+    skinPath += _T("\\skin\\");
     CPaintManagerUI::SetResourcePath(skinPath.GetData());
 
     HRESULT hr = ::CoInitialize(nullptr);
