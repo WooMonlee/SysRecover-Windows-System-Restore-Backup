@@ -461,6 +461,10 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **附带发现（未处理）**：`kernel/drivers/ufs/` 从来不在白名单 → `ufshcd-core` 一直没进救援层（x86 Windows 上罕见，暂不加；init 里 `ldmod ufshcd-core` 一直静默降级）。
   · ✅ 2026-09-24（构建断言通过 + 产物自检：`hid`/`usbhid`/`hid-generic` 与全部关键存储/fs 模块 present，`nfs`/`cifs`/`ocfs2`/`kvm`/`ib_core`/`drm` 等 absent；**待 QEMU/VM 回归**）
 
+- PIT-080 **裁剪后的完整回归：BIOS 端到端还原演练跑通；顺带修好三个已失效的测试资产**（2026-09-24）：PIT-079 删模块后，除"启动能起来"外还须证明"**真能还原**"。逐项验证：① 构建期断言 ✓；② `modules.dep` 一致性（494 行、0 悬空、0 缺失；`modules.builtin`/`modules.order` 在）✓；③ 产物自检（关键模块 present、被删项 absent）✓；④ UEFI SB 链（`uefi-ubuntu-smoke`）✓；⑤ UEFI 控制台（`uefi-screen`，见下）✓；⑥ UEFI 非 SB 直启（`uefi-smoke`）✓；⑦ 固件 `Boot####` 直启（`uefi-bootentry-smoke`）✓；⑧ BIOS/GRUB4DOS（新 `bios-smoke.ps1`）✓；⑨ **端到端还原演练**（`mk-drill.py` + `run-drill.ps1`）：`apply done` → `bootfix installed` → `boot region OK (0x54=fa33c08e, sector1 non-empty)` → `RESTORE DONE: /dev/sda2` → `reboot: Restarting system` ✓（证明 `mkntfs`/`wimlib apply`/PBR 所需的模块都在）。
+  · **修的三个测试资产**：① `uefi-screen.ps1` 原用"两次截图字节是否不同"判断控制台 —— 裁剪后救援启动更快、30s 时已停在静态 `#` → **误报 FAIL**；改为**确定性串口断言**（`efifb: probing` + `Console: switching to colour frame buffer device` + `fb0: EFI VGA frame buffer device`），顺带证明**删掉 DRM/KMS 后 UEFI 控制台仍正常**（`CONFIG_FB_EFI/FB_SIMPLE=y` 内建接管，efifb 绑定）。② `mk-drill.sh`/`mk-testdisk.sh` 都引用了**已删除的 `bootfiles/restore.sh`**（`set -e` 直接中止）→ 删掉该行；`mk-drill.sh` 改为转调新写的 `mk-drill.py`。③ **`mformat` 多分区坑**：`mformat -i img@@off` 用**文件大小**决定卷大小 → 对多分区镜像会把整盘当成一个卷，三个分区 FAT 相互覆盖（症状：sda2/sda3 变 `non DOS media`、sda1 的 `grldr/menu.lst` 凭空消失）→ **正解：每个分区单独建精确大小的镜像 → mformat/mcopy → 再拼回磁盘**（`mk-drill.py`）。另：旧脚本注释的 sda3 偏移 `822704128` 是**错的**（正确 = `1606848*512 = 822706176`），排查时被它误导过一轮。
+  · 新增 `tools/vmtest/bios-smoke.ps1`（自建 512MB FAT32 活动盘 + QEMU `-boot c`，确定性串口断言）。✅ 2026-09-24（全部 PASS；真机/VMware 实测仍待用户）
+
 ---
 
 ## 14. License 合规（SBOM，随版本更新）
