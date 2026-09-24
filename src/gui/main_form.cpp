@@ -323,12 +323,15 @@ void CMainForm::OnTaskComplete(int rc) {
         SetStatus(L"暂存完成（用时 " + ElapsedText() + L"），正在重启...");
         RebootNow();
     } else {
-        // 就地还原完成（PE 里 / 还原到非系统盘）：不重启，直接报完成
+        // 就地还原完成（PE 里 / 还原到非系统盘）：不重启，直接报完成。
+        // ⚠️ 文案（用户 2026-09-23 反馈）：原来写"无需重启"，用户会理解成
+        // "现在就能用还原好的系统了" ✗ —— 其实必须**重启**才能进入还原的系统
+        // （我们只是没有自动重启而已）。所以明确写"重启后即可进入"。
         SetStatus(L"还原完成（用时 " + ElapsedText() + L"）");
         if (!IsSilent())
             MessageBoxW(m_hWnd,
-                        (L"系统还原已完成，无需重启。\n用时 " + ElapsedText() +
-                         L"。")
+                        (L"系统还原已完成，用时 " + ElapsedText() +
+                         L"。\n重启后即可进入恢复的系统。")
                             .c_str(),
                         L"还原成功", MB_OK | MB_ICONINFORMATION);
     }
@@ -1160,4 +1163,11 @@ void CMainForm::SetProgress(int pct) {
     CRoundProgressUI* p =
         static_cast<CRoundProgressUI*>(m_PaintManager.FindControl(_T("Progress")));
     if (p) p->SetValue(pct);
+    // 百分比文字一起更新 —— 用户 2026-09-23 反馈："跑的过程中少了百分比" ✓。
+    // 以前只有 OnTaskComplete 里写 PercentText（所以完成时 100% 正常、中途是空的），
+    // 而且上一轮的 100% 会残留下来（看着像进度条旁边一个奇怪的字符）。
+    // 0 → 清空，任务一开始就把旧值抹掉。
+    CControlUI* pPct = m_PaintManager.FindControl(_T("PercentText"));
+    if (pPct)
+        pPct->SetText(pct > 0 ? (std::to_wstring(pct) + L"%").c_str() : L"");
 }
