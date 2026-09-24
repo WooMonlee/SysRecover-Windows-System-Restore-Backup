@@ -20,6 +20,7 @@
 #include "../boot/task.h"
 #include "../boot/uefi.h"
 #include "../common/logger.h"
+#include "../common/process.h"
 #include "../common/progress.h"
 #include "../common/singleton.h"
 #include "../disk/disk.h"
@@ -84,6 +85,29 @@ int DiagText(std::string& out) {
         wimlib_global_cleanup();
     snprintf(buf, sizeof(buf), "[diag] version=%s\n", SYSRECOVER_VERSION);
     out += buf;
+    // 工具路径自检：32 位 exe 在 64 位 Windows 上必须命中原生 System32（WOW64/Sysnative），
+    // 否则写 BCD / 修引导会「找不到文件」。见 src/common/process.cpp::SysToolPath。
+    {
+        BOOL wow = FALSE;
+        IsWow64Process(GetCurrentProcess(), &wow);
+        std::wstring bcdedit = sysrecover::SysToolPath(L"bcdedit.exe");
+        std::wstring bcdboot = sysrecover::SysToolPath(L"bcdboot.exe");
+        char p1[MAX_PATH * 2] = {}, p2[MAX_PATH * 2] = {};
+        WideCharToMultiByte(CP_UTF8, 0, bcdedit.c_str(), -1, p1, sizeof(p1),
+                            nullptr, nullptr);
+        WideCharToMultiByte(CP_UTF8, 0, bcdboot.c_str(), -1, p2, sizeof(p2),
+                            nullptr, nullptr);
+        snprintf(buf, sizeof(buf),
+                 "[diag] proc=%s wow64=%s\n"
+                 "[diag] tools: bcdedit=%s (%s), bcdboot=%s (%s)\n",
+                 sizeof(void*) == 4 ? "x86" : "x64", wow ? "yes" : "no", p1,
+                 GetFileAttributesW(bcdedit.c_str()) != INVALID_FILE_ATTRIBUTES
+                     ? "ok" : "MISSING",
+                 p2,
+                 GetFileAttributesW(bcdboot.c_str()) != INVALID_FILE_ATTRIBUTES
+                     ? "ok" : "MISSING");
+        out += buf;
+    }
     std::wstring exeDir = sysrecover::ExeDir();
     char narrow[MAX_PATH * 2] = {};
     WideCharToMultiByte(CP_UTF8, 0, exeDir.c_str(), -1, narrow, sizeof(narrow),
