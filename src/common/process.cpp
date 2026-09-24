@@ -57,6 +57,21 @@ struct Handle {
 }  // namespace
 
 std::wstring SysToolPath(const wchar_t* exeName) {
+    // ⚠️ WOW64 坑（32 位 exe 跑在 64 位 Windows 上时）：GetSystemDirectoryW 返回的
+    // 字面量仍是 `C:\Windows\System32`，但 32 位进程**访问它会被 WOW64 重定向**到
+    // `SysWOW64` —— 而 bcdedit.exe / bcdboot.exe / manage-bde.exe 只存在于**原生**
+    // System32（SysWOW64 里没有，只有 format.com 之类）→ 写 BCD / 修引导会「找不到
+    // 文件」。正解：用 `%windir%\Sysnative`（WOW64 对 32 位进程提供的虚拟别名，映射到
+    // 原生 System32；对 64 位进程不可见，所以只在 WoW64 时用）。拿不到就退回原路径。
+    BOOL wow64 = FALSE;
+    if (IsWow64Process(GetCurrentProcess(), &wow64) && wow64) {
+        wchar_t win[MAX_PATH] = {};
+        if (GetWindowsDirectoryW(win, MAX_PATH) != 0) {
+            std::wstring p = std::wstring(win) + L"\\Sysnative\\" + exeName;
+            if (GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES)
+                return p;
+        }
+    }
     wchar_t sys[MAX_PATH] = {};
     if (GetSystemDirectoryW(sys, MAX_PATH) == 0)
         return exeName;

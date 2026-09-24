@@ -1,112 +1,112 @@
 # ??????? Duilib MinGW ?????? AGENTS.md PIT-012?
 # ???UIFlash/UIWebBrowser?? ATL???? 35 ???
 
-build/duilib/f0.o: third_party/duilib-master/DuiLib/Control/UIActiveX.cpp
+$(OBJDIR)/duilib/f0.o: third_party/duilib-master/DuiLib/Control/UIActiveX.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f1.o: third_party/duilib-master/DuiLib/Control/UIButton.cpp
+$(OBJDIR)/duilib/f1.o: third_party/duilib-master/DuiLib/Control/UIButton.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f2.o: third_party/duilib-master/DuiLib/Control/UICheckBox.cpp
+$(OBJDIR)/duilib/f2.o: third_party/duilib-master/DuiLib/Control/UICheckBox.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f3.o: third_party/duilib-master/DuiLib/Control/UICombo.cpp
+$(OBJDIR)/duilib/f3.o: third_party/duilib-master/DuiLib/Control/UICombo.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f4.o: third_party/duilib-master/DuiLib/Control/UIDateTime.cpp
+$(OBJDIR)/duilib/f4.o: third_party/duilib-master/DuiLib/Control/UIDateTime.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f5.o: third_party/duilib-master/DuiLib/Control/UIEdit.cpp
+$(OBJDIR)/duilib/f5.o: third_party/duilib-master/DuiLib/Control/UIEdit.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f6.o: third_party/duilib-master/DuiLib/Control/UIGifAnim.cpp
+$(OBJDIR)/duilib/f6.o: third_party/duilib-master/DuiLib/Control/UIGifAnim.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f7.o: third_party/duilib-master/DuiLib/Control/UILabel.cpp
+$(OBJDIR)/duilib/f7.o: third_party/duilib-master/DuiLib/Control/UILabel.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f8.o: third_party/duilib-master/DuiLib/Control/UIList.cpp
+$(OBJDIR)/duilib/f8.o: third_party/duilib-master/DuiLib/Control/UIList.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f9.o: third_party/duilib-master/DuiLib/Control/UIOption.cpp
+$(OBJDIR)/duilib/f9.o: third_party/duilib-master/DuiLib/Control/UIOption.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f10.o: third_party/duilib-master/DuiLib/Control/UIProgress.cpp
+$(OBJDIR)/duilib/f10.o: third_party/duilib-master/DuiLib/Control/UIProgress.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f11.o: third_party/duilib-master/DuiLib/Control/UIRichEdit.cpp
+$(OBJDIR)/duilib/f11.o: third_party/duilib-master/DuiLib/Control/UIRichEdit.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f12.o: third_party/duilib-master/DuiLib/Control/UIScrollBar.cpp
+$(OBJDIR)/duilib/f12.o: third_party/duilib-master/DuiLib/Control/UIScrollBar.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f13.o: third_party/duilib-master/DuiLib/Control/UISlider.cpp
+$(OBJDIR)/duilib/f13.o: third_party/duilib-master/DuiLib/Control/UISlider.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f14.o: third_party/duilib-master/DuiLib/Control/UIText.cpp
+$(OBJDIR)/duilib/f14.o: third_party/duilib-master/DuiLib/Control/UIText.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f15.o: third_party/duilib-master/DuiLib/Control/UITreeView.cpp
+$(OBJDIR)/duilib/f15.o: third_party/duilib-master/DuiLib/Control/UITreeView.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f16.o: third_party/duilib-master/DuiLib/Core/UIBase.cpp
+$(OBJDIR)/duilib/f16.o: third_party/duilib-master/DuiLib/Core/UIBase.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f17.o: third_party/duilib-master/DuiLib/Core/UIContainer.cpp
+$(OBJDIR)/duilib/f17.o: third_party/duilib-master/DuiLib/Core/UIContainer.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f18.o: third_party/duilib-master/DuiLib/Core/UIControl.cpp
+$(OBJDIR)/duilib/f18.o: third_party/duilib-master/DuiLib/Core/UIControl.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f19.o: third_party/duilib-master/DuiLib/Core/UIDlgBuilder.cpp
+$(OBJDIR)/duilib/f19.o: third_party/duilib-master/DuiLib/Core/UIDlgBuilder.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f20.o: third_party/duilib-master/DuiLib/Core/UIManager.cpp
+$(OBJDIR)/duilib/f20.o: third_party/duilib-master/DuiLib/Core/UIManager.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f21.o: third_party/duilib-master/DuiLib/Core/UIMarkup.cpp
+$(OBJDIR)/duilib/f21.o: third_party/duilib-master/DuiLib/Core/UIMarkup.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f22.o: third_party/duilib-master/DuiLib/Core/UIRender.cpp
+$(OBJDIR)/duilib/f22.o: third_party/duilib-master/DuiLib/Core/UIRender.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f23.o: third_party/duilib-master/DuiLib/Layout/UIChildLayout.cpp
+$(OBJDIR)/duilib/f23.o: third_party/duilib-master/DuiLib/Layout/UIChildLayout.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f24.o: third_party/duilib-master/DuiLib/Layout/UIHorizontalLayout.cpp
+$(OBJDIR)/duilib/f24.o: third_party/duilib-master/DuiLib/Layout/UIHorizontalLayout.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f25.o: third_party/duilib-master/DuiLib/Layout/UITabLayout.cpp
+$(OBJDIR)/duilib/f25.o: third_party/duilib-master/DuiLib/Layout/UITabLayout.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f26.o: third_party/duilib-master/DuiLib/Layout/UITileLayout.cpp
+$(OBJDIR)/duilib/f26.o: third_party/duilib-master/DuiLib/Layout/UITileLayout.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f27.o: third_party/duilib-master/DuiLib/Layout/UIVerticalLayout.cpp
+$(OBJDIR)/duilib/f27.o: third_party/duilib-master/DuiLib/Layout/UIVerticalLayout.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f28.o: third_party/duilib-master/DuiLib/StdAfx.cpp
+$(OBJDIR)/duilib/f28.o: third_party/duilib-master/DuiLib/StdAfx.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f29.o: third_party/duilib-master/DuiLib/UIlib.cpp
+$(OBJDIR)/duilib/f29.o: third_party/duilib-master/DuiLib/UIlib.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f30.o: third_party/duilib-master/DuiLib/Utils/UIDelegate.cpp
+$(OBJDIR)/duilib/f30.o: third_party/duilib-master/DuiLib/Utils/UIDelegate.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f31.o: third_party/duilib-master/DuiLib/Utils/Utils.cpp
+$(OBJDIR)/duilib/f31.o: third_party/duilib-master/DuiLib/Utils/Utils.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f32.o: third_party/duilib-master/DuiLib/Utils/WinImplBase.cpp
+$(OBJDIR)/duilib/f32.o: third_party/duilib-master/DuiLib/Utils/WinImplBase.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f33.o: third_party/duilib-master/DuiLib/Utils/WndShadow.cpp
+$(OBJDIR)/duilib/f33.o: third_party/duilib-master/DuiLib/Utils/WndShadow.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f34.o: third_party/duilib-master/DuiLib/Utils/XUnzip.cpp
+$(OBJDIR)/duilib/f34.o: third_party/duilib-master/DuiLib/Utils/XUnzip.cpp
 	$(CXX_DUI) -c $< -o $@
 
-build/duilib/f35.o: third_party/duilib-master/DuiLib/Utils/stb_image.c
+$(OBJDIR)/duilib/f35.o: third_party/duilib-master/DuiLib/Utils/stb_image.c
 	$(CC_DUI) -c $< -o $@
 
-DUI_OBJS = build/duilib/f0.o build/duilib/f1.o build/duilib/f2.o build/duilib/f3.o build/duilib/f4.o build/duilib/f5.o build/duilib/f6.o build/duilib/f7.o build/duilib/f8.o build/duilib/f9.o build/duilib/f10.o build/duilib/f11.o build/duilib/f12.o build/duilib/f13.o build/duilib/f14.o build/duilib/f15.o build/duilib/f16.o build/duilib/f17.o build/duilib/f18.o build/duilib/f19.o build/duilib/f20.o build/duilib/f21.o build/duilib/f22.o build/duilib/f23.o build/duilib/f24.o build/duilib/f25.o build/duilib/f26.o build/duilib/f27.o build/duilib/f28.o build/duilib/f29.o build/duilib/f30.o build/duilib/f31.o build/duilib/f32.o build/duilib/f33.o build/duilib/f34.o build/duilib/f35.o
+DUI_OBJS = $(OBJDIR)/duilib/f0.o $(OBJDIR)/duilib/f1.o $(OBJDIR)/duilib/f2.o $(OBJDIR)/duilib/f3.o $(OBJDIR)/duilib/f4.o $(OBJDIR)/duilib/f5.o $(OBJDIR)/duilib/f6.o $(OBJDIR)/duilib/f7.o $(OBJDIR)/duilib/f8.o $(OBJDIR)/duilib/f9.o $(OBJDIR)/duilib/f10.o $(OBJDIR)/duilib/f11.o $(OBJDIR)/duilib/f12.o $(OBJDIR)/duilib/f13.o $(OBJDIR)/duilib/f14.o $(OBJDIR)/duilib/f15.o $(OBJDIR)/duilib/f16.o $(OBJDIR)/duilib/f17.o $(OBJDIR)/duilib/f18.o $(OBJDIR)/duilib/f19.o $(OBJDIR)/duilib/f20.o $(OBJDIR)/duilib/f21.o $(OBJDIR)/duilib/f22.o $(OBJDIR)/duilib/f23.o $(OBJDIR)/duilib/f24.o $(OBJDIR)/duilib/f25.o $(OBJDIR)/duilib/f26.o $(OBJDIR)/duilib/f27.o $(OBJDIR)/duilib/f28.o $(OBJDIR)/duilib/f29.o $(OBJDIR)/duilib/f30.o $(OBJDIR)/duilib/f31.o $(OBJDIR)/duilib/f32.o $(OBJDIR)/duilib/f33.o $(OBJDIR)/duilib/f34.o $(OBJDIR)/duilib/f35.o
