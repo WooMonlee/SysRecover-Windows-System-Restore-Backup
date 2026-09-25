@@ -121,7 +121,7 @@ void RegisterPendingDelete(const std::wstring& path) {
 // 「网站」链接（用户规格 2026-09-23）：初期指向无忧论坛的这个帖子；
 // 成熟后换成我们自己的站点 + 报错上报（用网站收集日志）。**只改这一处**。
 const wchar_t* kSiteUrl =
-    L"https://bbs.wuyou.net/forum.php?mod=viewthread&tid=453579";
+    L"https://bbs.wuyou.net/forum.php?mod=viewthread&tid=453597";
 
 // ────────────────── 基础 ──────────────────
 

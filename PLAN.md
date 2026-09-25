@@ -1,6 +1,6 @@
 # SysRecover（一键还原，C++ 重写）- 总计划书
 
-> 文档版本：v2.2（C++ 新项目 + ops 共享层 + Linux 层定稿）/ 最后更新：2026-09-15 / 维护者：知鉴
+> 文档版本：v2.2（C++ 新项目 + ops 共享层 + Linux 层定稿）/ 最后更新：2026-09-15 / 维护者：DreamGrain
 > 与 AGENTS.md 的关系：本文件是路线图（做什么、何时算完）；AGENTS.md 是操作手册（怎么做）。
 
 ---
@@ -402,5 +402,5 @@ Debian 的模块也是 `.ko.xz`）② 先验"能组装出可启动 initramfs"（
 - **P5 砍掉** ❌：一键重启进固件设置 —— 用户判断"会的人不需要，不会的人进了也一脸懵逼"，
   改为**等我们自己兼容 CA2023**（§11 的备选 B/C）。
 - **P3 的 GUI 按钮改为「网站」链接** ✅ `0.1.15`：界面**右下角**加一个透明底的「网站」链接 →
-  初期指向无忧论坛帖子 `https://bbs.wuyou.net/forum.php?mod=viewthread&tid=453579`；
+  初期指向无忧论坛帖子 `https://bbs.wuyou.net/forum.php?mod=viewthread&tid=453597`；
   成熟后换成自家站点 + **网站收日志的报错上报**。URL 只在 `src/gui/main_form.cpp` 的 `kSiteUrl` 一处。
