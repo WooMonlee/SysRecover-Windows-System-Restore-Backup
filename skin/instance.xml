@@ -11,7 +11,7 @@
         <Control float="true" pos="0,0,456,44" bkcolor="#FFF7F9FC" />
         <SkinLabel name="DlgTitle" float="true" pos="22,12,320,38" text="程序已在运行" fontsize="15" bold="true" color="#FF1B2432" />
         <WinBtn name="DlgClose" float="true" pos="412,2,454,42" glyph="close" />
-        <SkinLabel name="DlgMsg" float="true" pos="22,56,434,80" text="「知鉴一键还原」已经打开，请选择要使用哪一个：" fontsize="13" color="#FF5F6C80" />
+        <SkinLabel name="DlgMsg" float="true" pos="22,56,434,80" text="「九转一键还原」已经打开，请选择要使用哪一个：" fontsize="13" color="#FF5F6C80" />
         <SkinButton name="BtnPrev" float="true" pos="22,100,166,138" text="使用之前的程序" fontsize="14" bkcolor="#FF2B5CE0" bordercolor="#FF2B5CE0" borderround="14,14" textcolor="#FFFFFFFF" />
         <SkinButton name="BtnCur"  float="true" pos="176,100,320,138" text="使用现在新程序" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFE4E8EF" borderround="14,14" textcolor="#FF1B2432" />
         <SkinButton name="BtnQuit" float="true" pos="330,100,434,138" text="退出" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFE4E8EF" borderround="14,14" textcolor="#FF1B2432" />
