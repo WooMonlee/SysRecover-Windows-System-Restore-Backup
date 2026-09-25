@@ -677,10 +677,12 @@ int main() {
         cmdline += a;
     }
     sysrecover::LogInfo(cmdline);
-    // 启动耗时自检（进程创建 → 命令分发）：便于在真机/VM 上量化"启动慢"。
+#if ZJ_LOG_STARTUP
+    // 启动耗时自检（进程创建 → 命令分发）：排障用，**默认关闭**（见 process.h 的开关）。
     sysrecover::LogInfo("startup: " +
                         std::to_string(sysrecover::MsSinceProcessStart()) +
                         " ms (process -> dispatch)");
+#endif
     if (args[0] == "version")
         return CmdVersion();
     if (args[0] == "diag") {
