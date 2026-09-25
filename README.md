@@ -210,33 +210,32 @@ shutdown /r /t 0
 ## 九、构建（给想自己编的人）
 
 ```bash
-mingw32-make -f Makefile package        # ★ 双架构发布包 → dist/（启动器 + x86/ + x64/ + 共享资源）
+mingw32-make -f Makefile package        # ★ 发布包 → dist/（根=x86 整套 + x64/ + 共享资源）
 mingw32-make -f Makefile all            # 仅 x64 构建 → dist/x64
-mingw32-make -f Makefile ARCH=x86 all   # 仅 x86 构建 → dist/x86
+mingw32-make -f Makefile ARCH=x86 all   # 仅 x86 构建 → dist（根目录）
 mingw32-make -f Makefile check          # 单元测试（纯逻辑，零依赖）
 mingw32-make -f Makefile clean
 ```
 
 - 工具链：**x64 = MinGW-w64 GCC 14.2**（`mingw64`）、**x86 = winlibs i686 UCRT GCC 14.2**（`mingw32`）；
-  `package` 需要两套（x64 走 PATH 上的 `g++`，x86 与启动器走 `Makefile` 里写死的绝对路径）。
+  `package` 需要两套（x64 走 PATH 上的 `g++`，x86 走 `Makefile` 里写死的绝对路径）。
 - 救援层组装：`tools/build-debian-rescue.py`（**Debian 签名内核 + 签名模块** + Alpine 用户态）
 - 回归测试：`tools/vmtest/*.ps1`（UEFI/SB、BIOS/GRUB4DOS、屏显、固件直启…）+ `mk-drill.py`/`run-drill.ps1`（端到端还原演练）；清单见 [`docs/07`](docs/07-测试矩阵与回归记录.md)
 - 换机器/换环境：见 [`docs/10-新环境交接说明`](docs/10-新环境交接说明.md)
 
-### 发布包内容（`dist/`，约 48 MB）
+### 发布包内容（`dist/`，约 46 MB）
 
 ```
-SysRecover.exe / SysRecoverUI.exe    # ★ 启动器（x86，通吃）：按系统位数调用 x86\ 或 x64\ 的真程序
-x86/{SysRecover.exe, SysRecoverUI.exe, libwim-15.dll, UCRT(16)}
-x64/{同上}                            # Windows 侧位数跟随系统（主要为备份压缩速度）
+SysRecover.exe / SysRecoverUI.exe   # x86 整套（入口）：真程序 + libwim-15.dll + x86 UCRT
+x64/{SysRecover.exe, SysRecoverUI.exe, libwim-15.dll, UCRT(16)}
 bootfiles/{grldr, grldr.mbr, vmlinuz-zjrestore, initramfs-zjrestore.cpio.gz, zjrestore-lite.sh}
 bootfiles/sb/{shimx64.efi, grubx64.efi, grub.cfg}         # Secure Boot 链（x64，与宿主位数无关）
 skin/ resources/ version.json THIRD_PARTY_LICENSES.txt
-（根目录另有一套 x86 UCRT，供启动器在 Win7 上使用）
 ```
 
-> **位数策略**：Windows 侧跟随系统位数（32 位系统跑 x86、64 位系统跑 x64）；**Linux 救援层固定 x86_64**
-> （与宿主位数无关）。详见 [`docs/08`](docs/08-32位支持评估（待实施）.md) §0。
+> **位数策略**：Windows 侧**跟随系统位数**（32 位系统跑 x86、64 位系统跑 x64，主要为备份压缩速度）——
+> 根目录是 x86 整套，32 位程序在 64 位系统上会**自动把自己换成 `x64\` 那份**（`src/common/selfarch.cpp`），
+> 所以**不需要独立启动器**。**Linux 救援层固定 x86_64**（与宿主位数无关）。详见 [`docs/08`](docs/08-32位支持评估（待实施）.md) §0。
 
 ---
 

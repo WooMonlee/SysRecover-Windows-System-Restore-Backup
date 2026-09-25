@@ -22,6 +22,7 @@
 #include "../common/logger.h"
 #include "../common/process.h"
 #include "../common/progress.h"
+#include "../common/selfarch.h"
 #include "../common/singleton.h"
 #include "../disk/disk.h"
 #include "../wim/exclude.h"
@@ -648,6 +649,13 @@ int Usage() {
 }  // namespace
 
 int main() {
+    // 位数自举：32 位程序在 64 位 Windows 上换成 <ExeDir>\x64\<同名> 再跑
+    // （Windows 侧位数跟随系统；见 src/common/selfarch.h）。返回 false = 无需切换。
+    {
+        int reexecCode = 0;
+        if (sysrecover::ReexecX64IfNeeded(&reexecCode))
+            return reexecCode;
+    }
     // 控制台输出切到 UTF-8（否则中文提示在 GBK 控制台是乱码）；退出时还原原代码页。
     struct CpGuard {
         UINT out;

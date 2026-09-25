@@ -76,11 +76,12 @@
 **规则见 `PLAN.md`「版本号规则」**：主/次版本**由用户指定**（`python tools/version.py --set X.Y.Z`），
 **修订号每解决一个问题 +1**（提交前跑 `python tools/version.py --bump`）。发布时与 git tag `vX.Y.Z` 对齐。
 
-> **架构（2026-09-24）：Windows 侧位数跟随系统**（32 位系统跑 x86、64 位系统跑 x64，主要为备份压缩速度），
-> 由发布包**根目录的 x86 启动器**（`src/launcher/launcher.cpp`）按 `GetNativeSystemInfo` 自动选
-> `x86\` / `x64\` 下的真程序；**Linux 救援层固定 x86_64**（与宿主位数无关）。发布形态 = **x86 启动器 +
-> x86/ + x64/ + 根目录共享资源**（`ExeDir()` 在 exe 位于 `x86`/`x64` 子目录时自动上移一级 →
-> `bootfiles/`、`skin/` 等放根目录）。背景：2026-09-20 用户实测 32 位 Win7 上 x64 exe 直接起不来
+> **架构（2026-09-24 方案 D）：Windows 侧位数跟随系统**（32 位系统跑 x86、64 位系统跑 x64，主要为备份压缩速度）。
+> 发布形态 = **根目录 x86 整套（入口）+ `x64/` x64 整套 + 根目录共享资源**；**无独立启动器** ——
+> 32 位程序在 64 位系统上由 `src/common/selfarch.cpp::ReexecX64IfNeeded()` **自举成 `x64\同名`** 再跑
+> （在 `main()`/`WinMain()` 最开头调用；父进程已提权，`CreateProcess` 子进程不会再弹 UAC，PIT-082）。
+> `ExeDir()` 在 exe 位于 `x64/` 子目录时自动上移一级（`bootfiles/`、`skin/` 放根目录）。
+> **Linux 救援层固定 x86_64**（与宿主位数无关）。背景：2026-09-20 用户实测 32 位 Win7 上 x64 exe 直接起不来
 > （系统层面拒绝、程序内无法提示）。四样前置：① i686 工具链 ✅（winlibs **i686 UCRT** GCC 14.2.0，
 > `D:\Prog\ProgIDE\mingw32`）；② 官方 32 位 `libwim-15.dll` ✅（`third_party/wimlib/x86/`，1.14.5）；
 > ③ Makefile `ARCH=x86` ✅；④ **x86 版 UCRT** ✅（`third_party/ucrt/x86/`，与 `x64/` 各 16 个文件）。

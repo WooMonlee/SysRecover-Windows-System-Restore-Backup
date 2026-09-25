@@ -3,6 +3,7 @@
 #include "main_form.h"
 
 #include "../boot/grub.h"  // sysrecover::ExeDir()（启动器布局下的应用根目录）
+#include "../common/selfarch.h"  // 位数自举：32 位程序在 64 位系统上换成 x64\同名
 #include "instance_dlg.h"
 
 using namespace DuiLib;
@@ -52,6 +53,12 @@ void ClosePrevAndWait(HWND hPrev) {
 }  // namespace
 
 int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
+    // 位数自举：32 位 GUI 在 64 位 Windows 上换成 <ExeDir>\x64\SysRecoverUI.exe 再跑
+    {
+        int reexecCode = 0;
+        if (sysrecover::ReexecX64IfNeeded(&reexecCode))
+            return reexecCode;
+    }
     CPaintManagerUI::SetInstance(hInstance);
     // 资源根 = **应用目录**（不是 exe 目录）：启动器布局下 exe 在 <root>\x86\ 或 \x64\ 子目录里，
     // 而 skin\ 放在 <root>（与位数无关）→ 必须用 sysrecover::ExeDir()（它会自动上移一级）。
