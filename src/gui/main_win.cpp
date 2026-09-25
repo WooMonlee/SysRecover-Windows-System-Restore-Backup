@@ -134,10 +134,12 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
 
     pWnd->CenterWindow();
     pWnd->ShowWindow(true);
-    // 启动耗时自检（进程创建 → 窗口显示）：真机/VM 上量化"启动慢"用。
+#if ZJ_LOG_STARTUP
+    // 启动耗时自检（进程创建 → 窗口显示）：排障用，**默认关闭**（见 process.h 的开关）。
     sysrecover::LogInfo("startup: " +
                         std::to_string(sysrecover::MsSinceProcessStart()) +
                         " ms (process -> window shown)");
+#endif
     CPaintManagerUI::MessageLoop();
     delete pWnd;
 

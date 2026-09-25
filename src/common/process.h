@@ -17,8 +17,13 @@ int RunProcess(const std::wstring& exe, const std::wstring& args,
 std::wstring SysToolPath(const wchar_t* exeName);
 
 // 本进程从**创建**到现在的毫秒数（GetProcessTimes 的创建时间 vs 当前时间）。
-// 用途：启动耗时自检 —— GUI 在"窗口就绪"、CLI 在"命令分发"处各记一行，
-// 便于在真机/VM 上量化"启动慢"到底出在哪一段。
+// 用途：启动耗时自检（GUI 在"窗口就绪"、CLI 在"命令分发"处各记一行），便于量化"启动慢"。
 uint64_t MsSinceProcessStart();
+
+// 启动耗时自检日志开关：1 = 记 `startup: N ms` 那两行；0 = 关闭（**默认**）。
+// 用户 2026-09-25 要求"暂时关闭，以后合适时再打开" → 改这一处即可。
+#ifndef ZJ_LOG_STARTUP
+#define ZJ_LOG_STARTUP 0
+#endif
 
 }  // namespace sysrecover
