@@ -78,6 +78,22 @@ std::wstring SysToolPath(const wchar_t* exeName) {
     return std::wstring(sys) + L"\\" + exeName;
 }
 
+uint64_t MsSinceProcessStart() {
+    FILETIME create{}, exitT{}, kernel{}, user{};
+    if (!GetProcessTimes(GetCurrentProcess(), &create, &exitT, &kernel, &user))
+        return 0;
+    FILETIME nowF{};
+    GetSystemTimeAsFileTime(&nowF);
+    ULARGE_INTEGER c, n;
+    c.LowPart = create.dwLowDateTime;
+    c.HighPart = create.dwHighDateTime;
+    n.LowPart = nowF.dwLowDateTime;
+    n.HighPart = nowF.dwHighDateTime;
+    if (n.QuadPart <= c.QuadPart)
+        return 0;
+    return (n.QuadPart - c.QuadPart) / 10000ULL;  // 100ns → ms
+}
+
 int RunProcess(const std::wstring& exe, const std::wstring& args,
                std::string& outUtf8) {
     outUtf8.clear();

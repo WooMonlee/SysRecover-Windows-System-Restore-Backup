@@ -653,7 +653,7 @@ int main() {
     // （Windows 侧位数跟随系统；见 src/common/selfarch.h）。返回 false = 无需切换。
     {
         int reexecCode = 0;
-        if (sysrecover::ReexecX64IfNeeded(&reexecCode))
+        if (sysrecover::ReexecX64IfNeeded(&reexecCode, /*wait=*/true))
             return reexecCode;
     }
     // 控制台输出切到 UTF-8（否则中文提示在 GBK 控制台是乱码）；退出时还原原代码页。
@@ -677,6 +677,10 @@ int main() {
         cmdline += a;
     }
     sysrecover::LogInfo(cmdline);
+    // 启动耗时自检（进程创建 → 命令分发）：便于在真机/VM 上量化"启动慢"。
+    sysrecover::LogInfo("startup: " +
+                        std::to_string(sysrecover::MsSinceProcessStart()) +
+                        " ms (process -> dispatch)");
     if (args[0] == "version")
         return CmdVersion();
     if (args[0] == "diag") {

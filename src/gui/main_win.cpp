@@ -3,6 +3,8 @@
 #include "main_form.h"
 
 #include "../boot/grub.h"  // sysrecover::ExeDir()（启动器布局下的应用根目录）
+#include "../common/logger.h"    // LogInfo（启动耗时自检）
+#include "../common/process.h"   // MsSinceProcessStart
 #include "../common/selfarch.h"  // 位数自举：32 位程序在 64 位系统上换成 x64\同名
 #include "instance_dlg.h"
 
@@ -56,7 +58,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     // 位数自举：32 位 GUI 在 64 位 Windows 上换成 <ExeDir>\x64\SysRecoverUI.exe 再跑
     {
         int reexecCode = 0;
-        if (sysrecover::ReexecX64IfNeeded(&reexecCode))
+        if (sysrecover::ReexecX64IfNeeded(&reexecCode, /*wait=*/false))
             return reexecCode;
     }
     CPaintManagerUI::SetInstance(hInstance);
@@ -132,6 +134,10 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
 
     pWnd->CenterWindow();
     pWnd->ShowWindow(true);
+    // 启动耗时自检（进程创建 → 窗口显示）：真机/VM 上量化"启动慢"用。
+    sysrecover::LogInfo("startup: " +
+                        std::to_string(sysrecover::MsSinceProcessStart()) +
+                        " ms (process -> window shown)");
     CPaintManagerUI::MessageLoop();
     delete pWnd;
 
