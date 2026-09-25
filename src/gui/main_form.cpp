@@ -118,7 +118,7 @@ void RegisterPendingDelete(const std::wstring& path) {
 
 }  // namespace
 
-// 「网站」链接（用户规格 2026-09-23）：初期指向无忧论坛的这个帖子；
+// 「讨论」链接（用户规格 2026-09-23）：初期指向无忧论坛的这个帖子；
 // 成熟后换成我们自己的站点 + 报错上报（用网站收集日志）。**只改这一处**。
 const wchar_t* kSiteUrl =
     L"https://bbs.wuyou.net/forum.php?mod=viewthread&tid=453597";
@@ -500,7 +500,7 @@ void CMainForm::Notify(TNotifyUI& msg) {
         } else if (name == _T("BootMenuBtn")) {
             ToggleBootMenu();
         } else if (name == _T("SiteLink")) {
-            // 右下角「网站」链接 → 用系统默认浏览器打开。
+            // 右下角「讨论」链接 → 用系统默认浏览器打开。
             // （2026-09-23 曾临时改成弹 BitLocker 演示框，用户确认文案后已改回。）
             ::ShellExecuteW(nullptr, L"open", kSiteUrl, nullptr, nullptr,
                             SW_SHOWNORMAL);
