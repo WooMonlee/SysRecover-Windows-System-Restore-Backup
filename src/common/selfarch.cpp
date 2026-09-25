@@ -19,7 +19,7 @@ std::wstring BaseOf(const std::wstring& path) {
 
 }  // namespace
 
-bool ReexecX64IfNeeded(int* exitCode) {
+bool ReexecX64IfNeeded(int* exitCode, bool wait) {
     if (sizeof(void*) != 4)
         return false;  // 已经是 64 位，无需切换
     SYSTEM_INFO si = {};
@@ -70,6 +70,14 @@ bool ReexecX64IfNeeded(int* exitCode) {
                         &pi))
         return false;  // 转发失败 → 退回本进程（不要把用户挡在门外）
 
+    if (!wait) {
+        // GUI：不等待 —— 父进程（32 位）立即退出，只留 64 位那份在跑。
+        ::CloseHandle(pi.hThread);
+        ::CloseHandle(pi.hProcess);
+        if (exitCode)
+            *exitCode = 0;
+        return true;
+    }
     ::WaitForSingleObject(pi.hProcess, INFINITE);
     DWORD code = 0;
     ::GetExitCodeProcess(pi.hProcess, &code);

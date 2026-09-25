@@ -15,8 +15,10 @@
 namespace sysrecover {
 
 // 满足「本进程是 32 位」+「系统是 64 位」+「存在 <ExeDir>\x64\<同名>」时：
-// 启动它、等它结束、把退出码写入 *exitCode 并返回 true（调用方应立即返回）。
+// 启动它并返回 true（调用方应立即返回）。
+//   wait=true （CLI）：等子进程结束并把退出码写入 *exitCode（脚本靠它判断成败）；
+//   wait=false（GUI）：**不等待**，父进程立即退出（少一个常驻同名进程）。
 // 否则返回 false（继续走本进程）。转发失败一律返回 false（退回本进程，不弹框）。
-bool ReexecX64IfNeeded(int* exitCode);
+bool ReexecX64IfNeeded(int* exitCode, bool wait);
 
 }  // namespace sysrecover
