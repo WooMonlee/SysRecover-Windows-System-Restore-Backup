@@ -1,4 +1,4 @@
-# SysRecover（知鉴一键还原 · 单机版）
+# SysRecover（九转一键还原 · 单机版）
 
 > 版本 `0.3.1`｜**64 位（x64）**，32 位（Win7/Win10 x86）计划中｜Windows 7 / 10 / 11 / WinPE｜发布包 ≈39 MB（其中 ≈90% 是救援层）
 > 许可：自有代码 + 第三方组件「单独分发」，清单与全文见 `THIRD_PARTY_LICENSES.txt`

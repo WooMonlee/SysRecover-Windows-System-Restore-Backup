@@ -569,18 +569,18 @@ void CMainForm::ToggleBootMenu() {
                         L"选择 Enroll key（或 Enroll key from disk），\n"
                         L"选中 ZJRESTORE 里的 zj-mok.cer，确认并重启。\n\n"
                         L"这一次性注册完成后，以后每次还原都能正常进救援。",
-                        L"知鉴一键还原", MB_OK | MB_ICONINFORMATION);
+                        L"九转一键还原", MB_OK | MB_ICONINFORMATION);
         }
         PartitionInfo esp;
         if (!FindEspPartition(esp)) {
             MessageBoxW(m_hWnd, L"未找到 ESP 分区，无法安装启动还原。",
-                        L"知鉴一键还原", MB_OK | MB_ICONWARNING);
+                        L"九转一键还原", MB_OK | MB_ICONWARNING);
             return;
         }
         std::wstring espRoot = MountEsp(log);
         if (espRoot.empty()) {
             MessageBoxW(m_hWnd, L"无法给 ESP 分区分配盘符（mountvol X: /s 失败）。",
-                        L"知鉴一键还原", MB_OK | MB_ICONERROR);
+                        L"九转一键还原", MB_OK | MB_ICONERROR);
             LogInfo(std::string("GUI install boot menu: ") + log);
             return;
         }

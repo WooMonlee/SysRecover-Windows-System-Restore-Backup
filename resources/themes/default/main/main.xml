@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- SysRecover 主窗口（骨架阶段最小版，完整版见 skin/main.xml 设计稿） -->
-<Window size="870,410" min_size="870,410" caption="0,0,0,36" text="知鉴一键还原" shadow_type="system_default">
+<Window size="870,410" min_size="870,410" caption="0,0,0,36" text="九转一键还原" shadow_type="system_default">
   <VBox bkcolor="#FFEEF1F6">
-    <Label name="TitleText" text="知鉴一键还原 v0.1" font="system_20b" normal_text_color="text_default" halign="center" height="40"/>
+    <Label name="TitleText" text="九转一键还原 v0.1" font="system_20b" normal_text_color="text_default" halign="center" height="40"/>
     <Label name="StatusText" text="GUI 骨架：窗口已创建" font="system_14" normal_text_color="text_secondary" halign="center" height="30"/>
   </VBox>
 </Window>
