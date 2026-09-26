@@ -16,7 +16,11 @@ save_diag(){
 
 say "zjrestore-lite start"
 
-TARGET_LOG=$(ls /tmp/_zjresy*.log 2>/dev/null | head -1)
+# 取第一个 _zjresy*.log（不用 `ls ... | head -1`：那种写法遇到含空格的文件名会出问题）
+TARGET_LOG=""
+for _f in /tmp/_zjresy*.log; do
+    [ -f "$_f" ] && { TARGET_LOG="$_f"; break; }
+done
 TASK_CONF="/tmp/restore-task.conf"
 if [ -z "$TARGET_LOG" ] && [ ! -f "$TASK_CONF" ]; then
     say "no log and no conf, abort"
@@ -181,10 +185,21 @@ else
         if [ -n "$_sec" ]; then
             _off=$((_sec * 512))
         else
-            _num=$(echo "$_d" | grep -oE '[0-9]+$')
-            _disk=$(echo "$_d" | sed 's/[0-9]*$//')
-            _lba=$(dd if="$_disk" bs=1 skip=$((446 + (_num - 1) * 16 + 8)) count=4 2>/dev/null | od -A n -t u4 | tr -d ' ')
-            _off=$(( ${_lba:-0} * 512 ))
+            # 兜底：blkid 没给出 PART_ENTRY_OFFSET 时，读 **MBR** 分区表算偏移。两点加固：
+            #   ① 先确认扇区 0 结尾是 `55aa`（不是 MBR 就别读，免得拿垃圾值当偏移）；
+            #   ② 整盘设备名用 **sysfs 父目录**取（对 `nvme0n1p2`/`mmcblk0p2` 也正确；
+            #      旧的 `sed 's/[0-9]*$//'` 会得出 `nvme0n1p` 这种错名字）。
+            _name=$(basename "$_d")
+            _disk="/dev/$(basename "$(dirname "$(readlink -f "/sys/class/block/$_name")")")"
+            _sig=$(dd if="$_disk" bs=1 skip=510 count=2 2>/dev/null | od -A n -t x1 | tr -d ' \n')
+            _num=$(echo "$_name" | grep -oE '[0-9]+$')
+            _off=0
+            if [ "$_sig" = "55aa" ] && [ -n "$_num" ] && [ -b "$_disk" ]; then
+                _lba=$(dd if="$_disk" bs=1 skip=$((446 + (_num - 1) * 16 + 8)) count=4 2>/dev/null | od -A n -t u4 | tr -d ' ')
+                _off=$(( ${_lba:-0} * 512 ))
+            else
+                say "  (skip $_d: not MBR or bad name, no offset)"
+            fi
         fi
         say "  probe $_d off=$_off (want $TARGET_OFFSET)"
         [ "$_off" = "$TARGET_OFFSET" ] && { TARGET_DEV="$_d"; break; }

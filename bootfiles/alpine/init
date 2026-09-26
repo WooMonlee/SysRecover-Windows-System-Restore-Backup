@@ -14,8 +14,6 @@ export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
 # 先把 busybox applet 全装上（/bin/sh 已在镜像里预置为 → busybox 的符号链接，
 # 否则内核执行本脚本的 #!/bin/sh 会失败 → "No working init found"）。
-# 先把 busybox applet 全装上（/bin/sh 已在镜像里预置为 → busybox 的符号链接，
-# 否则内核执行本脚本的 #!/bin/sh 会失败 → "No working init found"）。
 /bin/busybox --install -s /bin 2>/dev/null
 # busybox 自带的简化 blkid 会遮蔽 /sbin/blkid(util-linux)，后者的
 # `-s TYPE -o value` 才是我们要的 → 删掉 busybox 版
@@ -44,21 +42,30 @@ ldmod(){
     case "$1" in
         nvme-core|nvme_core) set -- "$1" io_timeout=1 ;;
     esac
+    _n="$1"; _n=${_n%.ko}; _n=${_n%.ko.gz}; _n=$(echo "$_n" | tr '_' '-')
     _e=$(modprobe "$@" 2>&1) && return 0
-    # "not found in modules.dep" = 该模块是**内建**的（或未随包）→ 不是错误，
-    # 降级成提示（换内核后这条会被当成 FAIL 刷屏；见 PIT-066）。
+    # modprobe 失败要分情况，**不能笼统当成"ok"**（问题清单 H-01）：
+    #   a) 名字不在模块表里，但 `modules.builtin` 里有 → **内建**，正常；
+    #   b) 名字不在模块表里，`modules.builtin` 里也没有 → **真缺失**：该功能不可用，
+    #      必须显式 WARN（否则"驱动没加载"会被误当成"一切正常"，排查时是黑盒）；
+    #   c) "No such device" → 模块在，但**机器上没有对应硬件**（`hv_vmbus`/`xen-blkfront`
+    #      只在对应虚拟化下才有；普通机器加载必然 ENODEV）→ 正常，降级成信息。
     case "$_e" in
-        *"not found in modules.dep"*)
-            say "  $1: builtin or not bundled (ok)" ;;
+        *"not found"*)
+            if grep -q "/$_n\.ko" "/lib/modules/$(uname -r)/modules.builtin" 2>/dev/null; then
+                say "  $_n: builtin (ok)"
+            else
+                say "  $_n: WARN not bundled (feature unavailable)"
+            fi ;;
+        *[Nn]o" such device"*)
+            say "  $_n: not applicable (no such device)" ;;
         *)
             say "modprobe $* FAIL: $_e" ;;
     esac
 }
-# 帧缓冲控制台：Alpine 内核 `CONFIG_SYSFB_SIMPLEFB=y` 会顶掉内建 efifb，
-# 只有 simpledrm 能接管 GOP 帧缓冲。不加载它 → UEFI 下 `console=tty0` 全程黑屏
-# （表现为"EFI stub: Loaded initrd..."后像卡死，其实内核在正常跑）。
-ldmod simpledrm
-for m in t10-pi usb-common scsi_mod crc32c_generic libcrc32c nls_cp437 nls_iso8859-1 nls_ascii nls_base; do
+# 帧缓冲：**Debian 底座不需要 simpledrm**（那是 Alpine 内核的问题——它 SYSFB_SIMPLEFB=y
+# 会顶掉内建 efifb；Debian 的 simplefb 内建、直接接管 GOP 帧缓冲 → 见 PIT-061 / PIT-079）。
+for m in usb-common scsi_mod crc32c_generic libcrc32c nls_cp437 nls_iso8859-1 nls_ascii nls_base; do
     ldmod "$m"
 done
 # 依赖在前、被依赖者在后；跑两轮以防某轮顺序导致依赖未就绪而失败。
@@ -72,18 +79,21 @@ done
 #   Microchip SmartPQI            -> smartpqi
 #   通用 NVMe / SATA / IDE        -> nvme / ahci / ata_piix / ata_generic
 #   UFS / eMMC                    -> ufs / mmc + sdhci
-#   虚拟化                        -> virtio_blk / virtio_scsi / vmw_pvscsi
+#   虚拟化                        -> virtio_blk / virtio_scsi / vmw_pvscsi / hv_storvsc / xen-blkfront
+# 注：`pcieport`/`nvme-common`/`linear`（dm-linear 已并入 dm-mod）这几个名字在本内核里
+#     既非模块也非内建 —— 删掉，别让它们刷 WARN（问题清单 M-02）。
 for _pass in 1 2; do
 for m in \
     scsi_mod libata libahci ata_piix ata_generic ahci \
-    pcieport vmd \
-    nvme-common nvme-core nvme \
+    vmd \
+    nvme-core nvme \
     libsas mptbase mptscsih mpt3sas mptspi mptsas \
     megaraid_mm megaraid_mbox megaraid megaraid_sas \
     smartpqi aacraid hpsa arcmsr pm80xx mvsas isci \
     virtio virtio_ring virtio_pci virtio_blk virtio_scsi vmw_pvscsi \
+    hv_vmbus hv_storvsc pci-hyperv xen-blkfront \
     ufshcd-core ufshcd-pci mmc_core sdhci sdhci-pci sdhci-acpi \
-    dm-mod raid0 raid1 raid10 linear multipath \
+    dm-mod raid0 raid1 raid10 dm-multipath \
     usbcore xhci-hcd xhci-pci ehci-hcd ehci-pci ohci-hcd ohci-pci uhci-hcd \
     usbhid hid hid-generic atkbd \
     usb-storage uas sd_mod sg sr_mod ses \
@@ -171,26 +181,32 @@ mnt_dev(){
 # ── 1) 找 _zjresy*.log（主契约，位于目标分区根）──
 found_log=""
 TARGET_DEV=""
-for _d in $(list_parts); do
-    [ -b "$_d" ] || continue
-    mkdir -p "$ZJ_M"
-    if mnt_dev "$_d" "$ZJ_M"; then
-        _hit=""
-        for _f in "$ZJ_M"/_zjresy*.log; do
-            [ -f "$_f" ] || continue
-            cp "$_f" /tmp/ 2>/dev/null
-            found_log="$_f"; TARGET_DEV="$_d"; _hit=1
-            say "found log: $_f (dev=$_d)"
-            [ -f "$ZJ_M/restore-task.conf" ] && cp "$ZJ_M/restore-task.conf" /tmp/ 2>/dev/null
-        done
-        [ -z "$_hit" ] && say "mounted $_d (no log)"
-        umount "$ZJ_M" 2>/dev/null
-        [ -n "$found_log" ] && break
-    else
-        say "mount FAILED $_d (fs=$(cat /tmp/zjmnt.fs 2>/dev/null)): $(cat /tmp/zjmnt.err 2>/dev/null | tr '\n' ' ')"
-    fi
-done
-[ -n "$found_log" ] || say "no _zjresy*.log found"
+# 扫各分区找任务日志（主契约：_zjresy*.log 在目标分区根）→ 设 found_log / TARGET_DEV。
+# 抽成函数，便于"全量兜底扫模块后再找一遍"（见 2b）。
+scan_for_log(){
+    found_log=""; TARGET_DEV=""
+    for _d in $(list_parts); do
+        [ -b "$_d" ] || continue
+        mkdir -p "$ZJ_M"
+        if mnt_dev "$_d" "$ZJ_M"; then
+            _hit=""
+            for _f in "$ZJ_M"/_zjresy*.log; do
+                [ -f "$_f" ] || continue
+                cp "$_f" /tmp/ 2>/dev/null
+                found_log="$_f"; TARGET_DEV="$_d"; _hit=1
+                say "found log: $_f (dev=$_d)"
+                [ -f "$ZJ_M/restore-task.conf" ] && cp "$ZJ_M/restore-task.conf" /tmp/ 2>/dev/null
+            done
+            [ -z "$_hit" ] && say "mounted $_d (no log)"
+            umount "$ZJ_M" 2>/dev/null
+            [ -n "$found_log" ] && break
+        else
+            say "mount FAILED $_d (fs=$(cat /tmp/zjmnt.fs 2>/dev/null)): $(cat /tmp/zjmnt.err 2>/dev/null | tr '\n' ' ')"
+        fi
+    done
+    [ -n "$found_log" ] || say "no _zjresy*.log found"
+}
+scan_for_log
 
 # ── 2) conf 未找到 → 各分区搜索（软件目录可能在子目录）──
 if [ ! -f /tmp/restore-task.conf ]; then
@@ -206,7 +222,27 @@ if [ ! -f /tmp/restore-task.conf ]; then
     done
 fi
 
-# ── 2b) 引导补全文件（Windows 侧生成到 <恢复目录>\bootfix\：\bootmgr + \Boot\BCD）──
+# ── 2b) 全量兜底：扫过所有分区都没找到任务日志 → 磁盘可能压根没被认出来 ──
+# 为什么不能只在"零分区"时兜底（问题清单 H-02）：`usb-storage`/`uas` 在主名单里，
+# 只要插着 U 盘 `list_parts` 就非空 → 旧条件永远不触发 → 系统盘若因驱动不在名单
+# （典型：Hyper-V `hv_storvsc`）而不可见，就会一直找不到目标。这里改成"找不到任务"
+# 即全量 modprobe 再扫一遍，把"名单漏了驱动"这条路兜住。
+# 代价：手动从常驻菜单进救援（无任务）时也会多花 ~30-45s 扫一遍 —— 可接受（救援本就低频）。
+if [ -z "$found_log" ]; then
+    say "no task log -> sweeping ALL modules, then rescan"
+    for _pass in 1 2; do
+        for _k in $(find /lib/modules/"$(uname -r)"/kernel -type f \( -name '*.ko.gz' -o -name '*.ko' \) | sort); do
+            _b=$(basename "$_k"); _b=${_b%.ko.gz}; _b=${_b%.ko}
+            modprobe "$_b" 2>/dev/null
+        done
+        sleep 1
+    done
+    sleep 3
+    say "after sweep, block devs: $(ls /sys/class/block 2>/dev/null | tr '\n' ' ')"
+    scan_for_log
+fi
+
+# ── 2c) 引导补全文件（Windows 侧生成到 <恢复目录>\bootfix\：\bootmgr + \Boot\BCD）──
 # 拷到 /tmp/bootfix/（约几 MB），Linux 侧稍后直接 cp 进目标分区。
 # 注意：**不能用 wimlib apply** —— wimlib 的 NTFS 卷模式遇到已存在文件会报
 # "File exists" → rc=46 (WIMLIB_ERR_NTFS_3G)，而镜像里通常已有 \bootmgr。

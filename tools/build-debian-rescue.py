@@ -53,9 +53,8 @@ KEEP_PREFIXES = [
     'kernel/drivers/firmware/', 'kernel/drivers/acpi/',
     # vmd（Intel VROC/RSTe）在 drivers/pci/controller/ 下 —— 不在存储目录里，容易漏。
     'kernel/drivers/pci/',
-    # ⚠️ 必须有：UEFI 下内核把 GOP 帧缓冲注册成 simple-framebuffer，内建 efifb 不绑定，
-    #    只有 simpledrm 能接管 → 否则 UEFI 显示"黑屏像卡死"（PIT-061）。整个 tiny/ 很小。
-    'kernel/drivers/gpu/drm/tiny/',
+    # 注：`kernel/drivers/gpu/drm/tiny/`（bochs/cirrus）**不要**——Debian 的 efifb/simplefb
+    #     是内建的（PIT-061 是 Alpine 内核才有的问题），EXCLUDE 里也已排除它。
     'kernel/fs/', 'kernel/lib/', 'kernel/crypto/', 'kernel/arch/x86/',
 ]
 

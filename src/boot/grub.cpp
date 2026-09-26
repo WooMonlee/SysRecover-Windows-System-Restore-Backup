@@ -13,6 +13,20 @@
 namespace sysrecover {
 namespace {
 
+// 宽字符串 → UTF-8（按实际长度分配；不再用固定 512 的栈缓冲，见问题清单 L-04）。
+std::string W2U(const std::wstring& w) {
+    if (w.empty())
+        return {};
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr,
+                                0, nullptr, nullptr);
+    if (n <= 0)
+        return {};
+    std::string s(n, 0);
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &s[0], n, nullptr,
+                        nullptr);
+    return s;
+}
+
 bool WriteTextFile(const std::wstring& path, const std::string& utf8) {
     // 已存在的 menu.lst 带 Hidden+System 属性 —— 这种文件用 CREATE_ALWAYS 打开会
     // 直接被拒（实测 ERROR_ACCESS_DENIED=5），于是"第一次装成功、第二次起必失败"
@@ -31,20 +45,15 @@ bool WriteTextFile(const std::wstring& path, const std::string& utf8) {
 
 bool CopyOne(const std::wstring& src, const std::wstring& dst,
              std::string& log) {
-    char s[512] = {}, d[512] = {};
-    WideCharToMultiByte(CP_UTF8, 0, src.c_str(), -1, s, 512, nullptr, nullptr);
-    WideCharToMultiByte(CP_UTF8, 0, dst.c_str(), -1, d, 512, nullptr, nullptr);
-    char line[1100];
+    std::string s = W2U(src);
     // 目标若已存在且带只读/隐藏属性，先归零，保证能覆盖（PIT-037 每次重装）
     SetFileAttributesW(dst.c_str(), FILE_ATTRIBUTE_NORMAL);
     if (CopyFileW(src.c_str(), dst.c_str(), FALSE)) {
-        snprintf(line, sizeof(line), "copy OK %s\n", s);
-        log += line;
+        log += "copy OK " + s + "\n";
         return true;
     }
-    snprintf(line, sizeof(line), "copy FAIL %s (err=%lu)\n", s,
-             GetLastError());
-    log += line;
+    log += "copy FAIL " + s + " (err=" + std::to_string(GetLastError()) +
+           ")\n";
     return false;
 }
 
