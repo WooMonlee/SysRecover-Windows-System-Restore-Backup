@@ -117,6 +117,34 @@ int DiagText(std::string& out) {
                         nullptr, nullptr);
     snprintf(buf, sizeof(buf), "[diag] exe_dir=%s\n", narrow);
     out += buf;
+    // 磁盘健康（PIT-086）：SMART 能读时打印关键属性；读不到（NVMe/RAID/USB 桥）明确写
+    // unavailable（不是错误，是能力边界）。CAUTION = 我们判定"建议先换盘"。
+    for (const auto& d : sysrecover::EnumerateDisks()) {
+        sysrecover::DiskHealth h = sysrecover::QueryDiskHealth(d.index);
+        char nm[MAX_PATH] = {};
+        WideCharToMultiByte(CP_UTF8, 0, d.model.c_str(), -1, nm, sizeof(nm),
+                            nullptr, nullptr);
+        if (!h.smartKnown)
+            snprintf(buf, sizeof(buf),
+                     "[diag] disk%u health=%s smart=unavailable\n", d.index, nm);
+        else if (h.isNvme)
+            snprintf(buf, sizeof(buf),
+                     "[diag] disk%u health=%s smart=nvme%s crit=0x%02x media=%lu "
+                     "errlog=%lu used=%d%% temp=%dC\n",
+                     d.index, nm, h.caution ? " **CAUTION**" : "",
+                     h.criticalWarning, (unsigned long)h.mediaErrors,
+                     (unsigned long)h.errorLogCount, h.usedPercent, h.tempC);
+        else
+            snprintf(buf, sizeof(buf),
+                     "[diag] disk%u health=%s smart=ata%s%s realloc=%lu pending=%lu "
+                     "uncorrect=%lu\n",
+                     d.index, nm, h.failing ? " FAILING" : "",
+                     h.caution ? " **CAUTION**" : "",
+                     (unsigned long)h.reallocatedSectors,
+                     (unsigned long)h.pendingSectors,
+                     (unsigned long)h.uncorrectableSectors);
+        out += buf;
+    }
     return rc;
 }
 
@@ -364,6 +392,12 @@ int CmdRestore(const std::vector<std::string>& a) {
                 "      如果没有密码 / 恢复密钥，还原后这些卷的数据将无法恢复。\n",
                 list.c_str());
         }
+    }
+    // 目标盘健康提醒（PIT-086，用户 2026-09-26）：坏盘 → 醒目警告（脚本场景不阻塞）
+    {
+        std::string hw = sysrecover::CheckDiskHealth(disk);
+        if (!hw.empty())
+            std::printf("%s\n", hw.c_str());
     }
     int rc = sysrecover::StageRestore(req, err, &needReboot);
     if (rc != 0) {
@@ -674,7 +708,7 @@ const size_t kCmdHelpN = sizeof(kCmdHelp) / sizeof(kCmdHelp[0]);
 
 void PrintAllUsage() {
     std::printf(
-        "SysRecover 九转一键还原 · 命令行\n"
+        "SysRecover 九转还原 · 命令行\n"
         "\n"
         "用法: SysRecover.exe <命令> [选项]      （`SysRecover.exe help <命令>` 看单项）\n"
         "\n"

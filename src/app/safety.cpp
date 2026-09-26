@@ -88,4 +88,35 @@ std::string CheckRestoreTarget(const PartitionInfo& p,
     return "";
 }
 
+// 目标物理磁盘健康警告（PIT-086，用户 2026-09-26 需求）—— 见 safety.h。
+std::string CheckDiskHealth(int diskIndex) {
+    DiskHealth h = QueryDiskHealth((uint32_t)diskIndex);
+    if (!h.smartKnown)
+        return "";  // 取不到 SMART（NVMe/RAID/USB 桥）→ 静默放行
+    if (!h.caution)
+        return "";
+    // 组织成"给用户看的一句话"：先说结论，再列具体指标。
+    std::string s = "警告：目标磁盘（磁盘" + std::to_string(diskIndex) +
+                    "）健康状态异常 —— 该盘可能已出现坏道，还原后系统仍可能无法启动。";
+    auto add = [&](const char* what, uint64_t v) {
+        if (v)
+            s += "\n  - " + std::string(what) + "：" + std::to_string(v);
+    };
+    if (h.failing)
+        s += "\n  - 驱动器自报：即将故障（SMART 阈值已超）";
+    add("待定扇区（读失败待重映射）", h.pendingSectors);
+    add("无法纠正扇区", h.uncorrectableSectors);
+    add("重映射扇区", h.reallocatedSectors);
+    if (h.isNvme) {
+        if (h.criticalWarning) {
+            s += "\n  - NVMe 关键警告位图 = " + std::to_string(h.criticalWarning) +
+                 "（bit0 备用空间不足 / bit1 温度 / bit2 可靠性降级 / bit4 备份失败）";
+        }
+        add("介质与数据完整性错误（Media Errors）", h.mediaErrors);
+        add("错误日志条目数", h.errorLogCount);
+    }
+    s += "\n建议：先更换/检修硬盘，或用镜像恢复到另一块好盘。仍要继续会覆盖目标分区。";
+    return s;
+}
+
 }  // namespace sysrecover

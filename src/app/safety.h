@@ -16,4 +16,10 @@ std::string CheckRestoreTarget(const PartitionInfo& p,
 // 还原后数据将无法恢复；由用户选择**继续或退出**（不再硬拒绝）。
 std::vector<std::wstring> BitLockerVolumes();
 
+// 目标**物理磁盘**的健康警告（PIT-086，用户 2026-09-26 需求）：还原要格式化目标分区，
+// 若目标盘已出现坏道（SMART 待定/无法纠正扇区、重映射过多、自报即将故障）→ 还原完
+// 系统照样起不来，不如先换盘。返回空串 = 健康 **或取不到 SMART**（fail-open，不阻断）。
+// 形如："警告：目标磁盘（磁盘0）健康状态异常 …\n  - 待定扇区（读失败待重映射）：8\n建议：…"。
+std::string CheckDiskHealth(int diskIndex);
+
 }  // namespace sysrecover

@@ -65,7 +65,7 @@ int CInstanceDlg::Ask(bool prevBusy) {
     dlg->m_prevBusy = prevBusy;
 
     // 无系统外框（WS_POPUP）+ 不进任务栏；父窗口传 nullptr —— 此时主窗口还没建。
-    HWND h = dlg->Create(nullptr, _T("九转一键还原"), WS_POPUP | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
+    HWND h = dlg->Create(nullptr, _T("九转还原"), WS_POPUP | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
                          WS_EX_TOOLWINDOW, 0, 0, kWndW, kWndH);
     if (!h) {
         delete dlg;

@@ -406,6 +406,21 @@ bool CMainForm::AskBitLockerWarning(const std::vector<std::wstring>& vols) {
                              /*defaultIsRight=*/false) == 1;
 }
 
+// 目标盘健康警告（PIT-086，用户 2026-09-26）：还原要格式化目标分区，若目标盘已现坏道，
+// 还原完系统照样可能起不来 —— 先警告，让用户决定要不要先换盘。返回 true = 继续。
+// 静默模式跳过弹框（无人值守），但仍写一条日志。
+bool CMainForm::AskDiskHealthWarning(int diskIndex) {
+    std::string hw = sysrecover::CheckDiskHealth(diskIndex);
+    if (hw.empty())
+        return true;  // 健康 或 取不到 SMART（NVMe/RAID/USB）→ 放行
+    LogInfo("target disk health warning: " + hw);
+    if (IsSilent())
+        return true;
+    std::wstring msg = U2W(hw) + L"\n\n是否仍要继续还原？";
+    return CConfirmDlg::Ask2(m_hWnd, L"磁盘健康警告", msg, L"取消", L"仍然继续",
+                             /*defaultIsRight=*/false) == 1;
+}
+
 void CMainForm::CancelAndExit() {
     if (m_cancelling)
         return;
@@ -569,18 +584,18 @@ void CMainForm::ToggleBootMenu() {
                         L"选择 Enroll key（或 Enroll key from disk），\n"
                         L"选中 ZJRESTORE 里的 zj-mok.cer，确认并重启。\n\n"
                         L"这一次性注册完成后，以后每次还原都能正常进救援。",
-                        L"九转一键还原", MB_OK | MB_ICONINFORMATION);
+                        L"九转还原", MB_OK | MB_ICONINFORMATION);
         }
         PartitionInfo esp;
         if (!FindEspPartition(esp)) {
             MessageBoxW(m_hWnd, L"未找到 ESP 分区，无法安装启动还原。",
-                        L"九转一键还原", MB_OK | MB_ICONWARNING);
+                        L"九转还原", MB_OK | MB_ICONWARNING);
             return;
         }
         std::wstring espRoot = MountEsp(log);
         if (espRoot.empty()) {
             MessageBoxW(m_hWnd, L"无法给 ESP 分区分配盘符（mountvol X: /s 失败）。",
-                        L"九转一键还原", MB_OK | MB_ICONERROR);
+                        L"九转还原", MB_OK | MB_ICONERROR);
             LogInfo(std::string("GUI install boot menu: ") + log);
             return;
         }
@@ -820,6 +835,9 @@ void CMainForm::StartRestore() {
     const PartitionInfo& part = m_parts[m_selPart];
     // BitLocker 提醒（用户规格 2026-09-23）：**只要系统里有加密卷**就提醒。
     if (!AskBitLockerWarning(sysrecover::BitLockerVolumes()))
+        return;
+    // 目标盘健康提醒（PIT-086，用户 2026-09-26）：坏盘先警告（默认取消）。
+    if (!AskDiskHealthWarning((int)part.diskIndex))
         return;
     // 非静默模式：只弹一个选择框（退出 / 退出并重启）——选定后暂存并自动重启，
     // 不再有额外的成功提示框，也不弹关机通知。静默模式：不弹框，直接暂存并重启。

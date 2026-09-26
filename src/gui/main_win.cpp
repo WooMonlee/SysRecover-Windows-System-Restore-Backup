@@ -104,7 +104,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
                 ::MessageBoxW(nullptr,
                               L"之前的程序正在执行任务，无法关闭。\n"
                               L"已为你切回该窗口，请等任务结束后再重新打开。",
-                              L"九转一键还原", MB_OK | MB_ICONINFORMATION);
+                              L"九转还原", MB_OK | MB_ICONINFORMATION);
                 ::CloseHandle(hMutex);
                 ::CoUninitialize();
                 return 0;
@@ -120,7 +120,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     // WS_EX_APPWINDOW 让无外框窗口仍然出现在任务栏。
     // 第二个参数是窗口标题 —— 无边框窗口（WS_POPUP + WS_EX_APPWINDOW）在任务栏
     // 与 Alt+Tab 里显示的就是它，必须是产品名而不是文件名/内部代号。
-    HWND h = pWnd->Create(nullptr, _T("九转一键还原"),
+    HWND h = pWnd->Create(nullptr, _T("九转还原"),
                           WS_POPUP | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
                           WS_EX_APPWINDOW, 0, 0, kWndW, kWndH);
     if (!h) {

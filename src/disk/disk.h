@@ -37,6 +37,29 @@ struct DiskInfo {
 // 枚举本地固定磁盘（跳过可移动盘与光驱）。失败的磁盘静默跳过。
 std::vector<DiskInfo> EnumerateDisks();
 
+// 磁盘健康（只读、尽力而为）。诚实告知"能不能取到"：
+// 走 ATA PASS THROUGH 读 SMART（ATA/SATA 一般可读，含 USB-SATA 桥；NVMe / RAID 虚拟盘
+// 取不到）→ 取不到就 smartKnown=false，**不阻断流程**（fail-open，只在日志留一行）。
+// 用途（用户 2026-09-26 需求）：还原会**格式化目标分区**，若目标盘已出现坏道/待定扇区，
+// 还原完系统照样起不来 —— 不如提前警告，让用户先换盘。
+struct DiskHealth {
+    bool smartKnown = false;            // 是否真的取到 SMART / 健康日志
+    bool isNvme = false;                // true = 数据来自 NVMe 日志页（否则 ATA SMART）
+    bool failing = false;               // ATA：驱动器自报"即将故障"（SMART RETURN STATUS）
+    uint64_t reallocatedSectors = 0;    // ATA 属性 5   重映射（已用备用扇区顶替）
+    uint64_t pendingSectors = 0;        // ATA 属性 197 待定（读失败，等待重映射）
+    uint64_t uncorrectableSectors = 0;  // ATA 属性 198 无法纠正
+    unsigned criticalWarning = 0;       // NVMe：Critical Warning 位图（0 = 正常）
+    uint64_t mediaErrors = 0;           // NVMe：Media and Data Integrity Errors
+    uint64_t errorLogCount = 0;         // NVMe：Error Information Log Entries
+    int usedPercent = -1;               // NVMe：Percentage Used（磨损；-1 = 未知）
+    int tempC = -1;                     // 温度 ℃（-1 = 未知）
+    bool caution = false;               // 综合判定：建议先换盘再还原
+};
+
+// 查询物理磁盘健康（diskIndex = 0-based，与 DiskInfo::index 一致）。
+DiskHealth QueryDiskHealth(uint32_t diskIndex);
+
 const char* StyleName(PartitionStyle s);
 
 // 当前固件是 UEFI 还是 BIOS（Win8+ 用 GetFirmwareType；Win7 回退用固件变量探测）。

@@ -94,7 +94,7 @@ int CConfirmDlg::Ask2(HWND owner, const std::wstring& title,
     dlg->m_defaultRight = defaultIsRight;
 
     // 无系统外框（WS_POPUP）+ 不进任务栏；owner = 主窗口（模态禁用）。
-    HWND h = dlg->Create(owner, _T("九转一键还原"),
+    HWND h = dlg->Create(owner, _T("九转还原"),
                          WS_POPUP | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
                          WS_EX_TOOLWINDOW, 0, 0, kWndW, kWndH);
     if (!h) {

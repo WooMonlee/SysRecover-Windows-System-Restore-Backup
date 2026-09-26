@@ -8,7 +8,7 @@
 
 ```
 ┌─ 顶栏 (#f7f9fc) ─────────────────────────────┐
-│ (Tab)镜像恢复为系统 | 系统备份为镜像  九转一键还原 v0.1   — □ ✕ │
+│ (Tab)镜像恢复为系统 | 系统备份为镜像  九转还原 v0.1   — □ ✕ │
 ├─ 第一步（白卡 #ffffff）──────────────────────┤
 │ [第一步] [浏览系统镜像文件] [镜像路径输入框____] │
 │          镜像说明： [子镜像下拉] 备注文字        │
@@ -43,7 +43,7 @@
 | StatusText | TextBlock | 同名 | `<SkinLabel>` | "执行进度" |
 | Progress | ProgressBar | 同名 | `<RoundProgress>`（自绘 `CRoundProgressUI`） | 前景 `#6a5ce0`，底 `#e8edf5` |
 | — □ ✕ | Button（WinBtn） | `MinBtn/MaxBtn/CloseBtn` | `<WinBtn>`（自绘 `CWindowBtnUI`） | 关闭 hover `#e81123` 白字 |
-| 标题 `九转一键还原 v0.1` | TextBlock ×2 | — | `<TitleLabel>`（自绘 `CTitleLabelUI`） | 20px Bold + 同行小字副标题 |
+| 标题 `九转还原 v0.1` | TextBlock ×2 | — | `<TitleLabel>`（自绘 `CTitleLabelUI`） | 20px Bold + 同行小字副标题 |
 | 第一步 / 第二步 / 第三步 | Border（橙底圆角） | `Step1Badge` / `Step2Badge` / `Step3Badge` | `<SkinLabel>` | 橙底 `#e08a2e`，`borderround="8,8"` |
 
 > **关键：自绘控件必须用「新标签名」**（`TabOption`/`GlyphCheck`/`RoundProgress`/`PartItem`/`TextItem`/`TitleLabel`/`SkinLabel`/`SkinButton`/`SkinEdit`/`WinBtn`）。内建名（`Button`/`Edit`/`Option`/`Combo`/`Label`/`Progress`…）在 `UIDlgBuilder.cpp:292-352` 就被拦截直接 `new` 出库内类，**不会回调 `WindowImplBase::CreateControl()`**，自绘类永远拿不到创建机会。注入点在 `CMainForm::CreateControl` → `ui_skin::CreateSkinControl`。

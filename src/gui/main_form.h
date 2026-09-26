@@ -64,6 +64,8 @@ private:
     bool AskBusyClose();          // 忙时关闭：true = 用户选了「终止并退出」
     // BitLocker 提醒（有加密卷时提醒"没密钥则数据无法恢复"）：true = 继续
     bool AskBitLockerWarning(const std::vector<std::wstring>& vols);
+    // 目标盘健康警告（PIT-086）：坏盘 → 弹框（默认**取消**=安全项）；取不到 SMART 直接放行。
+    bool AskDiskHealthWarning(int diskIndex);
     void CancelAndExit();         // 中止 worker → 清理未完成镜像 → 关窗
     void CleanupIncompleteOutput();
     bool IsSilent();   // 「静默模式」勾选态
