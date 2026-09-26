@@ -476,6 +476,17 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 
 - PIT-082 **启动器未嵌 `requireAdministrator` → 在 UAC 开启的机器上 `CreateProcessW` 真程序必失败（740）**（2026-09-24 用户 VM 实测）：新的发布形态「x86 启动器 + `x86/` + `x64/`」上线后，**Win7 x86（UAC 关）正常**，但 **Win10 x64 双击启动器报「找不到或无法启动 …\x64\SysRecoverUI.exe」**（而 `x64/` 下文件其实都在）。根因：真程序清单是 **`requireAdministrator`**，而非提权的启动器用 **`CreateProcessW`** 启动它 → **`ERROR_ELEVATION_REQUIRED(740)`**（`CreateProcess` **不会**自动提权，只有 `ShellExecute … runas` 才会）。**修复**：给**两个启动器也嵌入 `requireAdministrator` 清单**（复用既有清单资源对象 `SysRecover_rc.o` / `SysRecoverUI_rc.o`，与真程序一致 → 双击时由加载器弹一次 UAC，之后 `CreateProcess` 子程序因父进程已提权而成功）；并在启动器错误框里带上 `GetLastError()` 错误码（740/2/126/193 一眼可判）。✅ 2026-09-24（`0.3.4`；**待用户 Win10 x64 复测**）
 
+- PIT-083 **外部审查（"问题清单"）逐条核实与修复：3 项属实已修、1 项不成立、1 项低价值不改；修复中自己又踩一坑（已修）**（2026-09-26）：外部 AI 给了 13 条清单（2 高/4 中/7 低），**逐条核实后**处理如下。
+  · **属实并修复**：
+    ① **H-02 / M-01（真实失效组合）**：`hv_vmbus/hv_storvsc/pci-hyperv/xen-blkfront` **在镜像里但不在 `init` 主名单**；且旧兜底只在"**零分区**"时触发，而 `usb-storage/uas` 在主名单 → **插着 U 盘 `list_parts` 就非空 → 兜底永不触发** → Hyper-V/Xen 系统盘不可见时直接失败。**修复**：4 个模块加进主名单；兜底条件改为"**找不到任务日志**"（把日志扫描抽成 `scan_for_log()`，扫不到就全量 modprobe 再扫一遍）。
+    ② **H-01 / M-02（静默失败）**：`ldmod` 把"内建"与"真缺失"都报成 `builtin or not bundled (ok)` → **UFS 驱动缺失被静默**。**修复**：失败时查 `modules.builtin`，区分 `builtin (ok)` / `WARN not bundled` / `not applicable (no such device)`。顺带删掉 `simpledrm/nvme-common/t10-pi/linear`（既非模块也非内建；详见下），`multipath` 改为真实模块名 `dm-multipath`。
+    ③ **M-04**：PE 下 `CanRestoreInPlace()` 直接放行、**完全不试卷锁**。**修复**：PE 下也试锁，失败只 `LogWarn` 继续（不拒绝）。
+    ④ **L 系列**：`history.jsonl` JSON 转义不全（补 `\n\t\r\b\f` 与 `\u00xx`）、`grub.cpp::CopyOne` 固定 512 栈缓冲（改按长度分配）、`build-debian-rescue.py` 的 `gpu/drm/tiny` 白名单与 EXCLUDE 重复（删白名单）、`ls|head -1` 改循环、`init` 重复注释。
+  · **不成立（不改）**：**M-03** "MBR offset 兜底可能匹配错盘" —— `_disk` 名字解析错（如 `nvme0n1p`）时 `dd` 会失败 → `_off=0` → **安全地匹配不上并退出**，不会写错盘。仍**顺手加固**（先验扇区 0 的 `55aa`、用 sysfs 父目录取整盘名），几乎零成本且更正确。
+  · **低价值/有风险（不改）**：**L-07** BitLocker 检测只认中/英关键词（非中英系统可能漏判）—— 目标用户是中文 Windows；改成语言无关要引 WMI/未公开 API，风险 > 收益。
+  · **⚠️ 修复中自己踩的坑（已修）**：把 HV/Xen 加进主名单后，**普通机器上 `modprobe hv_vmbus` 报 `No such device`**，被新 FAIL 逻辑当成失败 → **每台普通机 8 行 FAIL 噪音**。补 `*"No such device"*` 分支降级为 `not applicable (no such device)`（硬件不存在属正常）。
+  · 回归：`make check` ✓、`bios-smoke` ✓（日志无 FAIL；UFS 显示 WARN）、**BIOS 端到端演练 ✓**（`apply done`→`boot region OK`→`RESTORE DONE`）。✅ 2026-09-26（`0.3.11`）
+
 ---
 
 ## 14. License 合规（SBOM，随版本更新）

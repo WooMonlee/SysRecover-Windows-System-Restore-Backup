@@ -181,6 +181,29 @@ bool CanRestoreInPlace(const PartitionInfo& t, std::string& why) {
     // 正常 Windows 仍用卷锁判定，只有真的锁不上（分区被占用、无法就地还原）才提示重启。
     if (IsWinPE()) {
         why = "在 PE 中运行（目标非运行系统盘）→ 就地还原";
+        // PE 下 FSCTL_LOCK_VOLUME 常因各种句柄失败 → 不能据此判"必须重启"（会把 PE
+        // 误判成"要重启"，用户实测踩到）。所以**放行**，但仍**试一下锁**：锁不上只记
+        // warn 继续（而不是拒绝）——这样格式化/wimlib 真失败时日志里有线索（问题清单 M-04）。
+        std::wstring peDev = L"\\\\.\\" + t.letter + L":";
+        HANDLE peH = CreateFileW(peDev.c_str(), GENERIC_READ | GENERIC_WRITE,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                 OPEN_EXISTING, 0, nullptr);
+        if (peH == INVALID_HANDLE_VALUE) {
+            LogWarn("PE: 打开目标卷失败 err=" + std::to_string(GetLastError()) +
+                    "，仍尝试就地还原");
+        } else {
+            DWORD peRet = 0;
+            if (DeviceIoControl(peH, FSCTL_LOCK_VOLUME, nullptr, 0, nullptr, 0,
+                                &peRet, nullptr)) {
+                DeviceIoControl(peH, FSCTL_UNLOCK_VOLUME, nullptr, 0, nullptr, 0,
+                                &peRet, nullptr);
+            } else {
+                LogWarn("PE: 目标卷加锁失败（可能有句柄占用）err=" +
+                        std::to_string(GetLastError()) +
+                        "，仍尝试就地还原；若格式化/写入失败请先排除占用");
+            }
+            CloseHandle(peH);
+        }
         return true;
     }
     std::wstring dev = L"\\\\.\\" + t.letter + L":";
@@ -268,12 +291,31 @@ void AppendHistory(const char* action, const std::wstring& image,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE)
         return;
+    // 完整 JSON 字符串转义：`\` `"` 以及所有 < 0x20 的控制字符（\n\t\r\b\f 用短写，
+    // 其余用 \u00xx）。原来只转义 `\` 和 `"` —— detail 一旦带换行就会写出非法 JSON
+    //（问题清单 L-03）。
     auto esc = [](const std::string& s) {
+        static const char* hx = "0123456789abcdef";
         std::string o;
-        for (char c : s) {
-            if (c == '\\' || c == '"')
-                o += '\\';
-            o += c;
+        o.reserve(s.size() + 8);
+        for (unsigned char c : s) {
+            switch (c) {
+                case '\\': o += "\\\\"; break;
+                case '"': o += "\\\""; break;
+                case '\n': o += "\\n"; break;
+                case '\r': o += "\\r"; break;
+                case '\t': o += "\\t"; break;
+                case '\b': o += "\\b"; break;
+                case '\f': o += "\\f"; break;
+                default:
+                    if (c < 0x20) {
+                        o += "\\u00";
+                        o += hx[(c >> 4) & 0xF];
+                        o += hx[c & 0xF];
+                    } else {
+                        o += static_cast<char>(c);
+                    }
+            }
         }
         return o;
     };
