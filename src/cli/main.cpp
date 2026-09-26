@@ -19,6 +19,7 @@
 #include "../boot/grub.h"
 #include "../boot/task.h"
 #include "../boot/uefi.h"
+#include "../common/crash.h"  // 崩溃处理（minidump + 可读日志）
 #include "../common/logger.h"
 #include "../common/process.h"
 #include "../common/progress.h"
@@ -656,6 +657,8 @@ int main() {
         if (sysrecover::ReexecX64IfNeeded(&reexecCode, /*wait=*/true))
             return reexecCode;
     }
+    // 崩溃处理：装在最前面（真实进程），崩溃时把 dump+文本写到 <exeDir>\logs\crash\。
+    sysrecover::InstallCrashHandler(sysrecover::ExeDir());
     // 控制台输出切到 UTF-8（否则中文提示在 GBK 控制台是乱码）；退出时还原原代码页。
     struct CpGuard {
         UINT out;
@@ -677,12 +680,11 @@ int main() {
         cmdline += a;
     }
     sysrecover::LogInfo(cmdline);
-#if ZJ_LOG_STARTUP
-    // 启动耗时自检（进程创建 → 命令分发）：排障用，**默认关闭**（见 process.h 的开关）。
-    sysrecover::LogInfo("startup: " +
-                        std::to_string(sysrecover::MsSinceProcessStart()) +
-                        " ms (process -> dispatch)");
-#endif
+    // 启动耗时自检（进程创建 → 命令分发）：排障用，设 `SYSRECOVER_STARTUP_TIMING=1` 打开。
+    if (sysrecover::StartupTimingEnabled())
+        sysrecover::LogInfo("startup: " +
+                            std::to_string(sysrecover::MsSinceProcessStart()) +
+                            " ms (process -> dispatch)");
     if (args[0] == "version")
         return CmdVersion();
     if (args[0] == "diag") {

@@ -50,7 +50,7 @@ LDLIBS   = -L$(WIMLIB) -l:libwim-15.dll -ladvapi32 -lole32 -lshell32 -luuid
 APP_SRC = src/disk/disk.cpp src/wim/wim.cpp src/wim/exclude.cpp \
       src/common/process.cpp src/common/logger.cpp src/common/progress.cpp \
       src/common/singleton.cpp src/common/sysinfo.cpp src/common/zip.cpp \
-      src/common/selfarch.cpp src/boot/bcd.cpp src/boot/grub.cpp \
+      src/common/selfarch.cpp src/common/crash.cpp src/boot/bcd.cpp src/boot/grub.cpp \
       src/boot/uefi.cpp src/boot/task.cpp src/boot/bootfix.cpp \
       src/app/safety.cpp \
       src/app/shortcut.cpp src/app/ops.cpp
@@ -150,9 +150,20 @@ TEST_BIN   = $(OBJDIR)/tests.exe
 check: $(TEST_BIN)
 	$(TEST_BIN)
 	$(PYTHON) tests/test_version.py
+	$(PYTHON) tools/check-docs.py
 
 $(TEST_BIN): $(TEST_SRC) $(TEST_UNITS) src/common/version.h | $(OBJDIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(TEST_SRC) $(TEST_UNITS) -o $(TEST_BIN) -static -mconsole -ladvapi32 -lole32 -luuid
+
+# ---- 崩溃处理回归探针（**会故意崩溃**；验证 dump + 可读文本真能落盘）----
+# 单独目标（不进 make check —— 它会真的崩）。产物在 tests\crash-out\（gitignore）。
+CRASH_PROBE = $(OBJDIR)/crash_probe.exe
+crash-test: $(CRASH_PROBE)
+	-$(CRASH_PROBE) tests\crash-out
+	@if exist tests\crash-out\logs\crash\crash-*.dmp (echo CRASH DUMP: OK) else (echo CRASH DUMP: MISSING && exit 1)
+
+$(CRASH_PROBE): tests/crash_probe.cpp src/common/crash.cpp src/common/version.h | $(OBJDIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/crash_probe.cpp src/common/crash.cpp -o $(CRASH_PROBE) -static -mconsole
 
 # ---- ★ 发布包：根目录 = x86 整套（入口）；x64/ = x64 整套；与位数无关的资源放根目录 ----
 # 需要**两套工具链**：x64 走 PATH 上的 g++（请先把 mingw64\bin 加到 PATH），x86 走绝对路径。
@@ -189,4 +200,4 @@ package:
 	@echo {"name":"SysRecover","version":"$(VERSION)","arch":"x86+x64"} > dist\version.json
 	@dir dist\SysRecover.exe dist\SysRecoverUI.exe dist\x64\SysRecover.exe dist\x64\SysRecoverUI.exe
 
-.PHONY: all cli gui clean package check
+.PHONY: all cli gui clean package check crash-test
