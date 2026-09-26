@@ -356,7 +356,7 @@ Debian 的模块也是 `.ko.xz`）② 先验"能组装出可启动 initramfs"（
 | **P2** | **BitLocker：从"拒绝"到"能办"（v1）** | ✅ 现状：`safety.cpp` 用 `manage-bde -status` 检测到加密就**直接拒绝** | v1 = **带指引的确认**：说明"目标盘启用了 BitLocker，需先挂起保护"，给「帮我挂起并继续」→ 执行 `manage-bde -protectors -disable <L>: -rebootcount 1`；并提示"若中止还原，记得 `-protectors -enable <L>:` 恢复保护"。**v2**（以后）才做完整自动化（含恢复密钥） | 半天 |
 | **P5** | **SB：一键重启进固件设置** | ✅ 工程内**没有** `/fw` | `shutdown /r /fw /t 0`（Win10+/UEFI）→ 放在 SB 相关提示、引导安装失败处 | 1h |
 | **P6** | **SB：读固件 `db` 判断该用哪条链** | ✅ 可行：`uefi.cpp` 已有 `GetFirmwareEnvironmentVariableW` + 提权；`db` 里证书 CN 是**明文字符串** → 字符串扫描即可 | 安装/暂存前探测 → 显示"本机固件信任：CA2011 / CA2023 / 两者"；若**只信 CA2023** 而我们的链是 CA2011 → **提前明确提示**（别让用户重启后才懵）。与 §11 的 B/C 配合 | 半天 |
-| **P9** | **文件级提取** | ⚠️ **修正**：子镜像浏览/选择**已有**（GUI 下拉、`images`、`restore --index N`）；缺的只是**文件级** | ✅ **已完成（`0.1.8`）**：`WimEngine::ExtractPaths()`（`wimlib_extract_paths`，支持通配符）+ CLI `extract --file <镜像> [--index N] --path "\Windows\..." [--path ...] --dest <目录>`。**实测通过**：从测试镜像取出 `\Windows\win.ini` 与 `\Windows\System32\drivers\etc\hosts`，目录层级保留 ✓。GUI 树留以后 | 半天 |
+| **P9** | **文件级提取** | ⚠️ **修正**：子镜像浏览/选择**已有**（GUI 下拉、`images`、`restore --index N`）；缺的只是**文件级** | ✅ **已完成（`0.1.8`）**：`WimEngine::ExtractPaths()`（`wimlib_extract_paths`，支持通配符）+ CLI `extract --file <镜像> [--index N] --path "\Windows\..." [--path ...] --dest <目录>`。**实测通过**：从测试镜像取出 `\Windows\win.ini` 与 `\Windows\System32\drivers\etc\hosts`，目录层级保留 ✓。GUI 侧 **2026-09-26 用户裁定不做**（见 §13.4） | 半天 |
 | **P10** | **镜像信息展示** | ✅ `ImageDesc` 目前只有 `{index,name}` | ✅ **已完成（`0.1.7`）**：`images --file` 现在输出 `序号 \| 名称 \| 实际占用大小 \| 创建日期` + 描述行；GUI 下拉显示 `Index - Name（大小）`。⚠️ 小尾巴：**创建日期还没解析出来**（显示 `-`，`CREATIONTIME` 的 HIGHPART/LOWPART 待查），不影响使用 | 2~3h |
 | **P11** | **CLI 中文路径**（做 P10 时发现）| ✅ 真 bug：CLI 的参数来自控制台 argv（**ANSI**），`ToWide` 按 UTF-8 解 → **中文路径被打乱**，`images --file 中文.esd` 直接 "Failed to open a file" ✗（GUI 内部走宽串，不受影响）| ✅ **已完成（`0.1.11`）**：改用 `GetCommandLineW` + `CommandLineToArgvW` 取宽字符参数再转 UTF-8（整条链路自洽）；顺带 `SetConsoleOutputCP(CP_UTF8)`（退出时还原）→ 中文提示不再乱码。**实测**：中文路径的镜像能正常读取 ✓、中文帮助文本可读 ✓ | 1~2h |
 | **P7** | **备份/还原历史记录** | ✅ 无 | 追加写 `logs/history.jsonl`（时间/类型/镜像/目标/结果/耗时/版本）+ CLI `history` 读取；GUI 列表以后 | 2~3h |
@@ -379,7 +379,7 @@ Debian 的模块也是 `.ko.xz`）② 先验"能组装出可启动 initramfs"（
 
 1. ✅ **P1** 空间预检（安全；已完成 `0.1.6`）
 2. **P10 镜像信息展示**（顺手把 P1 的 wim API 暴露出来 → **P1 的数值可被验证**；改动小）
-3. **P9 文件级提取**（与 P10 同一套 wim API，一起做省一次上下文）
+3. **P9 文件级提取**（与 P10 同一套 wim API，一起做省一次上下文）—— ✅ CLI 侧已完成（`0.1.8`）；**GUI 侧 2026-09-26 用户裁定不做**（见 §13.4）
 4. **P3 诊断包**（排错效率，独立）
 5. **P4 速度/ETA**（体验，便宜）
 6. **P2 BitLocker**（兼容，需谨慎）
@@ -443,7 +443,7 @@ Debian 的模块也是 `.ko.xz`）② 先验"能组装出可启动 initramfs"（
 |---|---|
 | **坏盘 / 文件系统损坏检测** | ✅ **已实施** `0.3.15`（PIT-086）：`QueryDiskHealth()` 双路读健康 —— **ATA/SATA** 走 `IOCTL_ATA_PASS_THROUGH` 的 SMART READ DATA + RETURN STATUS（属性 5/197/198 + 驱动器自报故障），**NVMe** 走 `IOCTL_STORAGE_QUERY_PROPERTY` 的 SMART/Health 日志页（Critical Warning / Media Errors，协议数据必须放 `query->AdditionalParameters`=**偏移 8**，否则 `ERROR_INVALID_PARAMETER(87)`）。展示三处：GUI `AskDiskHealthWarning` 弹框（**默认取消**=安全项，静默模式跳过）、CLI `restore` 前打印、`diag` 每盘一行（`smart=ata/nvme/unavailable`）。取不到 SMART（USB 桥/RAID/Win7 无 NVMe 属性）→ **fail-open 放行**。实测：SATA 盘 `smart=ata realloc=0 pending=0 uncorrect=0`、NVMe 盘 `smart=nvme crit=0x00 media=0 used=1% temp=46C` |
 | **ReFS 提示** | 📄 **只写文档**（用户 2026-09-26："无法操作需写入我们的介绍文档中，就像我们不支持 Win7 x86 以下的操作系统一样"）—— 进介绍文档的支持矩阵/限制章节，**不加运行时拦截**（运行时守卫另议、可选实现） |
-| **GUI 文件级提取** | ⏳ **下一步**：CLI 已有 `extract`（P9）；GUI 缺"先看看、只捞一个文件"的界面（`wimlib_iterate_dir_tree` + 新对话框） |
+| **GUI 文件级提取** | ❌ **不做**（用户 2026-09-26："界面太复杂、功能太多后对初学者不友好"）—— **CLI `extract` 保留**（P9，`0.1.8` 已实测，供懂命令行的人/脚本用），GUI 不加对应界面与入口（调研与方案留档：入口三方案 vs 浏览两形态的对比见 `docs/13` §4 与本表历史版本） |
 
 **评审中"不成立 / 低价值"（留档，避免重复讨论）**：CLI 退出码语义"混乱"（既有行为，仅按需加固）、
 若干文档措辞/格式项（待文档统一整理时一并处理）。
