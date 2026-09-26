@@ -525,6 +525,13 @@ int StageRestore(const RestoreRequest& req, std::string& err,
         err = reason;
         return 4;
     }
+    // 2.05) 目标盘健康（PIT-086，用户 2026-09-26）：坏盘 → 记日志（**展示**由 GUI 弹框 /
+    //       CLI 打印负责；这里不阻断 —— 与 BitLocker 一致，取不到 SMART 也放行）。
+    {
+        std::string hw = CheckDiskHealth((int)target.diskIndex);
+        if (!hw.empty())
+            LogWarn("target disk health: " + hw);
+    }
     // 2.1) 空间预检（P1）：镜像未压缩大小 vs 目标分区大小。
     //      必须在这里（**格式化之前**）拦下 —— 否则会出现"数据没了、系统也没装上"。
     //      就地还原与"暂存+重启"两条路都从这一点过，所以放在分支之前。

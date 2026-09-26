@@ -1,4 +1,4 @@
-# SysRecover（九转一键还原 · 单机版）
+# SysRecover（九转还原 · 单机版）
 
 > 版本 `0.3.1`｜**64 位（x64）**，32 位（Win7/Win10 x86）计划中｜Windows 7 / 10 / 11 / WinPE｜发布包 ≈39 MB（其中 ≈90% 是救援层）
 > 许可：自有代码 + 第三方组件「单独分发」，清单与全文见 `THIRD_PARTY_LICENSES.txt`
@@ -251,6 +251,13 @@ skin/ resources/ version.json THIRD_PARTY_LICENSES.txt
 - **Windows 2003 / XP / Vista 及更早版本不支持**（含 Server 2003）：exe 依赖 **UCRT**（微软 UCRT 可再发行仅覆盖
   Vista SP2 / Win7 SP1+ / Server 2008 R2 SP1+，**不含 2003/XP**），且官方 `libwim-15.dll` 也依赖 UCRT。
   实测 Win2003 报 `找不到 api-ms-win-core-errorhandling-l1-1-0.dll`。产品支持矩阵为 **Win7 / Win10 / Win11 / WinPE**。
+- **ReFS 卷不支持**（与上一条同级别的硬限制，只写文档、不加运行时拦截）：
+  **镜像文件不要放在 ReFS 分区上** —— 重启还原跑在 Linux 救援层，而救援层**没有 ReFS 驱动**
+  （initramfs 里无 `refs`/`refs3` 模块，`parse-initramfs.py list` 实测为空），执行 apply 时读不到镜像、
+  还原失败，**此时目标分区可能已被快格**（代价很大）。**目标分区也不支持 ReFS**（ReFS 本就做不了
+  Windows 启动卷，且 `_zjresy*.log` 契约写在目标根、救援层同样读不到 → 任务发现阶段即停）。
+  **做法**：镜像统一放 **NTFS**（FAT32/exFAT 数据分区也可作镜像盘）。就地还原路径由 Windows 自己读写，
+  不受此限；产品支持矩阵照旧 **NTFS 系统卷**。
 - **Win7 作目标 + UEFI 固件不稳**：Win7 的 UEFI 支持本身很弱，且 UEFI 还原时我们**不重刷 ESP 上的引导文件版本**
   （救援层在 Linux，跑不了 `bcdboot`）→ 实测在"按 Win10 配的 UEFI VM"里还原 Win7 会出现**引导循环**。
   **建议 Win7 目标走 BIOS/MBR**（Win7 的主流形态）。已列入待办（见 `docs/14` §3：还原后首次启动刷 `bcdboot`）。

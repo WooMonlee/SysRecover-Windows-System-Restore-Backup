@@ -436,9 +436,14 @@ Debian 的模块也是 `.ko.xz`）② 先验"能组装出可启动 initramfs"（
 | 事项 | 现状 / 费用与前提 |
 |---|---|
 | **代码签名**（消 SmartScreen"未知发布者"）| **要花钱**（2026-08 微软官方口径）：Azure Artifact Signing（原 Trusted Signing）**$9.99/月**（5000 次签名），但**个人开发者仅限美国/加拿大**（中国个人不可用，只能组织身份或传统证书）；传统 **OV** ≈¥1000~3000/年（2023 起强制硬件令牌/云 HSM）、**EV** ≈$300~700/年（**立刻**获得 SmartScreen 信誉）。**免费的都达不到目的**：自签名免费但照样报"未知发布者"（用户还得手动装证书）；**SignPath Foundation 免费但要求项目开源**（本项目开源与否仍是待决事项）。签名只影响观感、不影响还原功能 |
-| **坏盘 / 文件系统损坏检测** | 目标盘有坏道/损坏 → 还原后系统照样坏。需 chkdsk/fsck 探测 + 明确提示 |
-| **ReFS 提示** | 镜像放在 ReFS 卷上时救援层读不了（无 ReFS 驱动）→ 应提前提示 |
-| **GUI 文件级提取** | CLI 已有 `extract`（P9）；GUI 缺"先看看、只捞一个文件"的界面 |
+
+**已裁定（2026-09-26 下午，用户）**：
+
+| 事项 | 结论 |
+|---|---|
+| **坏盘 / 文件系统损坏检测** | ✅ **已实施** `0.3.15`（PIT-086）：`QueryDiskHealth()` 双路读健康 —— **ATA/SATA** 走 `IOCTL_ATA_PASS_THROUGH` 的 SMART READ DATA + RETURN STATUS（属性 5/197/198 + 驱动器自报故障），**NVMe** 走 `IOCTL_STORAGE_QUERY_PROPERTY` 的 SMART/Health 日志页（Critical Warning / Media Errors，协议数据必须放 `query->AdditionalParameters`=**偏移 8**，否则 `ERROR_INVALID_PARAMETER(87)`）。展示三处：GUI `AskDiskHealthWarning` 弹框（**默认取消**=安全项，静默模式跳过）、CLI `restore` 前打印、`diag` 每盘一行（`smart=ata/nvme/unavailable`）。取不到 SMART（USB 桥/RAID/Win7 无 NVMe 属性）→ **fail-open 放行**。实测：SATA 盘 `smart=ata realloc=0 pending=0 uncorrect=0`、NVMe 盘 `smart=nvme crit=0x00 media=0 used=1% temp=46C` |
+| **ReFS 提示** | 📄 **只写文档**（用户 2026-09-26："无法操作需写入我们的介绍文档中，就像我们不支持 Win7 x86 以下的操作系统一样"）—— 进介绍文档的支持矩阵/限制章节，**不加运行时拦截**（运行时守卫另议、可选实现） |
+| **GUI 文件级提取** | ⏳ **下一步**：CLI 已有 `extract`（P9）；GUI 缺"先看看、只捞一个文件"的界面（`wimlib_iterate_dir_tree` + 新对话框） |
 
 **评审中"不成立 / 低价值"（留档，避免重复讨论）**：CLI 退出码语义"混乱"（既有行为，仅按需加固）、
 若干文档措辞/格式项（待文档统一整理时一并处理）。

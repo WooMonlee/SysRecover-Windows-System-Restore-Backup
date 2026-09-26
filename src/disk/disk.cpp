@@ -2,9 +2,11 @@
 #include "disk.h"
 
 #include <windows.h>
+#include <ntddscsi.h>
 #include <winioctl.h>
 
 #include <algorithm>
+#include <cstring>
 #include <vector>
 
 namespace sysrecover {
@@ -334,6 +336,173 @@ bool FindEspPartition(PartitionInfo& out) {
                 return true;
             }
     return false;
+}
+
+// ────────────────── 磁盘健康（SMART，PIT-086） ──────────────────
+// 用 IOCTL_ATA_PASS_THROUGH 发 ATA-8 SMART 命令直接读 SMART（不依赖 WMI，PE 也能用）：
+//   * SMART READ DATA（0xB0 / features 0xD0）→ 512 字节属性表，取 5/197/198；
+//   * SMART RETURN STATUS（0xB0 / features 0xDA）→ 回读 LBA 寄存器判"即将故障"。
+// 命令里的 0x4F/0xC2 是 ATAPI/ATA 约定的"SMART 魔术值"（CylLow=0x4F、CylHigh=0xC2）。
+// NVMe / RAID 虚拟盘会返回"不支持" → smartKnown=false（fail-open，绝不因此阻断还原）。
+#pragma pack(push, 1)
+struct AtaSmartIn {
+    ATA_PASS_THROUGH_EX apt;
+    unsigned char data[512];
+};
+#pragma pack(pop)
+
+Handle OpenPhysicalDrive(uint32_t diskIndex) {
+    wchar_t path[64];
+    swprintf(path, 64, L"\\\\.\\PhysicalDrive%u", diskIndex);
+    return Handle(CreateFileW(path, GENERIC_READ | GENERIC_WRITE,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                              OPEN_EXISTING, 0, nullptr));
+}
+
+void FillSmartRegs(ATA_PASS_THROUGH_EX& apt, unsigned char feature) {
+    apt.CurrentTaskFile[0] = feature;  // Features
+    apt.CurrentTaskFile[1] = 0x01;     // SectorCount
+    apt.CurrentTaskFile[2] = 0x4F;     // LBA low
+    apt.CurrentTaskFile[3] = 0xC2;     // LBA mid
+    apt.CurrentTaskFile[4] = 0x00;     // LBA high
+    apt.CurrentTaskFile[5] = 0xA0;     // DriveHead（单设备 = 主盘）
+    apt.CurrentTaskFile[6] = 0xB0;     // Command = SMART
+}
+
+bool ReadSmartData(uint32_t diskIndex, unsigned char* out) {
+    Handle h = OpenPhysicalDrive(diskIndex);
+    if (!h.valid())
+        return false;
+    AtaSmartIn in{};
+    in.apt.Length = sizeof(ATA_PASS_THROUGH_EX);
+    in.apt.AtaFlags = ATA_FLAGS_DATA_IN | ATA_FLAGS_DRDY_REQUIRED;
+    in.apt.DataTransferLength = 512;
+    in.apt.TimeOutValue = 10;
+    in.apt.DataBufferOffset =
+        (ULONG_PTR)((unsigned char*)in.data - (unsigned char*)&in);
+    FillSmartRegs(in.apt, 0xD0);
+    DWORD br = 0;
+    if (!DeviceIoControl(h.h, IOCTL_ATA_PASS_THROUGH, &in, sizeof(in), &in,
+                         sizeof(in), &br, nullptr))
+        return false;
+    memcpy(out, in.data, 512);
+    return true;
+}
+
+bool SmartReturnStatus(uint32_t diskIndex, bool& failing) {
+    Handle h = OpenPhysicalDrive(diskIndex);
+    if (!h.valid())
+        return false;
+    ATA_PASS_THROUGH_EX apt{};
+    apt.Length = sizeof(ATA_PASS_THROUGH_EX);
+    apt.AtaFlags = ATA_FLAGS_DRDY_REQUIRED;
+    apt.TimeOutValue = 10;
+    FillSmartRegs(apt, 0xDA);
+    DWORD br = 0;
+    if (!DeviceIoControl(h.h, IOCTL_ATA_PASS_THROUGH, &apt, sizeof(apt), &apt,
+                         sizeof(apt), &br, nullptr))
+        return false;
+    // "即将故障" = 回读到的 LBA low/mid 仍是 0x4F/0xC2；健康时清 0。
+    failing = (apt.CurrentTaskFile[2] == 0x4F && apt.CurrentTaskFile[3] == 0xC2);
+    return true;
+}
+
+// 属性表：前 2 字节版本号，之后 30 条 × 12 字节（id/状态/当前/最差/raw6/保留）。
+uint64_t SmartAttrRaw(const unsigned char* d, int id) {
+    for (int i = 0; i < 30; ++i) {
+        const unsigned char* e = d + 2 + i * 12;
+        if (e[0] == 0)
+            break;
+        if (e[0] == id) {
+            uint64_t v = 0;
+            for (int b = 10; b >= 5; --b)  // raw 值 6 字节小端
+                v = (v << 8) | e[b];
+            return v;
+        }
+    }
+    return 0;
+}
+
+// ── NVMe：读 SMART / Health Information 日志页（Log 02h，Win10+）──
+// 走 IOCTL_STORAGE_QUERY_PROPERTY + StorageDeviceProtocolSpecificProperty。
+// NVMe 没有 ATA 那套属性，关键信号是 Critical Warning 位图 + Media and Data Integrity
+// Errors（介质错误计数）。Win7 没有该属性 → 返回 false（fail-open）。
+uint64_t Le128Low(const unsigned char* p) {  // 128 位小端，取低 64 位够用
+    uint64_t v = 0;
+    for (int i = 7; i >= 0; --i)
+        v = (v << 8) | p[i];
+    return v;
+}
+
+bool ReadNvmeSmart(uint32_t diskIndex, unsigned char* out) {
+    Handle h = OpenPhysicalDrive(diskIndex);
+    if (!h.valid())
+        return false;
+    // ⚠️ 协议数据必须从 query->AdditionalParameters（**偏移 8**）开始 —— 这是 MSDN
+    // "Working with NVMe Drives" 明写的；放在 sizeof(query)=12 或 9 都会被驱动以
+    // ERROR_INVALID_PARAMETER(87) 拒绝（PIT-086 实测：12/9 布局三连 87）。
+    unsigned char in[sizeof(STORAGE_PROPERTY_QUERY) +
+                     sizeof(STORAGE_PROTOCOL_SPECIFIC_DATA)] = {};
+    auto* q = (STORAGE_PROPERTY_QUERY*)in;
+    q->PropertyId = StorageDeviceProtocolSpecificProperty;  // = 50（SDK 口径）
+    q->QueryType = PropertyStandardQuery;
+    auto* d = (STORAGE_PROTOCOL_SPECIFIC_DATA*)(in + 8);
+    d->ProtocolType = ProtocolTypeNvme;
+    d->DataType = NVMeDataTypeLogPage;
+    d->ProtocolDataRequestValue = 0x02;  // SMART / Health Information（Log 02h）
+    d->ProtocolDataOffset = sizeof(STORAGE_PROTOCOL_SPECIFIC_DATA);
+    d->ProtocolDataLength = 512;
+
+    unsigned char buf[sizeof(STORAGE_PROTOCOL_DATA_DESCRIPTOR) + 512] = {};
+    DWORD br = 0;
+    if (!DeviceIoControl(h.h, IOCTL_STORAGE_QUERY_PROPERTY, in, sizeof(in), buf,
+                         sizeof(buf), &br, nullptr))
+        return false;
+    if (br < sizeof(STORAGE_PROTOCOL_DATA_DESCRIPTOR))
+        return false;
+    auto* desc = (STORAGE_PROTOCOL_DATA_DESCRIPTOR*)buf;
+    auto* sd = &desc->ProtocolSpecificData;
+    // 数据地址 = 协议字段基址(descriptor+8) + ProtocolDataOffset（MSDN 口径）；
+    // 常见返回值是 40（=sizeof 协议字段），即数据紧随描述符之后。
+    if (sd->ProtocolDataOffset < sizeof(STORAGE_PROTOCOL_SPECIFIC_DATA) ||
+        sd->ProtocolDataLength < 512)
+        return false;
+    const unsigned char* data = (const unsigned char*)sd + sd->ProtocolDataOffset;
+    if (data + 512 > buf + sizeof(buf))
+        return false;
+    memcpy(out, data, 512);
+    return true;
+}
+
+DiskHealth QueryDiskHealth(uint32_t diskIndex) {
+    DiskHealth h;
+    unsigned char d[512] = {};
+    if (ReadSmartData(diskIndex, d)) {  // ── ATA/SATA 路径
+        h.smartKnown = true;
+        h.reallocatedSectors = SmartAttrRaw(d, 5);
+        h.pendingSectors = SmartAttrRaw(d, 197);
+        h.uncorrectableSectors = SmartAttrRaw(d, 198);
+        bool failing = false;
+        if (SmartReturnStatus(diskIndex, failing))
+            h.failing = failing;
+    } else if (ReadNvmeSmart(diskIndex, d)) {  // ── NVMe 路径（Win10+）
+        h.smartKnown = true;
+        h.isNvme = true;
+        h.criticalWarning = d[0];
+        unsigned kelvin = (unsigned)d[1] | ((unsigned)d[2] << 8);
+        if (kelvin >= 200)  // 0 = 驱动器不报，避免出现 -273
+            h.tempC = (int)kelvin - 273;
+        h.usedPercent = d[5];
+        h.mediaErrors = Le128Low(d + 160);
+        h.errorLogCount = Le128Low(d + 176);
+    } else {
+        return h;  // 两条路都不支持 → smartKnown=false（fail-open）
+    }
+    // 阈值取保守值：待定/无法纠正/介质错误 > 0 已经是"正在坏"；重映射 > 100 算明显老化。
+    h.caution = h.failing || h.pendingSectors > 0 || h.uncorrectableSectors > 0 ||
+                h.reallocatedSectors > 100 || h.criticalWarning != 0 ||
+                h.mediaErrors > 0;
+    return h;
 }
 
 }  // namespace sysrecover

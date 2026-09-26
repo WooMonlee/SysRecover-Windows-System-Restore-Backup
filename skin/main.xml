@@ -28,7 +28,7 @@
 
         <TabOption   name="ModeRestore" float="true" pos="17,2,159,44"  text="文件→系统" icon="restore" group="true" selected="true" bold="true" />
         <TabOption   name="ModeBackup"  float="true" pos="174,2,316,44" text="系统→文件" icon="backup"  group="true" bold="true" />
-        <TitleLabel  float="true" pos="316,0,618,52" text="九转一键还原" />
+        <TitleLabel  float="true" pos="316,0,618,52" text="九转还原" />
 
         <WinBtn name="MinBtn"   float="true" pos="618,0,658,51" glyph="min" />
         <WinBtn name="MaxBtn"   float="true" pos="659,0,699,51" glyph="max" />

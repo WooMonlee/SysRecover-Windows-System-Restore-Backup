@@ -26,7 +26,7 @@
 
 ## 1. 项目快照
 
-- **产品**：一键还原（单机版）/ SysRecover，原生 C++，零运行时依赖，目标体积 **< 10 MB**。
+- **产品**：九转还原（单机版）/ SysRecover，原生 C++，零运行时依赖，目标体积 **< 10 MB**。
 - **用户**：电脑维修人员、系统维护人员、IT 管理员。
 - **运行矩阵**：Windows 7 / Windows 10 / Windows 11 / WinPE，其中**主用 Windows 10**。
 - **架构**：Windows C++ 前端（备份/任务暂存/引导配置） + Linux initramfs 恢复层（实际执行还原）。
@@ -509,6 +509,14 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **⚠️ 本轮自己踩的坑（已修，教训记此）**：改完 `bootfiles/zjrestore-lite.sh` 后**忘了按 AGENTS §17.2 重建 initramfs** → 演练跑的是**旧脚本**，新加的握手行一直"看不见"，一度怀疑逻辑没执行 ✗。**规则重申：改救援层脚本 ⇒ 必须 `python tools/build-debian-rescue.py`，再回归**（本次重建后 494 模块/20.5MB 不变 ✓，握手行立即出现 ✓）。另：`tools/vmtest/parse-initramfs.py` 的用法是 `<archive> <mode> [target]`，用错参数会**静默无输出**（别误判成"内容不在镜像里"）。
   · 回归：`make check` ✓（17 用例/57 断言 + 13 Python + check-docs PASS）、`make crash-test` ✓（dump OK）、`make package` ✓（x64+x86）、BIOS 端到端演练 ✓（`apply done` → `boot region OK` → `RESTORE DONE`）。✅ 2026-09-26（`0.3.13`）
 
+- PIT-086 **坏盘健康检测落地；NVMe 协议数据必须放 `query->AdditionalParameters`（偏移 8），否则 `ERROR_INVALID_PARAMETER(87)`**（2026-09-26，`0.3.15`）：用户把「坏盘/文件系统损坏检测」从"讨论后再做"划出（与代码签名/GUI 提取一并裁定，见 PLAN §13.4）——还原要**格式化目标分区**，若目标盘已现坏道，还原完系统照样起不来，必须**先警告再动手**。
+  · **实现**：`disk.cpp::QueryDiskHealth()` 双路 —— ① **ATA/SATA**：`IOCTL_ATA_PASS_THROUGH` 发 `SMART READ DATA(0xD0)` 取属性 5/197/198 + `SMART RETURN STATUS(0xDA)` 判"驱动器自报即将故障"；② **NVMe**（Win10+）：`IOCTL_STORAGE_QUERY_PROPERTY` + `StorageDeviceProtocolSpecificProperty`（=50）+ `ProtocolTypeNvme`/`NVMeDataTypeLogPage`/`RequestValue=0x02` 读 SMART/Health 日志页（Critical Warning / Media Errors / Percentage Used / Temperature）。判定：`caution = ATA 自报故障 || 待定>0 || 无法纠正>0 || 重映射>100 || criticalWarning!=0 || mediaErrors>0`。
+  · ⚠️ **坑（本次核心）**：**协议数据必须从 `query->AdditionalParameters`（= 偏移 8）开始**（MSDN "Working with NVMe Drives" 原文："The start of the STORAGE_PROTOCOL_SPECIFIC_DATA is the AdditionalParameters field"）。最初按 `sizeof(STORAGE_PROPERTY_QUERY)=12` 顺排、又试 9 —— **三种布局全被驱动以 `ERROR_INVALID_PARAMETER(87)` 拒绝**，而普通属性（`StorageAdapterProperty`/`StorageDeviceProperty` plain 查询）**都正常** → 一度怀疑"MinGW 把枚举值定错了"，**其实 50 是对的**（SDK：`StorageDeviceIoCapabilityProperty=48`，其后 adapter=49 / device=50；MinGW 头与 SDK 逐字一致），**错的是偏移**。输出侧同理：数据地址 = `&descriptor->ProtocolSpecificData + ProtocolDataOffset`（不是"描述符尾"硬算），MSDN 的校验是 `offset < sizeof(STORAGE_PROTOCOL_SPECIFIC_DATA)` 即拒。
+  · ⚠️ **排查手法（可复用）**：① 先用 plain 属性验证 ioctl/句柄本身可用，再逐个换布局打印错误码（一次性探针，别在产品代码里试错）；② **直跑 `g++.exe` 必须先把 `mingw64\bin` 加进 PATH** —— 否则 `cc1plus` 报 `0xC0000135`（缺 DLL），**exit=1 且 stderr 为空**，极易误判成"源码语法错"（`mingw32-make` 路径下不会遇到，因为 make 会带 PATH）。
+  · **展示三处**：GUI `AskDiskHealthWarning`（`CConfirmDlg::Ask2`，**默认"取消"=安全项**；静默模式跳过、只记日志）、CLI `restore` 暂存前打印、`diag` 每盘一行（`smart=ata|nvme|unavailable` + 关键指标）。取不到 SMART（USB 桥 / RAID / Win7 无 NVMe 属性）→ `smartKnown=false` **fail-open 放行**（与 BitLocker 同款"只警告不硬拦"，见 PIT-083③）。
+  · **实测**（本机）：`disk0` SATA HDD → `smart=ata realloc=0 pending=0 uncorrect=0`；`disk1` NVMe → `smart=nvme crit=0x00 media=0 errlog=0 used=1% temp=46C`（数值合理）。⚠️ **未实测"真坏盘告警"**（本机盘都健康）——需拿有坏道的盘回归一次"弹框/打印确实出现"。
+  · **附带（同批提交）**：产品中文名改 **「九转还原」**（原"九转一键还原"，用户 2026-09-26："可读性和分辨性更强"）—— 全仓 22 处 + 2 处"产品定义行"同步（皮肤 XML、窗口/对话框标题、README、docs、AGENTS §15/§17.3 品牌表），复检零残留；`九转还原` 四字标题更居中好看。✅ 2026-09-26（`0.3.15`）
+
 ---
 
 ## 14. License 合规（SBOM，随版本更新）
@@ -546,7 +554,7 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 老界面（`SysRestore/src/ZjRestore.Gui/MainWindow.xaml`，870×410，无边框圆角）**外观确认无问题**，C++ 版照抄布局，只换实现（WPF XAML → Duilib XML）。详细映射见 `docs/ui-design.md`，骨架见 `skin/main.xml`。
 
 布局速览（上→下）：
-1. **顶栏**（`#f7f9fc`）：左=模式 Tab（Radio：`镜像恢复为系统` / `系统备份为镜像`，选中下划线 `#96aaf0`）+ 中=标题`九转一键还原 v0.1` + 右=最小化/最大化/关闭（关闭 hover `#e81123`）。
+1. **顶栏**（`#f7f9fc`）：左=模式 Tab（Radio：`镜像恢复为系统` / `系统备份为镜像`，选中下划线 `#96aaf0`）+ 中=标题`九转还原 v0.1` + 右=最小化/最大化/关闭（关闭 hover `#e81123`）。
 2. **第一步**（白卡）：`浏览系统镜像文件`按钮 + 镜像路径圆角输入框；第二行`镜像说明：`+ 子镜像下拉（`Index - Name`）/ 备注输入。
 3. **第二步**（`#f0f5ff` 蓝卡）：`系统安装位置` + 四列分区下拉（`盘符·系统类型 | 磁盘 | 分区 | 容量·可用`，行内含用量进度条）。
 4. **第三步行**：大主按钮（`开始恢复系统`，`#8ca0de`，禁用态 `#e2e6ee`）+ 右侧`静默模式`勾选、`格式：`下拉（`.esd(慢速小体积)`/`.wim(正常大小)`/`.wim(高速大体积)`）、`清除引导项`、`生成启动菜单`。
@@ -624,7 +632,7 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 ### 17.3 品牌与术语约束（改界面/文案前必查）
 | 项 | 值 | 能不能改 |
 |---|---|---|
-| 产品中文名 | **九转一键还原** | 改要全仓同步（见下） |
+| 产品中文名 | **九转还原** | 改要全仓同步（见下） |
 | 英文名 | **SysRecover** | 用户已定：不改 |
 | exe 名 | `SysRecover.exe` / `SysRecoverUI.exe` | 不改 |
 | 技术标识 | `ZJRESTORE` / `_zjresy*.log` / `zjrestore-lite.sh` / 内核参数 `zjre=1` | **不改**（跨层契约，改要双端同步发版） |
