@@ -199,5 +199,7 @@ package:
 	@copy /Y skin\confirm.xml dist\skin\ >nul
 	@echo {"name":"SysRecover","version":"$(VERSION)","arch":"x86+x64"} > dist\version.json
 	@dir dist\SysRecover.exe dist\SysRecoverUI.exe dist\x64\SysRecover.exe dist\x64\SysRecoverUI.exe
+# 打完包再严格核一次"指针"（version.json ↔ version.h 等）—— 防止"改了源码没打包"
+	@$(PYTHON) tools/check-docs.py --strict-dist
 
 .PHONY: all cli gui clean package check crash-test

@@ -21,6 +21,9 @@ RESCUE = [ROOT / "bootfiles" / "zjrestore-lite.sh",
 DOCS_CONTRACT = [ROOT / "AGENTS.md", ROOT / "docs" / "04-跨层契约.md"]
 
 fails = []
+# dist/version.json 是**构建产物**（`make package` 才刷新）；`make check` 可能跑在打包之前，
+# 所以默认只**警告**；`--strict-dist` 时才当失败（`make package` 末尾用严格模式再核一次）。
+strict_dist = "--strict-dist" in sys.argv
 
 
 def read(p):
@@ -72,12 +75,17 @@ def main():
     if missing:
         fails.append("救援脚本读了 Windows 侧没写的键: %s" % ", ".join(missing))
 
-    # 4) dist/version.json 与 version.h 一致
+    # 4) dist/version.json 与 version.h 一致（默认只警告，见上；--strict-dist 当失败）
     vj = ROOT / "dist" / "version.json"
     if vj.exists():
         mm = re.search(r'"version"\s*:\s*"([^"]+)"', read(vj))
         if mm and mm.group(1) != ver:
-            fails.append("dist/version.json=%s 与 version.h=%s 不一致" % (mm.group(1), ver))
+            msg = ("dist/version.json=%s 与 version.h=%s 不一致（未重新 make package？）"
+                   % (mm.group(1), ver))
+            if strict_dist:
+                fails.append(msg)
+            else:
+                print("  WARN: " + msg)
 
     print("OK  version=%s contract_version=%d 契约键 %d 个（救援读 %d 个）"
           % (ver, cver, len(written), len(read_keys)))
