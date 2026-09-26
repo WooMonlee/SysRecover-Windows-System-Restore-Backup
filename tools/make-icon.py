@@ -2,7 +2,8 @@
 """make-icon.py — 生成 resources/SysRecover.ico（应用/窗口图标，多尺寸）。
 
 **有源图时**（推荐）：`resources/icon-source.ico`（或 `.png`，≥256×256）——由产品维护者提供的
-美术图，本脚本只负责**高质量降采样成标准多尺寸**（256/128/64/48/32/24/16）。
+美术图（Photoshop 原稿 `resources/icon-source.psd` 也存于仓库，供日后改图），本脚本只负责
+**高质量降采样成标准多尺寸**（256/128/64/48/32/24/16）。
 Windows 任务栏/资源管理器/Alt-Tab 会各取所需尺寸；单尺寸 ICO 会被 GDI 粗暴缩放，小尺寸发糊。
 **无源图时**：按下面的内置造型生成（品牌蓝圆角方块 + 白色环形刷新箭头，配色见 AGENTS §15）。
 用法：python tools/make-icon.py
