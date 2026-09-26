@@ -128,6 +128,18 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         ::CoUninitialize();
         return 2;
     }
+    // 窗口/任务栏图标（问题清单 E1）：exe 里嵌的资源（SysRecover.rc: `1 ICON`）。
+    {
+        HICON ib = (HICON)::LoadImageW(hInstance, MAKEINTRESOURCEW(1), IMAGE_ICON,
+                                       0, 0, LR_DEFAULTSIZE | LR_SHARED);
+        HICON is = (HICON)::LoadImageW(hInstance, MAKEINTRESOURCEW(1), IMAGE_ICON,
+                                       ::GetSystemMetrics(SM_CXSMICON),
+                                       ::GetSystemMetrics(SM_CYSMICON), LR_SHARED);
+        if (ib)
+            ::SendMessageW(h, WM_SETICON, ICON_BIG, (LPARAM)ib);
+        if (is)
+            ::SendMessageW(h, WM_SETICON, ICON_SMALL, (LPARAM)is);
+    }
     // 圆角：WindowImplBase 只在 WM_SIZE 里套 SetWindowRgn（WinImplBase.cpp:211），
     // 而 XML（含 roundcorner）是在 WM_CREATE 期间才解析的，首次 WM_SIZE 可能更早，
     // 故建窗后手动再套一次（幂等，重复设置无副作用）。

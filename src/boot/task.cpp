@@ -69,13 +69,15 @@ std::string BuildTaskConf(const RestoreTask& t) {
         "target_disk_serial=%s\n"
         "repair_boot=%d\n"
         "partition_count=%u\n"
-        "software_dir=%s\n",
+        "software_dir=%s\n"
+        "contract_version=%d\n",
         t.ptType.c_str(), W2U(t.imagePartGuid).c_str(),
         W2U(t.imageRelPath).c_str(), W2U(t.imagePath).c_str(), t.imageIndex,
         W2U(t.targetGuid).c_str(),
         (unsigned long long)t.targetOffset,
         (unsigned long long)t.targetSize, W2U(t.targetDiskSerial).c_str(),
-        t.repairBoot ? 1 : 0, t.partCount, W2U(t.softwareDir).c_str());
+        t.repairBoot ? 1 : 0, t.partCount, W2U(t.softwareDir).c_str(),
+        SYSRECOVER_CONTRACT_VERSION);
     return buf;
 }
 
@@ -114,7 +116,8 @@ std::string BuildRestoreLogText(const RestoreTask& t,
              "image_path=%s\n"
              "image_index=%d\n"
              "repair_boot=%d\n"
-             "pt_type=%s\n",
+             "pt_type=%s\n"
+             "contract_version=%d\n",
              isoTimestamp.c_str(), SYSRECOVER_VERSION,
              W2U(t.softwarePath).c_str(),
              W2U(t.targetDiskName).c_str(), W2U(t.targetDiskSerial).c_str(),
@@ -122,7 +125,8 @@ std::string BuildRestoreLogText(const RestoreTask& t,
              (unsigned long long)t.targetOffset,
              (unsigned long long)t.targetSize, W2U(t.targetFs).c_str(),
              W2U(t.targetVolLabel).c_str(), W2U(t.imagePath).c_str(),
-             t.imageIndex, t.repairBoot ? 1 : 0, t.ptType.c_str());
+             t.imageIndex, t.repairBoot ? 1 : 0, t.ptType.c_str(),
+             SYSRECOVER_CONTRACT_VERSION);
     return buf;
 }
 

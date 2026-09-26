@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -370,7 +371,7 @@ int CmdRestore(const std::vector<std::string>& a) {
         std::string advice = sysrecover::ErrorAdvice(rc, err);  // P8
         if (!advice.empty())
             std::printf("%s\n", advice.c_str());
-        return rc == 4 ? 4 : (rc == 5 ? 5 : 1);
+        return (rc == 2 || rc == 4 || rc == 5) ? rc : 1;
     }
     if (needReboot)
         std::printf("已暂存还原任务，重启后由引导层执行。\n");
@@ -640,11 +641,75 @@ int CmdShortcut(const std::vector<std::string>& a) {
     return 0;
 }
 
-int Usage() {
+// ── 帮助（问题清单 C1：原来只有一行 Usage，学生没法自学命令）──
+struct CmdHelp {
+    const char* cmd;
+    const char* text;
+};
+const CmdHelp kCmdHelp[] = {
+    {"list", "list\n  列出磁盘/分区/文件系统/盘符/ESP 与系统标记。"},
+    {"diag",
+     "diag [--zip [--out <zip>]]\n"
+     "  自检（管理员/固件/Secure Boot/启动项/wimlib）。\n"
+     "  --zip 导出诊断包（diag 文本 + logs/ + 契约文件），排错时直接发回。"},
+    {"images", "images --file <镜像>\n  列出镜像里的子镜像：<index> - <名称>（<大小>）。"},
+    {"backup",
+     "backup --dest <文件> [--source <目录/>] [--compress fast|maximum|recovery]\n"
+     "       [--name <名>] [--append] [--verify] [--yes]\n"
+     "  --source 以 `/` 结尾（如 C:/）触发 VSS 热备；--compress 决定体积/速度；\n"
+     "  --verify 写完立即校验；--append 追加为同一 WIM 的新子镜像。"},
+    {"restore",
+     "restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--yes]\n"
+     "  目标是正在运行的系统盘 → 暂存并重启进救援层；否则就地还原（不重启）。\n"
+     "  用 `list` 先确认磁盘号/分区号；镜像必须在**本地分区**。"},
+    {"verify", "verify --image <文件>\n  校验镜像完整性（成功 0，失败 5）。"},
+    {"extract",
+     "extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]\n"
+     "  从镜像里取单个/一组文件（--path 支持通配符、可重复）。"},
+    {"history", "history\n  列出操作历史（logs/history.jsonl）。"},
+    {"shortcut", "shortcut --target <exe> [--args <...>] [--name <名>]\n  在桌面建快捷方式。"},
+    {"version", "version\n  显示版本号。"},
+};
+const size_t kCmdHelpN = sizeof(kCmdHelp) / sizeof(kCmdHelp[0]);
+
+void PrintAllUsage() {
     std::printf(
-        "Usage: SysRecover.exe "
-        "<version|diag|list|backup|restore|verify|images|extract|shortcut> [opts]\n");
-    return 2;
+        "SysRecover 九转一键还原 · 命令行\n"
+        "\n"
+        "用法: SysRecover.exe <命令> [选项]      （`SysRecover.exe help <命令>` 看单项）\n"
+        "\n"
+        "命令:\n"
+        "  list                        列出磁盘/分区/文件系统/盘符/ESP/系统标记\n"
+        "  diag [--zip [--out <zip>]]  自检（固件/Secure Boot/启动项/wimlib）；--zip 导出诊断包\n"
+        "  images --file <镜像>        列出镜像里的子镜像（含大小/描述）\n"
+        "  backup --dest <文件> [--source <目录/>] [--compress fast|maximum|recovery]\n"
+        "         [--name <名>] [--append] [--verify] [--yes]\n"
+        "  restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--yes]\n"
+        "  verify --image <文件>       校验镜像完整性\n"
+        "  extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]\n"
+        "                              从镜像里取单个/一组文件（支持通配符）\n"
+        "  history                     列出操作历史（logs/history.jsonl）\n"
+        "  shortcut --target <exe> [--args <...>] [--name <名>]   建快捷方式\n"
+        "  version                     显示版本\n"
+        "  help [命令]                 本帮助\n"
+        "\n"
+        "退出码: 0 成功 / 1 通用失败 / 2 参数错 / 3 需管理员 / 4 危险目标被拒 / 5 镜像校验失败 / 6 取消\n"
+        "注意: 还原系统盘会重启进救援层，镜像必须放在**本地分区**（救援层访问不到网络）。\n");
+}
+
+// 返回 true = 找到了该命令的说明。
+bool PrintCmdUsage(const char* cmd) {
+    for (size_t i = 0; i < kCmdHelpN; ++i)
+        if (std::strcmp(cmd, kCmdHelp[i].cmd) == 0) {
+            std::printf("%s\n", kCmdHelp[i].text);
+            return true;
+        }
+    return false;
+}
+
+int Usage() {
+    PrintAllUsage();
+    return 2;  // 无参数 = 用法错误（退出码 2）
 }
 
 }  // namespace
@@ -669,6 +734,20 @@ int main() {
     std::vector<std::string> args = Utf8Args();
     if (args.empty())
         return Usage();
+    // 帮助（问题清单 C1）：`help [命令]` / `--help` / `-h`，以及 `<命令> --help`。
+    if (args[0] == "help" || args[0] == "--help" || args[0] == "-h") {
+        if (args.size() > 1) {
+            if (!PrintCmdUsage(args[1].c_str()))
+                PrintAllUsage();
+        } else {
+            PrintAllUsage();
+        }
+        return 0;
+    }
+    if (args.size() > 1 && (args[1] == "--help" || args[1] == "-h")) {
+        PrintCmdUsage(args[0].c_str());
+        return 0;
+    }
     std::wstring exeDir = sysrecover::ExeDir();
     std::wstring logsDir = exeDir + L"\\logs";
     sysrecover::LogInit(logsDir);

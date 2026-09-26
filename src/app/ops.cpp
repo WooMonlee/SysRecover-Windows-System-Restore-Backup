@@ -24,6 +24,21 @@
 namespace sysrecover {
 namespace {
 
+// 网络路径判定：UNC（\\server\share\...）或**映射网络驱动器**（DRIVE_REMOTE）。
+// 用途：**暂存+重启**的还原由 Linux 救援层读镜像，而救援层**访问不到网络** →
+// 网络镜像必然 image not found，必须在格式化之前就拦下（问题清单 D1/H1）。
+bool IsNetworkPath(const std::wstring& p) {
+    if (p.size() >= 2 && (p[0] == L'\\' || p[0] == L'/') &&
+        (p[1] == L'\\' || p[1] == L'/'))
+        return true;  // \\server\share\...
+    if (p.size() >= 2 && p[1] == L':') {
+        wchar_t root[4] = {p[0], L':', L'\\', 0};
+        if (GetDriveTypeW(root) == DRIVE_REMOTE)
+            return true;  // 映射网络驱动器 Z:\...
+    }
+    return false;
+}
+
 std::string W2U(const std::wstring& w) {
     if (w.empty())
         return {};
@@ -545,6 +560,20 @@ int StageRestore(const RestoreRequest& req, std::string& err,
             return rc;
         }
         LogInfo(std::string("restore mode: staged reboot (") + why + ")");
+        // 网络镜像防呆（问题清单 D1/H1）：暂存+重启后由 **Linux 救援层**读镜像，而救援层
+        // 访问不到网络（UNC / 映射网络驱动器）→ 必然 image not found。这里**提前拒绝**
+        //（就地还原不在此列 —— 那是 Windows 自己读，网络没问题）。
+        if (IsNetworkPath(imagePath)) {
+            err =
+                "镜像在网络路径上（UNC 或映射网络驱动器）。还原系统盘需要重启进救援层，"
+                "而救援层无法访问网络 —— 请先把镜像复制到**本地分区**（如 D:\\）再还原。";
+            LogError("staged restore rejected: image on network path");
+            AppendHistory("restore-rejected", req.image, imagePath, 0,
+                          "image on network path");
+            ReleaseOpLock();
+            ProgressDone("restore", "failed");
+            return 2;
+        }
         AppendHistory("restore-staged", req.image, imagePath, 0,
                       "staged; 实际结果见救援层日志");
     }

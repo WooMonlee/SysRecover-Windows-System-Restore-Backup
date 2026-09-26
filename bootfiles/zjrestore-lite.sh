@@ -41,6 +41,19 @@ get_task(){
     get_log "$1"
 }
 
+# 契约版本握手（问题清单 G1）：Windows 侧在 conf / _zjresy 日志里写 `contract_version=<n>`；
+# 救援层只认自己的 `ZJ_CONTRACT`。不匹配就**明确报错**（而不是字段语义漂移后静默出错）。
+# 老任务没有这个键 → 视为 1（引入该键之前的版本），保持向后兼容。
+ZJ_CONTRACT=1
+_CV=$(get_task contract_version)
+[ -n "$_CV" ] || _CV=1
+if [ "$_CV" != "$ZJ_CONTRACT" ]; then
+    say "ERROR: contract_version mismatch: task=$_CV rescue=$ZJ_CONTRACT"
+    say "ERROR: 程序与救援层版本不匹配（契约 v$_CV vs v$ZJ_CONTRACT），请用同一版本重新暂存"
+    exit 1
+fi
+say "contract_version=$_CV (ok)"
+
 IMAGE_INDEX=$(get_task image_index)
 [ -n "$IMAGE_INDEX" ] || IMAGE_INDEX=1
 REPAIR_BOOT=$(get_task repair_boot)
