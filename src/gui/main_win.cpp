@@ -3,6 +3,7 @@
 #include "main_form.h"
 
 #include "../boot/grub.h"  // sysrecover::ExeDir()（启动器布局下的应用根目录）
+#include "../common/crash.h"     // 崩溃处理（minidump + 可读日志）
 #include "../common/logger.h"    // LogInfo（启动耗时自检）
 #include "../common/process.h"   // MsSinceProcessStart
 #include "../common/selfarch.h"  // 位数自举：32 位程序在 64 位系统上换成 x64\同名
@@ -61,6 +62,8 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         if (sysrecover::ReexecX64IfNeeded(&reexecCode, /*wait=*/false))
             return reexecCode;
     }
+    // 崩溃处理：装在最前面（真实进程），崩溃时把 dump+文本写到 <exeDir>\logs\crash\。
+    sysrecover::InstallCrashHandler(sysrecover::ExeDir());
     CPaintManagerUI::SetInstance(hInstance);
     // 资源根 = **应用目录**（不是 exe 目录）：启动器布局下 exe 在 <root>\x86\ 或 \x64\ 子目录里，
     // 而 skin\ 放在 <root>（与位数无关）→ 必须用 sysrecover::ExeDir()（它会自动上移一级）。
@@ -134,12 +137,11 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
 
     pWnd->CenterWindow();
     pWnd->ShowWindow(true);
-#if ZJ_LOG_STARTUP
-    // 启动耗时自检（进程创建 → 窗口显示）：排障用，**默认关闭**（见 process.h 的开关）。
-    sysrecover::LogInfo("startup: " +
-                        std::to_string(sysrecover::MsSinceProcessStart()) +
-                        " ms (process -> window shown)");
-#endif
+    // 启动耗时自检（进程创建 → 窗口显示）：排障用，设 `SYSRECOVER_STARTUP_TIMING=1` 打开。
+    if (sysrecover::StartupTimingEnabled())
+        sysrecover::LogInfo("startup: " +
+                            std::to_string(sysrecover::MsSinceProcessStart()) +
+                            " ms (process -> window shown)");
     CPaintManagerUI::MessageLoop();
     delete pWnd;
 

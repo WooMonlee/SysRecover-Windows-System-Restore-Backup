@@ -94,6 +94,12 @@ uint64_t MsSinceProcessStart() {
     return (n.QuadPart - c.QuadPart) / 10000ULL;  // 100ns → ms
 }
 
+bool StartupTimingEnabled() {
+    wchar_t v[16] = {};
+    DWORD n = GetEnvironmentVariableW(L"SYSRECOVER_STARTUP_TIMING", v, 16);
+    return n > 0 && n < 16 && v[0] == L'1';
+}
+
 int RunProcess(const std::wstring& exe, const std::wstring& args,
                std::string& outUtf8) {
     outUtf8.clear();

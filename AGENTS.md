@@ -487,6 +487,14 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **⚠️ 修复中自己踩的坑（已修）**：把 HV/Xen 加进主名单后，**普通机器上 `modprobe hv_vmbus` 报 `No such device`**，被新 FAIL 逻辑当成失败 → **每台普通机 8 行 FAIL 噪音**。补 `*"No such device"*` 分支降级为 `not applicable (no such device)`（硬件不存在属正常）。
   · 回归：`make check` ✓、`bios-smoke` ✓（日志无 FAIL；UFS 显示 WARN）、**BIOS 端到端演练 ✓**（`apply done`→`boot region OK`→`RESTORE DONE`）。✅ 2026-09-26（`0.3.11`）
 
+- PIT-084 **借鉴 DreamGrain 电子教室的工程实践**（2026-09-26）：读了同总项目下 `DreamGrainClass/AGENTS.md`（Veyon 定制），只挑"**机器可校验 / 能防错**"的几条落地：
+  · **崩溃处理（我们原本完全没有）**：新增 `src/common/crash.{h,cpp}` —— `SetUnhandledExceptionFilter` 捕获未处理异常 → `<exeDir>\logs\crash\` 写 **`MiniDumpWriteDump`**（**动态加载 `dbghelp.dll`，零链接依赖**）+ **可读文本**（异常码/地址/访问违例方向+地址/**调用栈地址+所属模块+偏移**/命令行/版本）+ `last.txt`；CLI/GUI 入口各装一次；`diag --zip` 会把 `logs\` 一起打包。回归 **`make crash-test`**（故意触发访问违例；实测 `.dmp` 41KB + `.txt` 均落盘）。
+  · **"指针"一致性校验**：新增 `tools/check-docs.py`（接进 `make check`）—— 校验 `version.h` 的 SemVer、`SYSRECOVER_CONTRACT_VERSION` ↔ `AGENTS`/`docs` 的 `contract_version`、**救援脚本 `get_task` 读的键 ⊆ `task.cpp`（BuildTaskConf+BuildRestoreLogText）写的键**、`dist/version.json` ↔ `version.h`。当前 22 键写 / 8 键读，PASS。
+  · **AGENTS 新增 §17**：开工序、编译/打包纪律（**只有 `dist/` 是交付物**）、**品牌与术语约束表**（九转/SysRecover/`zj*` 技术标识/「讨论」链接/维护者 —— 防改名漏网）、**AI 工具资源纪律**（并发搜索 2~4 封顶、能 Read 就不搜、少跑 PS/短命令）、**删除暂存区 `docs\老旧文档暂存\`**（只进不出）、崩溃处理说明。
+  · **启动计时改环境变量**：`SYSRECOVER_STARTUP_TIMING=1`（原为编译期宏 `ZJ_LOG_STARTUP`，要重编）—— 学 DreamGrain 的 `DREAMGRAIN_STARTUP_TIMING`。
+  · **没抄**：他们的教师端/学生端双端分包、上游 rebase 台账、CMake/Qt 工具链（与本项目无关）。
+  · 回归：`make check` ✓（含 check-docs）、`make crash-test` ✓、`make package` ✓。✅ 2026-09-26（`0.3.12`）
+
 ---
 
 ## 14. License 合规（SBOM，随版本更新）
@@ -580,3 +588,50 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 - BCD 命令行：Microsoft Learn `bcdedit` / `adding-boot-entries`
 - Win32：`IOCTL_DISK_GET_DRIVE_LAYOUT_EX`（winioctl.h）
 - GRUB4DOS：官方 release（含 grldr/grldr.mbr）
+
+---
+
+## 17. 工程纪律与约定（2026-09-26 借鉴自 DreamGrain 电子教室）
+
+> 参考：`D:\Prog\_Project\DreamGrain\Group\DreamGrainClass\AGENTS.md`。只抄"**机器可校验 / 能防错**"的那几条，不抄它项目特有的东西。
+
+### 17.1 开工序（每个会话 / 换人）
+1. 读 `docs/11-接手指南（读我优先）`（现状 / 下一步 / 文档地图）。
+2. 跑 **`make check`** —— 其中 `tools/check-docs.py` 会核**"指针"一致性**：
+   `version.h` ↔ `AGENTS`/`docs` 的 `contract_version`；救援脚本 `get_task` 读的键 **⊆** Windows 侧（`task.cpp`）写的键；`dist/version.json` ↔ `version.h`。
+   **不一致 = 有人忘了同步**（这条是机器可校验的）。
+3. 再动手。
+
+### 17.2 编译 / 打包纪律（硬）
+- 改完**必须编译通过**，并**重新 `make package`** —— **只有 `dist/` 是交付物**；光改源码不打包等于没改（PIT-077"构建失败还提交"就是没守住这条）。
+- 改**救援层脚本**（`bootfiles/alpine/init`、`bootfiles/zjrestore-lite.sh`）后必须 `python tools/build-debian-rescue.py` 重建 initramfs（脚本是打进 initramfs 的）。
+- 提交前顺序：`make check`（单测 + 一致性）→ `make package`。
+
+### 17.3 品牌与术语约束（改界面/文案前必查）
+| 项 | 值 | 能不能改 |
+|---|---|---|
+| 产品中文名 | **九转一键还原** | 改要全仓同步（见下） |
+| 英文名 | **SysRecover** | 用户已定：不改 |
+| exe 名 | `SysRecover.exe` / `SysRecoverUI.exe` | 不改 |
+| 技术标识 | `ZJRESTORE` / `_zjresy*.log` / `zjrestore-lite.sh` / 内核参数 `zjre=1` | **不改**（跨层契约，改要双端同步发版） |
+| 链接文案 | GUI 右下角「**讨论**」→ 无忧论坛 `tid=453597` | 只改 `src/gui/main_form.cpp::kSiteUrl` 一处 |
+| 维护者 | **DreamGrain**（总项目名） | — |
+
+- 改中文名前先 `grep` 全仓（皮肤 `skin/*.xml`、`main_win.cpp` 窗口标题、各对话框标题、README/docs），改完**再 grep 一次确认无残留**；**注意别误改作者/维护者署名**。
+
+### 17.4 AI 工具资源纪律
+- 并发搜索工具（`glob`/`grep`/底层 rg）**一次最多 2~4 个**，严禁成批几十上百（会瞬间占满 CPU/内存、整机卡死）。
+- 能用 `Read` 直接读已知路径就**不搜索**；一次搜索能解决的不拆成多次；发之前先想清"到底要什么"。
+- 少跑 PowerShell；命令写短（长命令 + 中文易致 bash JSON `Unterminated string` 解析失败）。
+
+### 17.5 删除暂存区（不直接删）
+- 判定"应删"的文件/目录**移入 `docs\老旧文档暂存\`**（只进不出；清空须用户裁定），保留可回溯。明细见该目录 `清单.md`。
+
+### 17.6 崩溃处理（2026-09-26 新增）
+- `src/common/crash.{h,cpp}`：`SetUnhandledExceptionFilter` 捕获**未处理异常** → 写
+  `<exeDir>\logs\crash\crash-<时间>-<pid>.{dmp,txt}` + `last.txt`（dump 用系统 `dbghelp.dll` 的
+  `MiniDumpWriteDump`，**动态加载、零链接依赖**）。
+- 文本里含：异常码/地址、访问违例方向+地址、**调用栈（地址 + 所属模块 + 偏移）**、命令行、版本。
+- CLI/GUI 入口（`main()`/`WinMain()` 最开头、位数自举之后）各装一次；`diag --zip` 会把 `logs\` 一起打包，用户发回来即可定位。
+- 回归：**`make crash-test`**（故意触发访问违例，验证 dump/txt 真能落盘）。
+
