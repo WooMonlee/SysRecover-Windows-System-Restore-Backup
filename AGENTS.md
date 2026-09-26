@@ -124,10 +124,10 @@ Windows C++ 层 ↔ `restore-task.conf` ↔ Linux `restore.sh`。C++ 侧只许�
 
 | 文件 | 位置 | 用途 |
 |---|---|---|
-| `restore-task.conf` | 软件目录 | 还原任务参数（key=value：action/pt_type/image_part_guid/image_rel_path/image_path/image_index/target_guid/target_offset/target_size/target_disk_serial/repair_boot/partition_count） |
+| `restore-task.conf` | 软件目录 | 还原任务参数（key=value：action/pt_type/image_part_guid/image_rel_path/image_path/image_index/target_guid/target_offset/target_size/target_disk_serial/repair_boot/partition_count/**contract_version**） |
 | `restore-task.json` | 软件目录 | 同上 JSON 形态 |
 | `progress.json` | logs 目录 | 实时进度（Phase/Percent/Status/Detail/UpdatedAt/Pid，供 AI/外部工具读） |
-| `_zjresy*.log` | **目标分区根**（C:） | 主发现契约（由 `WriteRestoreLog` 写）：action=restore / log_time / software_version / software_path / target_disk_name / target_disk_serial / target_disk_size / target_part_offset / target_part_size / target_fs / target_vol_label / image_path / image_index / repair_boot / pt_type |
+| `_zjresy*.log` | **目标分区根**（C:） | 主发现契约（由 `WriteRestoreLog` 写）：action=restore / log_time / software_version / software_path / target_disk_name / target_disk_serial / target_disk_size / target_part_offset / target_part_size / target_fs / target_vol_label / image_path / image_index / repair_boot / pt_type / **contract_version**。**救援层启动即核对**：`get_task contract_version`（缺省视为 1）≠ `zjrestore-lite.sh` 里的 `ZJ_CONTRACT` 常量 → **报错退出、不碰目标分区**（G1 防版本错配） |
 | `menu.lst` | 恢复分区根（D:\） | GRUB4DOS 菜单（`kernel` + `initrd`，不是 GRUB2 的 `linux`） |
 | `grub.cfg` | GPT/UEFI 用 | GRUB2 菜单（UEFI 分支） |
 
@@ -497,6 +497,20 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 
 ---
 
+- PIT-085 **第二轮外部评审（多角色专家组）收拢 7 项并落地**（2026-09-26，`0.3.13`）：8 个角色（安装部署/运维/测试/安全/兼容/UX/代码/文档）独立评审后交叉印证，收拢成 7 项按顺序实施（清单见 PLAN §13.4）：
+  · **P1 网络镜像防呆**：还原**系统盘**要重启进救援层，而救援层**没有网络** → 镜像在 UNC/映射盘上必然失败（且可能已格式化目标）→ `src/app/ops.cpp::IsNetworkPath()`（`\\` 开头或 `DRIVE_REMOTE`）在**暂存前**拒绝并给明确提示（"先复制到本地分区"）。**实测**：`\\localhost\D$\...\test.wim` → 走到 `restore mode: staged reboot` 后 `staged restore rejected: image on network path`，**未写任务/未动 BCD** ✓。
+  · **P2 契约版本握手**（设计里早有、实现一直没有）：`task.cpp` 的 `BuildTaskConf`/`BuildRestoreLogText` 补写 `contract_version=%d`；`zjrestore-lite.sh` 用 `ZJ_CONTRACT=1` 核对 `get_task contract_version`（**缺键视为 1**，兼容旧版）→ 不匹配 `say ERROR` + `exit 1`。**实测两条**：① 演练 conf 无该键 → `ZJ: contract_version=1 (ok)` 且还原照常；② 把演练 conf 的 `contract_version` 写成 **2**（模拟旧版任务）→ `ERROR: contract_version mismatch: task=2 rescue=1`，**`apply`/`mkntfs` 均未发生**（fail-fast 保护目标分区）✓。
+  · **P3 CLI 自描述**：`<命令> --help` / `help <命令>` / 无参打印总览 + 退出码含义（`src/cli/main.cpp`）。
+  · **P4 `dist/README.txt`**：面向使用者的说明（UTF-8 **带 BOM** + CRLF，双击记事本可读），`make package` 拷进 dist（文件名 ASCII，避免 Makefile 命令行中文坑）。
+  · **P5 日志轮转**：`src/common/logger.cpp::PruneLogs()`（`SysRecover-*.log` 保留 14 天、`logs/crash/crash-*` 保留最近 30 个），`LogInit` 末尾调用。**实测**：60/30 天前的假日志被清、近期保留 ✓。
+  · **P6 图标**：`tools/make-icon.py`（PIL）生成 `resources/SysRecover.ico`（6 尺寸，蓝色圆角 + 白色环形箭头）；`src/cli/SysRecover.rc`/`src/gui/SysRecoverUI.rc` 加 `1 ICON "SysRecover.ico"`（与 `1 24` 清单**同 id 不同类型，不冲突**），Makefile 两条 windres 加 `-I resources`；`main_win.cpp` 建窗后 `WM_SETICON`(ICON_BIG/SMALL)。**实测**：从 exe 提取到 32×32 我们的图标 ✓。
+  · **P7 `make smoke`**：顺序跑 `bios-smoke`/`uefi-smoke`/`uefi-ubuntu-smoke`（**不进 `make check`**，耗时数分钟）。
+  · **顺带修**：CLI 退出码映射 `return rc==4?4:(rc==5?5:1)` → `(rc==2||rc==4||rc==5)?rc:1`，让"参数/用法错"回到 §9 承诺的 **2**。
+  · **⚠️ 本轮自己踩的坑（已修，教训记此）**：改完 `bootfiles/zjrestore-lite.sh` 后**忘了按 AGENTS §17.2 重建 initramfs** → 演练跑的是**旧脚本**，新加的握手行一直"看不见"，一度怀疑逻辑没执行 ✗。**规则重申：改救援层脚本 ⇒ 必须 `python tools/build-debian-rescue.py`，再回归**（本次重建后 494 模块/20.5MB 不变 ✓，握手行立即出现 ✓）。另：`tools/vmtest/parse-initramfs.py` 的用法是 `<archive> <mode> [target]`，用错参数会**静默无输出**（别误判成"内容不在镜像里"）。
+  · 回归：`make check` ✓（17 用例/57 断言 + 13 Python + check-docs PASS）、`make crash-test` ✓（dump OK）、`make package` ✓（x64+x86）、BIOS 端到端演练 ✓（`apply done` → `boot region OK` → `RESTORE DONE`）。✅ 2026-09-26（`0.3.13`）
+
+---
+
 ## 14. License 合规（SBOM，随版本更新）
 
 | 组件 | 版本/来源 | License | 链接/分发方式 |
@@ -505,7 +519,7 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 | Duilib 系 | 记录 fork+commit | BSD/MIT | 静态链接可闭源 |
 | grldr/grldr.mbr | 记录来源 URL + SHA | GPL | 仅分发二进制，不修改不链接，独立聚合 |
 | wimlib-imagex 源码 | — | GPLv3 | **禁止引入** |
-| Alpine linux-lts 6.6.142 | 模块（440+ .ko.gz） | GPLv2 | ⚠️ **内核已换成 Ubuntu 的（见下）**；这些模块不再随包 |
+| Alpine linux-lts 6.6.142 | 模块（440+ .ko.gz） | GPLv2 | ⚠️ **内核已换成 Debian 的（见下）**；这些模块不再随包 |
 | Alpine busybox-static 1.36.1 | `/bin/busybox` | GPLv2 | 仅分发二进制 |
 | Alpine musl 1.2.5 | `ld-musl-x86_64.so.1` | MIT | 仅分发二进制 |
 | Alpine ntfs-3g/ntfsprogs 2026.2.25 | `ntfs-3g` + `mkntfs` | GPLv2 | 仅分发二进制 |

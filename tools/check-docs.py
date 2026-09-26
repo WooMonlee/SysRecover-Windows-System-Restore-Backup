@@ -5,9 +5,13 @@
 避免"改了 A 忘了同步 B"这类静默漂移。检查项：
   1) src/common/version.h 的版本号是合法 SemVer；
   2) SYSRECOVER_CONTRACT_VERSION 与 AGENTS.md / docs 里写的 contract_version 一致；
+     ⚠️ 写文档时**别把举例写成 `contract_version=<数字>`** —— 检查项 2 会把它当成"声明"，
+     与该处真实契约号不符即 FAIL。举例请写"把值写成 2"这种不带 `=` 的措辞。
   3) 救援脚本 `get_task <键>` 读的每个键，Windows 侧（src/boot/task.cpp）都有写
      —— 跨层契约（AGENTS §5）的两端字段对齐；
-  4) dist/version.json（若存在）与 version.h 一致。
+  4) dist/version.json（若存在）与 version.h 一致；
+  5) 救援层握手常量 ZJ_CONTRACT（zjrestore-lite.sh）与 SYSRECOVER_CONTRACT_VERSION 一致
+     —— 契约升版只改一头 = 还原被 fail-fast 拦住（PIT-085 P2）。
 """
 import re
 import sys
@@ -89,6 +93,14 @@ def main():
 
     print("OK  version=%s contract_version=%d 契约键 %d 个（救援读 %d 个）"
           % (ver, cver, len(written), len(read_keys)))
+    # 5) 救援层握手常量与 version.h 一致（PIT-085 P2）
+    for p in RESCUE:
+        if not p.exists():
+            continue
+        mm = re.search(r"ZJ_CONTRACT\s*=\s*(\d+)", read(p))
+        if mm and int(mm.group(1)) != cver:
+            fails.append("%s: ZJ_CONTRACT=%s 与 version.h 的 %d 不一致（只改了一头？）"
+                         % (p.relative_to(ROOT), mm.group(1), cver))
     return report()
 
 

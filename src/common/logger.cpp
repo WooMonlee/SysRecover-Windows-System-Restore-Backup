@@ -3,8 +3,10 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 namespace sysrecover {
 namespace {
@@ -12,6 +14,48 @@ namespace {
 std::wstring g_logFile;
 CRITICAL_SECTION g_cs;
 bool g_csInit = false;
+
+// 日志轮转（问题清单 A3/B5）：logs\ 与 logs\crash\ 原先只增不减。
+//   · 按天日志 SysRecover-*.log：保留最近 14 天；
+//   · crash\ 只留最新 30 个 crash-*（文件名含时间戳 → 字典序即时间序）。
+void PruneLogs(const std::wstring& logDir) {
+    const ULONGLONG kDay100ns = 864000000000ULL;
+    FILETIME nowFt = {};
+    GetSystemTimeAsFileTime(&nowFt);
+    ULARGE_INTEGER now;
+    now.LowPart = nowFt.dwLowDateTime;
+    now.HighPart = nowFt.dwHighDateTime;
+
+    WIN32_FIND_DATAW fd = {};
+    HANDLE h = FindFirstFileW((logDir + L"\\SysRecover-*.log").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                ULARGE_INTEGER w;
+                w.LowPart = fd.ftLastWriteTime.dwLowDateTime;
+                w.HighPart = fd.ftLastWriteTime.dwHighDateTime;
+                if (now.QuadPart > w.QuadPart &&
+                    now.QuadPart - w.QuadPart > 14ULL * kDay100ns)
+                    DeleteFileW((logDir + L"\\" + fd.cFileName).c_str());
+            }
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+
+    std::wstring cd = logDir + L"\\crash";
+    std::vector<std::wstring> names;
+    HANDLE h2 = FindFirstFileW((cd + L"\\crash-*").c_str(), &fd);
+    if (h2 != INVALID_HANDLE_VALUE) {
+        do {
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+                names.push_back(fd.cFileName);
+        } while (FindNextFileW(h2, &fd));
+        FindClose(h2);
+    }
+    std::sort(names.begin(), names.end());
+    for (size_t i = 0; i + 30 < names.size(); ++i)
+        DeleteFileW((cd + L"\\" + names[i]).c_str());
+}
 
 void EnsureCs() {
     if (!g_csInit) {
@@ -58,6 +102,7 @@ void LogInit(const std::wstring& logDir) {
     swprintf_s(name, L"SysRecover-%04d%02d%02d.log", st.wYear, st.wMonth,
                st.wDay);
     g_logFile = logDir + L"\\" + name;
+    PruneLogs(logDir);
 }
 
 void LogInfo(const std::string& msg) { Write("INFO", msg, stdout); }

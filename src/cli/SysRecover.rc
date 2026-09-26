@@ -2,3 +2,6 @@
    与 GUI 的 SysRecoverUI.rc 同法：RT_MANIFEST(24) 的 id 必须是 1
    （CREATEPROCESS_MANIFEST_RESOURCE_ID），否则加载器不读、UAC 不弹。 */
 1 24 "SysRecover.manifest"
+// 应用/窗口图标（问题清单 E1）：RT_GROUP_ICON id=1；main_win.cpp 用 LoadIconW(1) 设窗口图标。
+// 图标源 resources/SysRecover.ico（由 tools/make-icon.py 生成）；windres 需 -I resources。
+1 ICON "SysRecover.ico"

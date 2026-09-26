@@ -8,3 +8,5 @@
    注意：本 GUI 原先 RT_MANIFEST 为空（MinGW GCC 14 起不再自动链接
    default-manifest.o），所以这里只需嵌入这一份，不会与默认清单冲突。 */
 1 24 "SysRecoverUI.manifest"
+// 应用/窗口图标（问题清单 E1）：RT_GROUP_ICON id=1；main_win.cpp 用 LoadIconW(1) 设窗口图标。
+1 ICON "SysRecover.ico"

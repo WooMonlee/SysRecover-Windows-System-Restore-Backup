@@ -116,8 +116,8 @@ $(OBJDIR)/app/%.o: src/%.cpp
 $(APP_LIB): $(APP_OBJS)
 	$(AR) rcs $@ $(APP_OBJS)
 
-$(CLI_RC_OBJ): $(CLI_RC) src/cli/SysRecover.manifest | $(OBJDIR)
-	$(WINDRES) -I src/cli $< -o $@
+$(CLI_RC_OBJ): $(CLI_RC) src/cli/SysRecover.manifest resources/SysRecover.ico | $(OBJDIR)
+	$(WINDRES) -I src/cli -I resources $< -o $@
 
 $(CLI_OUT): $(CLI_MAIN) $(CLI_RC_OBJ) $(APP_LIB) $(WIMLIB)/libwim-15.dll src/common/version.h | $(DISTDIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(CLI_MAIN) $(CLI_RC_OBJ) $(APP_LIB) -o $(CLI_OUT) $(LDFLAGS) $(LDLIBS)
@@ -132,8 +132,8 @@ $(DUI_LIB): $(DUI_OBJS)
 
 gui: $(DUI_LIB) $(APP_LIB) $(GUI_OUT)
 
-$(GUI_RC_OBJ): $(GUI_RC) src/gui/SysRecoverUI.manifest | $(OBJDIR)
-	$(WINDRES) -I src/gui $< -o $@
+$(GUI_RC_OBJ): $(GUI_RC) src/gui/SysRecoverUI.manifest resources/SysRecover.ico | $(OBJDIR)
+	$(WINDRES) -I src/gui -I resources $< -o $@
 
 $(GUI_OUT): $(GUI_SRC) $(GUI_RC_OBJ) $(DUI_LIB) $(APP_LIB) src/common/version.h | $(DISTDIR)
 	$(CXX) $(GUI_FLAGS) $(GUI_INCLUDES) $(GUI_SRC) $(GUI_RC_OBJ) $(APP_LIB) $(DUI_LIB) -o $(GUI_OUT) -static -mwindows $(GUI_LDLIBS) -L$(WIMLIB) -l:libwim-15.dll
@@ -165,6 +165,13 @@ crash-test: $(CRASH_PROBE)
 $(CRASH_PROBE): tests/crash_probe.cpp src/common/crash.cpp src/common/version.h | $(OBJDIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/crash_probe.cpp src/common/crash.cpp -o $(CRASH_PROBE) -static -mconsole
 
+# ---- 冒烟（QEMU；每条 2~3 分钟，**不进 make check**）----
+# 前置：本机有 QEMU + OVMF（路径写死在 tools\vmtest\*.ps1 里）。清单见 docs/07。
+smoke:
+	powershell -ExecutionPolicy Bypass -File tools\vmtest\bios-smoke.ps1
+	powershell -ExecutionPolicy Bypass -File tools\vmtest\uefi-smoke.ps1
+	powershell -ExecutionPolicy Bypass -File tools\vmtest\uefi-ubuntu-smoke.ps1
+
 # ---- ★ 发布包：根目录 = x86 整套（入口）；x64/ = x64 整套；与位数无关的资源放根目录 ----
 # 需要**两套工具链**：x64 走 PATH 上的 g++（请先把 mingw64\bin 加到 PATH），x86 走绝对路径。
 # 递归调用 make 时**必须把 $(MAKE) 的正斜杠换成反斜杠**：mingw32-make 把 $(MAKE) 展开成
@@ -190,6 +197,8 @@ package:
 	@copy /Y bootfiles\sb\grubx64.efi dist\bootfiles\sb\ >nul
 	@copy /Y bootfiles\sb\grub.cfg dist\bootfiles\sb\ >nul
 	@copy /Y THIRD_PARTY_LICENSES.txt dist\ >nul
+# 随包使用说明（面向用户；文件名用 ASCII 以免 cmd 在中文代码页下解析出错，内容中文）
+	@copy /Y resources\README.txt dist\README.txt >nul
 	@if not exist dist\resources\themes\default\main mkdir dist\resources\themes\default\main
 	@copy /Y resources\themes\default\global.xml dist\resources\themes\default\ >nul
 	@copy /Y resources\themes\default\main\main.xml dist\resources\themes\default\main\ >nul
@@ -202,4 +211,4 @@ package:
 # 打完包再严格核一次"指针"（version.json ↔ version.h 等）—— 防止"改了源码没打包"
 	@$(PYTHON) tools/check-docs.py --strict-dist
 
-.PHONY: all cli gui clean package check crash-test
+.PHONY: all cli gui clean package check crash-test smoke
