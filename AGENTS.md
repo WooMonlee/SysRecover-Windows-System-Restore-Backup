@@ -503,7 +503,7 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **P3 CLI 自描述**：`<命令> --help` / `help <命令>` / 无参打印总览 + 退出码含义（`src/cli/main.cpp`）。
   · **P4 `dist/README.txt`**：面向使用者的说明（UTF-8 **带 BOM** + CRLF，双击记事本可读），`make package` 拷进 dist（文件名 ASCII，避免 Makefile 命令行中文坑）。
   · **P5 日志轮转**：`src/common/logger.cpp::PruneLogs()`（`SysRecover-*.log` 保留 14 天、`logs/crash/crash-*` 保留最近 30 个），`LogInit` 末尾调用。**实测**：60/30 天前的假日志被清、近期保留 ✓。
-  · **P6 图标**：**美术图由产品维护者提供**（`resources/icon-source.psd` 原稿 + `resources/icon-source.ico` 256×256，粉金环形"九转"螺旋）；`tools/make-icon.py` 只负责**降采样成标准多尺寸**（256/128/64/48/32/24/16 → `resources/SysRecover.ico`）——**单尺寸 ICO 会被 GDI 粗暴缩放，任务栏/资源管理器小尺寸发糊**（无源图时脚本回退到内置造型：品牌蓝圆角方块 + 白色环形箭头）。`src/cli/SysRecover.rc`/`src/gui/SysRecoverUI.rc` 加 `1 ICON "SysRecover.ico"`（与 `1 24` 清单**同 id 不同类型，不冲突**），Makefile 两条 windres 加 `-I resources`；`main_win.cpp` 建窗后 `WM_SETICON`(ICON_BIG/SMALL)。**实测**：从两个 exe 提取到 32×32 该图案 ✓。⚠️ 16px 偏糊（3D 光泽画通病）——如需更清晰可另做 ≤24px 的简化造型。
+  · **P6 图标**：**美术图由产品维护者提供**（`resources/icon-source.psd` 原稿 + `resources/icon-source.ico` 256×256，粉金环形"九转"螺旋）；`tools/make-icon.py` 只负责**降采样成标准多尺寸**（256/128/64/48/32/24/16 → `resources/SysRecover.ico`）——**单尺寸 ICO 会被 GDI 粗暴缩放，任务栏/资源管理器小尺寸发糊**（无源图时脚本回退到内置造型：品牌蓝圆角方块 + 白色环形箭头）。**仅 `src/gui/SysRecoverUI.rc` 加 `1 ICON "SysRecover.ico"`**（与 `1 24` 清单**同 id 不同类型，不冲突**）；**`src/cli/SysRecover.rc` 不带图标（2026-09-26 用户裁定：dist 根目录两个 exe，只有 GUI 入口保留品牌图标，避免"哪个是入口"歧义；复检 CLI 应无 RT_GROUP_ICON）**，Makefile GUI 的 windres 加 `-I resources`；`main_win.cpp` 建窗后 `WM_SETICON`(ICON_BIG/SMALL)。**实测**：从 GUI exe 提取到 32×32 该图案 ✓。⚠️ 16px 偏糊（3D 光泽画通病）——如需更清晰可另做 ≤24px 的简化造型。
   · **P7 `make smoke`**：顺序跑 `bios-smoke`/`uefi-smoke`/`uefi-ubuntu-smoke`（**不进 `make check`**，耗时数分钟）。
   · **顺带修**：CLI 退出码映射 `return rc==4?4:(rc==5?5:1)` → `(rc==2||rc==4||rc==5)?rc:1`，让"参数/用法错"回到 §9 承诺的 **2**。
   · **⚠️ 本轮自己踩的坑（已修，教训记此）**：改完 `bootfiles/zjrestore-lite.sh` 后**忘了按 AGENTS §17.2 重建 initramfs** → 演练跑的是**旧脚本**，新加的握手行一直"看不见"，一度怀疑逻辑没执行 ✗。**规则重申：改救援层脚本 ⇒ 必须 `python tools/build-debian-rescue.py`，再回归**（本次重建后 494 模块/20.5MB 不变 ✓，握手行立即出现 ✓）。另：`tools/vmtest/parse-initramfs.py` 的用法是 `<archive> <mode> [target]`，用错参数会**静默无输出**（别误判成"内容不在镜像里"）。
@@ -602,7 +602,7 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 - 第三步右侧三个控件的 `SetPos` 必须在**两个分支里都写**（切回还原模式要复位），见 `CMainForm::ApplyModeUi()`。
 - 第一步备注行的横线（"镜像说明/备份备注"右侧）长度与上方输入框**等宽**：x251..710。
 
-**验收环**：`tools/ui/shot.ps1`（启动 → 抓窗口 → PNG）+ `tools/ui/diff.ps1`（逐像素比对，`Tol=30`）；交互态（模式切换后）用 `PostMessage(WM_LBUTTONDOWN/WM_LBUTTONUP)` 点击后截图。差异率收敛 8.57% → 6.66%（关闭分区行区域）；剩余集中在文字抗锯齿边缘（GDI vs WPF 渲染后端固有差异）与"老图有分区数据 / 本机非管理员读不到"的分区行。**脚本必须保持纯 ASCII**（PowerShell 5.1 对无 BOM 的 `.ps1` 按 ANSI 解析，中文注释会直接把解析器打挂；同理 `param()` 必须是脚本第一条语句）。**注意：GUI 现已带 `requireAdministrator` 清单（PIT-018），非管理员会话下这两个脚本启动 GUI 会弹 UAC 并阻塞到超时** —— 要么在管理员 PowerShell 里跑，要么先人工点一次；纯外观改动（不碰 `SysRecoverUI.{rc,manifest}` 与链接规则）时可直接用「界面源码未变 ⇒ 界面未变」论证，免掉截图回归。
+**验收环**：`tools/ui/shot.ps1`（启动 → 抓窗口 → PNG；**2026-09-26 改用 `PrintWindow` 抓窗口本体**——原 `CopyFromScreen` 抓的是屏幕，`SetForegroundWindow` 被前台锁定规则拒绝时抓到的是桌面/控制台；抓空回退屏幕方式；并置 `HWND_TOPMOST`。另：`dist\` 根 exe 是 x86 启动器，x64 上自举后父进程退出[ExitCode=0]，脚本会自动跟进 `dist\x64\` 子进程，手动跑建议直接 `-Exe dist\x64\SysRecoverUI.exe`）+ `tools/ui/diff.ps1`（逐像素比对，`Tol=30`）；交互态（模式切换后）用 `PostMessage(WM_LBUTTONDOWN/WM_LBUTTONUP)` 点击后截图。差异率收敛 8.57% → 6.66%（关闭分区行区域）；剩余集中在文字抗锯齿边缘（GDI vs WPF 渲染后端固有差异）与"老图有分区数据 / 本机非管理员读不到"的分区行。**脚本必须保持纯 ASCII**（PowerShell 5.1 对无 BOM 的 `.ps1` 按 ANSI 解析，中文注释会直接把解析器打挂；同理 `param()` 必须是脚本第一条语句）。**注意：GUI 现已带 `requireAdministrator` 清单（PIT-018），非管理员会话下这两个脚本启动 GUI 会弹 UAC 并阻塞到超时** —— 要么在管理员 PowerShell 里跑，要么先人工点一次；纯外观改动（不碰 `SysRecoverUI.{rc,manifest}` 与链接规则）时可直接用「界面源码未变 ⇒ 界面未变」论证，免掉截图回归。
 
 ## 16. 参考（只认官方，不抄博客）
 
@@ -635,6 +635,7 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 | 产品中文名 | **九转还原** | 改要全仓同步（见下） |
 | 英文名 | **SysRecover** | 用户已定：不改 |
 | exe 名 | `SysRecover.exe` / `SysRecoverUI.exe` | 不改 |
+| exe 图标 | **只有 `SysRecoverUI.exe` 带品牌图标**（`resources/SysRecover.ico`）；CLI `SysRecover.exe` **不带** | 2026-09-26 用户裁定（区分入口）；**别给 CLI 补图标** |
 | 技术标识 | `ZJRESTORE` / `_zjresy*.log` / `zjrestore-lite.sh` / 内核参数 `zjre=1` | **不改**（跨层契约，改要双端同步发版） |
 | 链接文案 | GUI 右下角「**讨论**」→ 无忧论坛 `tid=453597` | 只改 `src/gui/main_form.cpp::kSiteUrl` 一处 |
 | 维护者 | **DreamGrain**（总项目名） | — |

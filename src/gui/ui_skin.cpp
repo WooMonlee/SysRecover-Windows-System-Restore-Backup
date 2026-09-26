@@ -568,7 +568,7 @@ void CTitleLabelUI::PaintText(HDC hDC) {
     int w1 = TextW(hDC, title, m_px, true);
     int w2 = (sub && *sub) ? TextW(hDC, sub, m_subPx, false) : 0;
     const int gap = (w2 > 0) ? 9 : 0;  // 实测 标题墨迹止于 x568 → v0.1 起 x583
-    int x = rc.left + (rc.right - rc.left - (w1 + gap + w2)) / 2;
+    int x = rc.left + (rc.right - rc.left - (w1 + gap + w2)) / 2 - 50;  // 整组左移 50px（= 居中基础上右侧让空当；不用尾随空格：字体回退会变宽）
 
     TextAt(hDC, title, x, base, m_px, C_TITLE_FG, true);
     if (w2 > 0) TextAt(hDC, sub, x + w1 + gap, base, m_subPx, C_TITLE_SUB);

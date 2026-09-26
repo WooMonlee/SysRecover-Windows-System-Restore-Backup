@@ -417,7 +417,7 @@ Debian 的模块也是 `.ko.xz`）② 先验"能组装出可启动 initramfs"（
 | P3 | **CLI 自描述** | `<命令> --help` / `help <命令>` / 无参总览 + 退出码含义 | ✅ 实测 |
 | P4 | **`dist/README.txt`** | 用户向使用说明（UTF-8 BOM + CRLF，双击记事本可读），`make package` 拷进 dist | ✅ 已在 dist |
 | P5 | **日志自动轮转** | `logger.cpp::PruneLogs()`：`SysRecover-*.log` 留 14 天、`crash-*` 留最近 30 个 | ✅ 实测（60/30 天前日志被清） |
-| P6 | **应用/窗口图标** | `tools/make-icon.py` → `resources/SysRecover.ico`（6 尺寸）；两个 exe 嵌 `1 ICON` + `WM_SETICON` | ✅ 实测（从 exe 提取到 32×32 图标） |
+| P6 | **应用/窗口图标** | `tools/make-icon.py` → `resources/SysRecover.ico`（6 尺寸）；**仅 GUI** exe 嵌 `1 ICON` + `WM_SETICON`，CLI 不带图标（2026-09-26 用户裁定，见 §13.4 P6） | ✅ 实测（从 GUI exe 提取到 32×32 图标；CLI 应无 RT_GROUP_ICON） |
 | P7 | **`make smoke`** | 一键跑 bios / uefi / uefi-ubuntu 三条 QEMU 冒烟（**不进 `make check`**，耗时数分钟） | — |
 
 **顺带修**：CLI 退出码映射让 `2=参数错` 透传（原 `return rc==4?4:(rc==5?5:1)`）。
