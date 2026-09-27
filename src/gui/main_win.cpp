@@ -1,5 +1,6 @@
 // SysRecoverUI 入口（经典 Duilib，纯 Win32，MinGW 原生支持）。
 // 注意：C++ 标准头已在 main_form.h 中先于 StdAfx.h 引入（PIT-012）。
+#include "../common/i18n.h"
 #include "main_form.h"
 
 #include "../boot/grub.h"  // sysrecover::ExeDir()（启动器布局下的应用根目录）
@@ -7,6 +8,7 @@
 #include "../common/logger.h"    // LogInfo（启动耗时自检）
 #include "../common/process.h"   // MsSinceProcessStart
 #include "../common/selfarch.h"  // 位数自举：32 位程序在 64 位系统上换成 x64\同名
+using sysrecover::Tr;
 #include "instance_dlg.h"
 
 using namespace DuiLib;
@@ -64,6 +66,9 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     }
     // 崩溃处理：装在最前面（真实进程），崩溃时把 dump+文本写到 <exeDir>\logs\crash\。
     sysrecover::InstallCrashHandler(sysrecover::ExeDir());
+    // i18n：词典必须在任何 Tr() 与建窗之前装好（皮肤 XML 也是在建窗时翻译的）。
+    // GUI 只认 SYSRECOVER_LANG 环境变量 + 系统界面语言（CLI 另支持 --lang）。
+    sysrecover::InitI18n(nullptr);
     CPaintManagerUI::SetInstance(hInstance);
     // 资源根 = **应用目录**（不是 exe 目录）：启动器布局下 exe 在 <root>\x86\ 或 \x64\ 子目录里，
     // 而 skin\ 放在 <root>（与位数无关）→ 必须用 sysrecover::ExeDir()（它会自动上移一级）。
@@ -102,9 +107,8 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
             if (hPrev) {
                 ActivatePrev(hPrev);
                 ::MessageBoxW(nullptr,
-                              L"之前的程序正在执行任务，无法关闭。\n"
-                              L"已为你切回该窗口，请等任务结束后再重新打开。",
-                              L"九转还原", MB_OK | MB_ICONINFORMATION);
+                              Tr(L"之前的程序正在执行任务，无法关闭。\n" L"已为你切回该窗口，请等任务结束后再重新打开。"),
+                              Tr(L"九转还原"), MB_OK | MB_ICONINFORMATION);
                 ::CloseHandle(hMutex);
                 ::CoUninitialize();
                 return 0;
@@ -120,7 +124,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     // WS_EX_APPWINDOW 让无外框窗口仍然出现在任务栏。
     // 第二个参数是窗口标题 —— 无边框窗口（WS_POPUP + WS_EX_APPWINDOW）在任务栏
     // 与 Alt+Tab 里显示的就是它，必须是产品名而不是文件名/内部代号。
-    HWND h = pWnd->Create(nullptr, _T("九转还原"),
+    HWND h = pWnd->Create(nullptr, Tr(L"九转还原"),
                           WS_POPUP | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
                           WS_EX_APPWINDOW, 0, 0, kWndW, kWndH);
     if (!h) {

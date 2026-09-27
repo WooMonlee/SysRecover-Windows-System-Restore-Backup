@@ -447,3 +447,97 @@ Debian 的模块也是 `.ko.xz`）② 先验"能组装出可启动 initramfs"（
 
 **评审中"不成立 / 低价值"（留档，避免重复讨论）**：CLI 退出码语义"混乱"（既有行为，仅按需加固）、
 若干文档措辞/格式项（待文档统一整理时一并处理）。
+
+---
+
+## 14. i18n 全球化（多语言）实施计划（2026-09-27 用户批准："全部按推荐值操作"）
+
+> 目标：**界面与 CLI 跟随系统语言**（英文系统显示英文、中文系统显示中文），
+> 并按"**可适用于全世界使用的产品**"做地基改造（不只是翻译）。用户 2026-09-27 批准全部推荐值并要求
+> **GUI + CLI 一起上**。本节是唯一计划来源；执行纪律见 AGENTS §17。
+
+### 14.1 锁定决策（用户 2026-09-27 批准，全部按推荐值）
+
+| 项 | 决定 | 理由 |
+|---|---|---|
+| 范围 | **GUI + CLI 一起上**（不分先后） | 用户："还有可能给其他国家的用户使用" |
+| 首发语种 | **en、zh-CN**（人工校对的权威版）+ **ja/ko/de/fr/es/ru**（机翻基线，标注 community） | 主市场保质量，其余先铺开 |
+| 载体 | **外置 `lang/*.lang`（`key=value`，UTF-8）**，随包放 dist；**不进 exe、不用 JSON** | 社区可补翻、免重编译；仓库零依赖、无 JSON reader |
+| 语言检测 | `GetUserDefaultUILanguage() & 0x3FF == 0x04`（zh* → 中文，其余英文）；`--lang` / `SYSRECOVER_LANG` 覆盖 | Win7/PE 均有效；跟系统为默认、可手动覆盖 |
+| 回退链 | 缺 key → en → 显示 key 本身 + 记 warn | 永不因漏翻而崩 |
+| RTL（阿拉伯/希伯来） | **声明不支持** | Duilib 无镜像，+2~3 天且要动布局引擎；对齐 Dism++/Rufus 通行做法 |
+| 测试策略 | **zh/en 像素级基线**；其余语言 = **文字宽度门禁 + 抽测截图** | 免测试矩阵线性爆炸 |
+| **不翻译** | 日志 / 诊断包 / 契约文件（`restore-task.conf`、`_zjresy*.log`、`progress.json`）/ 救援层屏幕（内核无 CJK 字形，PIT-061）/ 品牌名（九转还原、SysRecover） | 机器接口 + 字体硬限制；改契约字段要双端发版（红线①） |
+| 翻译质量 | en/zh 人工终校；其余机翻 + 标注 community | 成本可控 |
+| 版本 | 建议 **0.4.0**（重大特性，次版本号由用户指定） | SemVer 规则 |
+
+### 14.2 体积测算（2026-09-27 实测 + 推算）
+
+**现状实测**：`dist` = **47.00 MB / 61 文件** —— bootfiles **35.06 MB（75%，i18n 完全无关）**、
+根目录 x86 整套 ~6.2 MB、`x64/` 5.70 MB、skin/README 等 ~0.02 MB。
+**待翻译文本实测**（账本工具 `tools/extract-strings.py`，2026-09-27；早期"按行统计"的 420 条 / 16.1 KB
+把注释也算进去了，**作废**）：C++ 字面量 **348 条** + 皮肤 XML **33 条** = **381 条 / UTF-8 13.5 KB /
+平均 36 字节**；另 4 条纯日志、1341 条注释中文按约定不翻；中文出现在字符串/注释之外（raw）**0 处**。
+
+| 项 | en+zh | **8 语种** | 依据 |
+|---|---|---|---|
+| `lang/*.lang` | ~50 KB | **~210 KB** | 381 条 ×（key ~28B + 值 ~36B + CRLF）≈ 25 KB/语种 ×8 |
+| 4 个 exe 净变化 | ~+110 KB | ~+110 KB | 中文串移出（−~20 KB/对）+ 内置**英文兜底表**（+35 KB）+ 加载器（+5 KB）×4 |
+| README | +2 KB | +2 KB | 其余语言社区补 |
+| 字体 / 救援层 / 契约 / 日志 | 0 | 0 | 用系统自带字体（不内嵌）；机器接口不翻译 |
+| **合计** | ≈ +0.16 MB | **≈ +0.31 MB（最坏 0.42 MB）** | 相对 47 MB = **+0.66%（<1%）** |
+| exe 体积门禁 | — | 零压力 | GUI 2.66→~2.69 MB，CLI 1.61→~1.63 MB（门禁 <10 MB） |
+| 斜率 | — | **每增一语言 ≈ +28 KB** | 20 语种也才 +0.56 MB |
+
+**结论：体积不是约束**（75% 的体积是内核/initramfs），真正的成本在 M1（解耦）与 M3（抗文本扩容）。
+
+### 14.3 分期（M1 → M4，合计 **11~14 人日**；只做 en/zh = 到 M2 为止 ≈ 6~8 人日）
+
+| 里程碑 | 内容 | 验收 | 估算 |
+|---|---|---|---|
+| **M1 前置解耦**（必须先做，防返工） | ① **建议码化**：`ErrorAdvice` 6 处中文关键词匹配中文消息 → `ErrAdvice` 枚举（新建 `src/app/advice.{h,cpp}`），错误产生处直接给码；`main_form.cpp` 的 `why.find("系统盘")` → `InPlaceReason` 枚举。② **系统输出解析审计**：`safety.cpp` BitLocker（现仅认 en/zh → 改数字/结构锚定）、复核 bcdedit 存在性（GUID 回显 ASCII 已安全）、`format.com`/`manage-bde` 有无被解析；无法结构化的一律 fail-open + warn。③ **字符串账本** `tools/extract-strings.py`（C++ 字面量 + 皮肤 XML → msg id 清单，含"疑似漏网中文"报告） | `make check` 绿；**`ErrorAdvice` 每个建议码/每个 rc 都有单测**；审计结论进 PIT | 2~3 天 |
+| **M2 引擎 + 回填** | `src/common/i18n.{h,cpp}`（检测/加载/`T(id)`/回退链/占位符）；`lang/en.lang` + `lang/zh-CN.lang`；回填顺序 GUI 皮肤 XML → GUI 代码 → CLI → app 错误文本（**纯日志不纳入**）；默认镜像名后缀"备份"本地化（文件名优先 ASCII）；`make package` 拷 `lang/` | 切语言跑通备份/还原/暂存/diag；**门禁 a（id 存在）+ b（源码无残留中文）PASS** | 4~5 天 |
+| **M3 抗扩容 + 门禁 + 字体** | ① 745×410 像素级布局中定宽文本控件松绑（自适应/省略号/缩字号）；② `tools/check-i18n.py` 进 `make check`：**a** `T()` id 必须存在于 en；**b** 源码/皮肤无残留中文（白名单注释）；**c** 逐语言**文字渲染宽度 ≤ 控件宽度**（GDI 测宽，一条门禁管所有语言）；③ 按语言字体回退链（YaHei/Segoe UI/SimSun/System；日 Yu Gothic、韩 Malgun Gothic；注意 PIT-016⑤ 先声明后引用）；④ CLI `SetConsoleOutputCP(CP_UTF8)` + Win7 实测（不行则非 CJK 语言 CLI 退回英文） | 8 语种宽度门禁全绿；zh 沿用 `界面1.png` diff、en 建新基线、ja/ko/de/ru 抽测 | 2~3 天 |
+| **M4 语种铺开 + 文档 + 发布** | 6 语种机翻填表 + 抽测（en/zh 终校）；`README.txt`(en) + `README.zh-CN.txt`；AGENTS 新增**国际化纪律**（新字符串必须 `T()`、必须同步 en+zh、门禁会拦）+ PIT 条目；Win7/10/11/PE × en/zh 完整回归 | `make check`/`make package` 绿 + 双语言回归记录 | 2~3 天 |
+
+**M1.2 系统输出解析审计结论（2026-09-27 已执行）**——审计范围 = 产品代码里"解析外部工具文本"的全部点：
+
+| 解析点 | 结论 | 处置 |
+|---|---|---|
+| `bcdedit /enum {GUID}` 存在性 | **安全**：只看 GUID 是否回显（ASCII，不受代码页影响，PIT-003） | 不改 |
+| `bcdedit` 其余调用（create/set/bootsequence…） | **安全**：全部按**退出码**判定 | 不改 |
+| `format.com` 就地格式化 | **安全**：只看 rc（`ops.cpp`） | 不改 |
+| `manage-bde -status`（BitLocker 扫描） | **不安全**：按 en+zh **行标签**匹配（`Percentage Encrypted`/`加密`/`Protection Off`），其他语言系统**恒漏报**（静默） | ✅ **已改**：`safety.cpp::IsBitLockerEncrypted` 只认 `<数字>%` 数值取最大；顺带把"保护已挂起但仍在加密"从放行改为提醒（fail-closer） |
+| SMART 健康检查（PIT-086） | **安全**：走 IOCTL 二进制数据，展示文案由我们自己拼 | 不改 |
+| `bcdboot` 及其余工具 | **安全**：只看 rc / 不解析输出 | 不改 |
+
+> **规则（M4 时写进 AGENTS 国际化纪律）**：能用**退出码 / 二进制 API** 就不解析文本；
+> 必须解析时**锚定数值或 ASCII 标识符**，绝不能锚定会被翻译的标签。
+
+**明确不做（写进文档范围声明）**：日志/诊断包、契约文件、救援层屏幕、品牌名；RTL 语言；
+翻译质量承诺（en/zh 正式、其余 community）。
+
+**主要风险与对策**：文本扩容致布局返工（最高）→ M3 门禁 c + 初版就松绑定宽控件；
+错误码重构引入建议错配 → 单测逐码断言；漏翻半中半英 → 门禁 b 拦截；
+`lang/` 被删/损坏 → 内置英文兜底 + warn；Win7 控制台 UTF-8 → 实测 + 退化方案。
+
+**工作记录**：
+- ✅ **M1 已完成（2026-09-27）**：M1.1 建议码化（新增 `src/app/advice.{h,cpp}`：`ErrAdvice` 枚举 + `AdviceKey`；`ops.h` 加 `InPlaceReason`，GUI 的 `why.find("系统盘")` 改按码判定；CLI/GUI 三处调用点全部传码）+ M1.2 审计（见上表，BitLocker 解析已语言无关化）+ M1.3 账本 `tools/extract-strings.py`（**381 条 / 13.5 KB**，raw=0）。`make check` 绿：**20 用例 / 127 断言**（新增 `advice_*` 三个用例）+ check-docs PASS。
+- ✅ **M2 + M3（部分）已完成（2026-09-27）**，交付：
+  · 引擎 `src/common/i18n.{h,cpp}`（`InitI18n`/`LangTag`/`IsSourceLang`/`Tr(char*/wchar_t*)`/`LoadSkinXml`/`ClearI18n`/`LoadLangText`）；
+  · 机械化回填 `tools/i18n-wrap.py`（词法状态机，14 个白名单文件：**275 处 `Tr()` + 15 处 `_T()`**，日志出口 7 处按纪律跳过；`--apply` 幂等、`--dump-keys`、`--skeleton`、`--gen-lang`）；
+  · 译文表 `tools/i18n-en.py` → **`lang/en.lang` 277 条全译**（`make package` 拷进 `dist/lang/`）；
+  · 门禁 `tools/check-i18n.py` 已挂进 `make check`（C1 未翻中文 / C2 键覆盖+死键 / C3 英文残留汉字 / C4 printf 占位符序列一致 / C5 `.lang` 与译文表同步）；
+  · 单测 4 例（源语言回源、查表+回退、转义与 `=` 分割、皮肤缺失文件）→ `make check` **24 用例 / 148 断言** 绿；
+  · 接线：CLI `--lang xx|--lang=xx` + `SYSRECOVER_LANG`，GUI `InitI18n(nullptr)`，3 处 `GetSkinFile()` → `LoadSkinXml()`，`tests/main.cpp` 钉 `InitI18n("zh")`。
+  · **实测**：CLI `help` 默认中文 / `--lang en` 英文 / `SYSRECOVER_LANG=en` 英文；GUI 窗口标题 zh=`九转还原`、en=`SysRecover`。
+
+  **与计划的偏差（本节是唯一计划来源，此处记录为准）**：
+  1. **键即原文，不用 `T(id)` 消息 ID** —— 中文源文本直接当 key（zh 不查表天然回退、永不掉 key；en 反查）。故 §14.3 的"门禁 a = id 存在于 en"改为"**键**存在于 en.lang"。
+  2. **不建 `lang/zh-CN.lang`** —— zh 即源语言（`InitI18n` 直接清表返回），计划里"en+zh 两份词典"降为**只有 `en.lang`**（后续语种各一份）。
+  3. **不建内置英文兜底表**（§14.2 那 +35 KB 取消）—— 回退链是 `tag.lang → en.lang → 源文本`，用外置文件而非 exe 内嵌。
+  4. **皮肤 XML 文件不动**：33→34 个中文属性在 `LoadSkinXml()` 加载时按词典翻译，Duilib 走内存解析分支（`UIDlgBuilder.cpp:17`，`GetResourceType()` 默认 `UILIB_FILE`）。skin 三件套仍是纯中文源。
+  5. **`.lang` 补 `\=` 转义**：分隔符是**首个未转义的 `=`** —— `备份失败(rc=%d): ` 这类词条的**键本身含 `=`**，不转义会被解析器从中间截断（`i18n.cpp::Unescape`/`LoadTextLocked`、`wrap::lang_escape`、`check::split_entry` 三端同口径，单测 `i18n_escaping_and_equals_split` 覆盖）。
+  6. **词条数 277 ≠ 账本 381**：账本是"统计口径"（含日志出口、同一文案在多处重复）；**去重后需翻译的独立键 = 277**（290 处包裹点 → 277 个不同键）。
+  7. **M3 只做完门禁 a/b/c 的 a+b**（键覆盖、残留中文、加 printf 序列与译文同步）；**M3①（定宽控件松绑）、②c（文字渲染宽度门禁）、③（按语言字体回退链）、④（Win7 控制台 UTF-8 实测）未做**，**M4（6 语种机翻 + 双语 README + 完整回归）未做** → 下一步。
+- ⬜ 下一步：M3 余项（宽度门禁 + 字体回退 + Win7 实测）→ M4（ja/ko/de/fr/es/ru + README + 回归）。

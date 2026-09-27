@@ -1,4 +1,5 @@
 // 运行中系统的可读描述（见 sysinfo.h 顶部规格）。
+#include "common/i18n.h"
 #include "sysinfo.h"
 
 #include <windows.h>
@@ -66,30 +67,30 @@ const wchar_t* ChineseEdition(const std::wstring& id) {
         const wchar_t* id;
         const wchar_t* name;
     } kMap[] = {
-        {L"IoTEnterpriseS", L"IoT 企业版 LTSC"},
-        {L"IoTEnterpriseSK", L"IoT 企业版"},
-        {L"IoTEnterprise", L"IoT 企业版"},
-        {L"EnterpriseS", L"企业版 LTSC"},
-        {L"EnterpriseSN", L"企业版 LTSC"},
-        {L"Professional", L"专业版"},
-        {L"ProfessionalN", L"专业版"},
-        {L"ProfessionalEducation", L"专业教育版"},
-        {L"ProfessionalWorkstation", L"专业工作站版"},
-        {L"Core", L"家庭版"},
-        {L"CoreN", L"家庭版"},
-        {L"CoreCountrySpecific", L"家庭中文版"},
-        {L"CoreSingleLanguage", L"家庭单语言版"},
-        {L"Enterprise", L"企业版"},
-        {L"EnterpriseN", L"企业版"},
-        {L"EnterpriseG", L"企业版 G"},
-        {L"Education", L"教育版"},
-        {L"EducationN", L"教育版"},
-        {L"Starter", L"简易版"},
-        {L"Ultimate", L"旗舰版"},
-        {L"HomePremium", L"家庭高级版"},
-        {L"HomeBasic", L"家庭普通版"},
-        {L"ServerStandard", L"Server 标准版"},
-        {L"ServerDatacenter", L"Server 数据中心版"},
+        {L"IoTEnterpriseS", Tr(L"IoT 企业版 LTSC")},
+        {L"IoTEnterpriseSK", Tr(L"IoT 企业版")},
+        {L"IoTEnterprise", Tr(L"IoT 企业版")},
+        {L"EnterpriseS", Tr(L"企业版 LTSC")},
+        {L"EnterpriseSN", Tr(L"企业版 LTSC")},
+        {L"Professional", Tr(L"专业版")},
+        {L"ProfessionalN", Tr(L"专业版")},
+        {L"ProfessionalEducation", Tr(L"专业教育版")},
+        {L"ProfessionalWorkstation", Tr(L"专业工作站版")},
+        {L"Core", Tr(L"家庭版")},
+        {L"CoreN", Tr(L"家庭版")},
+        {L"CoreCountrySpecific", Tr(L"家庭中文版")},
+        {L"CoreSingleLanguage", Tr(L"家庭单语言版")},
+        {L"Enterprise", Tr(L"企业版")},
+        {L"EnterpriseN", Tr(L"企业版")},
+        {L"EnterpriseG", Tr(L"企业版 G")},
+        {L"Education", Tr(L"教育版")},
+        {L"EducationN", Tr(L"教育版")},
+        {L"Starter", Tr(L"简易版")},
+        {L"Ultimate", Tr(L"旗舰版")},
+        {L"HomePremium", Tr(L"家庭高级版")},
+        {L"HomeBasic", Tr(L"家庭普通版")},
+        {L"ServerStandard", Tr(L"Server 标准版")},
+        {L"ServerDatacenter", Tr(L"Server 数据中心版")},
     };
     for (const auto& e : kMap)
         if (id == e.id)

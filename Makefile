@@ -50,9 +50,9 @@ LDLIBS   = -L$(WIMLIB) -l:libwim-15.dll -ladvapi32 -lole32 -lshell32 -luuid
 APP_SRC = src/disk/disk.cpp src/wim/wim.cpp src/wim/exclude.cpp \
       src/common/process.cpp src/common/logger.cpp src/common/progress.cpp \
       src/common/singleton.cpp src/common/sysinfo.cpp src/common/zip.cpp \
-      src/common/selfarch.cpp src/common/crash.cpp src/common/vss.cpp src/boot/bcd.cpp src/boot/grub.cpp \
+      src/common/selfarch.cpp src/common/crash.cpp src/common/vss.cpp src/common/i18n.cpp src/boot/bcd.cpp src/boot/grub.cpp \
       src/boot/uefi.cpp src/boot/task.cpp src/boot/bootfix.cpp \
-      src/app/safety.cpp \
+      src/app/safety.cpp src/app/advice.cpp \
       src/app/shortcut.cpp src/app/ops.cpp
 APP_OBJS = $(patsubst src/%.cpp,$(OBJDIR)/app/%.o,$(APP_SRC))
 APP_LIB  = $(OBJDIR)/libapp.a
@@ -144,13 +144,15 @@ clean:
 
 # ---- 单元测试（零依赖，纯逻辑；不链 duilib/wimlib，跑得快） ----
 TEST_SRC   = tests/tiny_test.cpp tests/unit_tests.cpp tests/main.cpp
-TEST_UNITS = src/common/sysinfo.cpp src/wim/exclude.cpp src/boot/task.cpp src/common/zip.cpp
+TEST_UNITS = src/common/sysinfo.cpp src/wim/exclude.cpp src/boot/task.cpp src/common/zip.cpp src/app/advice.cpp \
+      src/common/i18n.cpp src/common/selfarch.cpp
 TEST_BIN   = $(OBJDIR)/tests.exe
 
 check: $(TEST_BIN)
 	$(TEST_BIN)
 	$(PYTHON) tests/test_version.py
 	$(PYTHON) tools/check-docs.py
+	$(PYTHON) tools/check-i18n.py
 
 $(TEST_BIN): $(TEST_SRC) $(TEST_UNITS) src/common/version.h | $(OBJDIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(TEST_SRC) $(TEST_UNITS) -o $(TEST_BIN) -static -mconsole -ladvapi32 -lole32 -luuid
@@ -206,6 +208,9 @@ package:
 	@copy /Y skin\main.xml dist\skin\ >nul
 	@copy /Y skin\instance.xml dist\skin\ >nul
 	@copy /Y skin\confirm.xml dist\skin\ >nul
+# 词典（i18n）：AppDir() 定位 <root>\lang\ —— x64\ 会自动上移到 dist\，两套 exe 共用
+	@if not exist dist\lang mkdir dist\lang
+	@copy /Y lang\*.lang dist\lang\ >nul
 	@echo {"name":"SysRecover","version":"$(VERSION)","arch":"x86+x64"} > dist\version.json
 	@dir dist\SysRecover.exe dist\SysRecoverUI.exe dist\x64\SysRecover.exe dist\x64\SysRecoverUI.exe
 # 打完包再严格核一次"指针"（version.json ↔ version.h 等）—— 防止"改了源码没打包"

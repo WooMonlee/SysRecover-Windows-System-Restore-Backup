@@ -1,5 +1,7 @@
+#include "common/i18n.h"
 #include "instance_dlg.h"
 
+using sysrecover::Tr;
 #include "ui_skin.h"
 
 namespace {
@@ -10,7 +12,12 @@ const int kCorner = 24;
 }  // namespace
 
 CDuiString CInstanceDlg::GetSkinFolder() { return _T("skin\\"); }
-CDuiString CInstanceDlg::GetSkinFile()  { return _T("instance.xml"); }
+CDuiString CInstanceDlg::GetSkinFile() {
+    // 同 CConfirmDlg::GetSkinFile：交给 builder 的是已翻译的整段 XML。
+    std::wstring xml = sysrecover::LoadSkinXml(L"instance.xml");
+    if (!xml.empty()) return CDuiString(xml.c_str());
+    return _T("instance.xml");
+}
 LPCTSTR   CInstanceDlg::GetWindowClassName() const { return _T("SysRecoverUI.Instance"); }
 
 CControlUI* CInstanceDlg::CreateControl(LPCTSTR pstrClass) {
@@ -65,7 +72,7 @@ int CInstanceDlg::Ask(bool prevBusy) {
     dlg->m_prevBusy = prevBusy;
 
     // 无系统外框（WS_POPUP）+ 不进任务栏；父窗口传 nullptr —— 此时主窗口还没建。
-    HWND h = dlg->Create(nullptr, _T("九转还原"), WS_POPUP | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
+    HWND h = dlg->Create(nullptr, Tr(L"九转还原"), WS_POPUP | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
                          WS_EX_TOOLWINDOW, 0, 0, kWndW, kWndH);
     if (!h) {
         delete dlg;

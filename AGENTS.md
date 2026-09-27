@@ -21,6 +21,7 @@
 3. License 红线：只动态链接 `libwim`（LGPLv3）；**严禁抄 `wimlib-imagex`（GPLv3）源码、grub4dos 源码、Dism++ 主程序**（闭源）。
 4. 构建红线：钉版工具链 + Release x64 + 零依赖验证 + 体积门禁（§3）。
 5. 契约红线：改 `restore-task.conf` / `progress.json` / `_zjresy*.log` 字段必须双端（Windows + Linux）同步发版。
+6. 国际化红线：**新字符串必须 `Tr()`（日志/契约/救援层/品牌名除外），译文只能改 `tools/i18n-en.py` 再 `--gen-lang` 生成，改完必跑 `make check`**（`tools/check-i18n.py` 会拦漏翻、死键、printf 占位符错位、`.lang` 不同步）—— 详见 §18。
 
 ---
 
@@ -519,6 +520,12 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 
 - PIT-087 **热备份前置 VSS 检查（用户 2026-09-26 规格）：服务不可用时 wimlib 只报 `rc=89`，只字不提服务名**（2026-09-27 实测定位并落地）：备份靠 `WIMLIB_ADD_FLAG_SNAPSHOT` → Windows VSS 卷影快照。**实测三事实**（Win11 dev 机）：① `vss=禁用` 或 `swprv=禁用`（任一）→ 备份均失败 `备份失败(rc=89): Unable to create a filesystem snapshot`，**报错完全不提服务** → 用户无从下手（"为什么没有成功"的根源）；② Windows 默认「停止+手动」态 wimlib 自己能拉起，但**跑完不关**（vss+swprv 留 Running 残留，与"完成后关闭"规格不符）；③ `wimlib.h` 明文 VSS 快照不支持 WoW64（64 位系统必须 64 位程序——正常由 selfarch 自举保证，x64 缺失时兜底提示）。**实现**：新增 `src/common/vss.{h,cpp}`（`vss::BackupGuard`，纯 Win32 SCM API `OpenSCManagerW/OpenServiceW/StartServiceW/ControlService/QueryServiceStatusEx`，禁 WMI）；`RunBackup` 算出 `snapshot` 后（RegFlush 之前）调 `Ensure()`：VSS + swprv 逐个查——**缺服务/被禁用/启动失败/30s 超时 → err = 多行中文处理指引**（services.msc 与 `sc config X start= demand && sc start X` 两条路，附 rc=89 因果说明），阻断在动数据之前；「停止」则启动并记录原状态。**析构回滚**（覆盖所有退出路径，含失败路径）：只停「亲眼确认过备份前是停止、且现在在运行」的（=只关我们开的；备份前就在跑 → 不动）。**坑**：`ErrorAdvice` 的 `has("管理员")` 会命中提示词里的"管理员窗口" → 追加误导性建议"以管理员身份运行"（失败根本不是权限）→ 在 `ErrorAdvice` **最前**加 VSS 短路分支返回 `{}`。**回归 4 场景全过**：正常（停→启→备份成功→停回）/ vss 禁用（指引+状态原样+exit=1+无 wim）/ swprv 禁用（指引+**已拉起的 VSS 回滚停回**）/ 预运行（成功+保持运行不关）。`make check`/`make package` 绿。✅ 2026-09-27（`0.3.17`）
 
+- PIT-088 **i18n 落地三坑（2026-09-27，全部已修 + 单测/冒烟覆盖）**：
+  · ① **`--lang` 开关"完全没生效"**：`Utf8Args()`（`src/cli/main.cpp:207`）**已经丢掉 argv[0]**，而我写解析循环时按惯例 `for (i = 1; ...)` 起跳 → 正好跳过位于**首位**的 `--lang` → `langArg` 恒空、参数也没被吃掉（**日志 `cmd: --lang en help` 原样回显就是判据**：参数若被吃掉应只显示 `cmd: help`）。改 `for (i = 0; ...)`。**教训**：加命令行开关前先确认 `Utf8Args()` 的口径，别照搬"argv[0] 是程序名"的肌肉记忆。
+  · ② **`.lang` 的键含 `=` 被从中间截断**：格式是 `key=value`，`备份失败(rc=%d): ` / `就地还原：应用镜像失败 rc=` / `打开目标卷失败 err=` 等 **9 个键本身含 `=`** → `line.find('=')` 命中键内部 → 键被截成半截、值带着剩下的键（症状：门禁同时报"缺键"9 个 + "死键"9 个 + printf 占位符不匹配，极像译文表写错，**其实格式本身有缺陷**）。**修复**：`lang_escape` 把 `=` 转义成 `\=`，分隔符改为**首个未转义的 `=`**，`i18n.cpp::Unescape/LoadTextLocked`、`wrap::lang_escape`、`check-i18n.py::split_entry` **三端同口径**；单测 `i18n_escaping_and_equals_split` 直接用 `备份失败(rc=%d): ` 当回归用例。⚠️ 只把 `=` 转义而不改分割逻辑是**无效**的（`\=` 里还是 `=`，照样被切）。
+  · ③ **门禁 `load_lang` 用了 `strip()`** → 把键的**前导/尾随空格**吃掉（`' 备份'`→`'备份'`、`'    已用 '`→`'已用 '`）→ 报"重复键"假阳性。`.lang` 的键值**可以带空格**，必须与 C++ 解析器一致：只去尾部 `\r`、空行/首字符 `#` 跳过，**绝不 strip**。
+  · **冒烟口径（可复用）**：CLI —— `dist\x64\SysRecover.exe help`（应中文）/ `--lang en help` / `set SYSRECOVER_LANG=en && ... help`（后两者应英文），看首行 `SysRecover · Command Line` vs `SysRecover 九转还原 · 命令行`；GUI —— 起 `SysRecoverUI.exe` 读 `Process.MainWindowTitle`：zh=`九转还原` / en=`SysRecover`（读之前 `[Console]::OutputEncoding = UTF8`，否则控制台按 GBK 打出来像乱码）。✅ 2026-09-27（`make check` 24 用例/148 断言 + `make package` 绿，双语冒烟通过）
+
 ---
 
 ## 14. License 合规（SBOM，随版本更新）
@@ -629,6 +636,8 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 ### 17.2 编译 / 打包纪律（硬）
 - 改完**必须编译通过**，并**重新 `make package`** —— **只有 `dist/` 是交付物**；光改源码不打包等于没改（PIT-077"构建失败还提交"就是没守住这条）。
 - 改**救援层脚本**（`bootfiles/alpine/init`、`bootfiles/zjrestore-lite.sh`）后必须 `python tools/build-debian-rescue.py` 重建 initramfs（脚本是打进 initramfs 的）。
+- 改**译文**（`tools/i18n-en.py`）后必须 `python tools/i18n-wrap.py --gen-lang` 重新生成 `lang/en.lang` —— **直接改 `lang/en.lang` 会被 `check-i18n` 的 C5 拦下**（只有 `dist/` 是交付物，`lang/en.lang` 要进 `dist/lang/`）。
+- 新增/改了 UI 中文字面量后：`python tools/i18n-wrap.py --apply` 回填 `Tr()` → `python tools/i18n-wrap.py --skeleton` 补齐新键 → 填英文 → `--gen-lang`。**顺序不能反**（`--skeleton` 只保留已存在的 value）。
 - 提交前顺序：`make check`（单测 + 一致性）→ `make package`。
 
 ### 17.3 品牌与术语约束（改界面/文案前必查）
@@ -659,4 +668,60 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 - 文本里含：异常码/地址、访问违例方向+地址、**调用栈（地址 + 所属模块 + 偏移）**、命令行、版本。
 - CLI/GUI 入口（`main()`/`WinMain()` 最开头、位数自举之后）各装一次；`diag --zip` 会把 `logs\` 一起打包，用户发回来即可定位。
 - 回归：**`make crash-test`**（故意触发访问违例，验证 dump/txt 真能落盘）。
+---
 
+## 18. 国际化纪律（i18n，PLAN §14；2026-09-27 M2+M3 落地）
+
+> 一句话：**键 = 中文源文本**；中文界面不查表，其它语言查 lang/<tag>.lang；漏了也只是显示原文，不会崩。
+
+### 18.1 机制（src/common/i18n.{h,cpp}）
+| 项 | 值 |
+|---|---|
+| 键 | **中文源文本本身**（Tr(L开始备份系统) → key 就是 开始备份系统）。没有 T(id) 消息 ID |
+| 语言判定 | InitI18n(forced)：显式 --lang xx → SYSRECOVER_LANG → GetUserDefaultUILanguage()（主语言低 10 位 == 0x04 → zh-CN，否则 en） |
+| 回退链 | lang/<tag>.lang（主）→ lang/en.lang（通用）→ **源文本**（永不掉 key、永不崩界面） |
+| 词典位置 | <AppDir()>\lang\*.lang（AppDir 在 exe 位于 x86//x64/ 时自动上移一级，与 skin/bootfiles 同规则） |
+| 皮肤 XML | **文件不改**：LoadSkinXml() 读 UTF-8 源文件、按词典把引号属性值翻成宽串，返回以 < 开头的内存 XML 给 Duilib（UIDlgBuilder.cpp:17，GetResourceType() 默认 UILIB_FILE 才走这条路） |
+| 宽串 | Tr(const wchar_t*) 先查 g_wide 缓存 → W2U8 后查窄表 → 命中再 U2W 存回缓存（节点地址不受 rehash 影响，可长期返回） |
+
+### 18.2 .lang 格式（key=value，UTF-8，可带 BOM）
+- 每行一条；# 开头 = 注释；空行跳过；**不做 strip** —— 键值可以带前导/尾随空格（' 备份'、'    已用 '）。
+- 分隔符 = **首个「未转义」的 =**（\ 会转义紧随其后的字符）。
+- 转义：\n \r \t \\ **\=**。\= 必需 —— 备份失败(rc=%d):  这类词条的**键本身含 =**，不转义会被解析器从中间截断（写入端 	ools/i18n-wrap.py::lang_escape、C++ Unescape/LoadTextLocked、门禁 check-i18n.py::split_entry **三端必须同口径**，单测 i18n_escaping_and_equals_split 守着）。
+- **译文只能改 	ools/i18n-en.py（EN 表）**，再 python tools/i18n-wrap.py --gen-lang 生成 lang/en.lang。直接改 .lang 会被门禁 C5 拦下。
+
+### 18.3 工作流
+1. 新增/改中文 UI 文案（源码写中文字面量，**不要**自己包 Tr）。
+2. python tools/i18n-wrap.py --apply 机械化回填（幂等；只动 WRAP_FILES 白名单 14 个文件）。
+3. python tools/i18n-wrap.py --skeleton 把新键补进 	ools/i18n-en.py（**已译值原样保留**）。
+4. 填英文 value → python tools/i18n-wrap.py --gen-lang → lang/en.lang。
+5. mingw32-make -f Makefile check → mingw32-make -f Makefile package（分开跑，见 §17.2）。
+- 改**救援层/契约/日志**的文本**不要**走这套（见 18.4）。
+
+### 18.4 翻译边界（红线）
+**翻**：GUI 皮肤属性、GUI/CLI 面向用户的提示、dvice 文案、命令帮助。
+**不翻**：Log*/AppendHistory/Progress*（机器可读）、跨层契约（
+estore-task.conf / _zjresy*.log / progress.json）、救援层屏幕、**品牌名**（九转还原→SysRecover、SysRecover、一键还原恢复环境→SysRecover Recovery Environment）。
+> 门禁 C1 会扫**全部** src/**/*.{cpp,h}：每个含 CJK 的字符串 run，callee 必须是 Tr 或 SKIP_CALLS 白名单。
+
+### 18.5 门禁 	ools/check-i18n.py（已挂 make check）
+| 码 | 拦什么 |
+|---|---|
+| C1 | 源码里该翻却没包 Tr() 的中文字面量 |
+| C2 | 键在 lang/en.lang 缺失 / .lang 里有源码已不存在的**死键**（改文案忘了 --gen-lang） |
+| C3 | 英文 value 里残留汉字（漏译/半译） |
+| C4 | 中英 **printf 占位符序列**不一致（%d %u %s %ls %zu %.1f %04X %3d%%，%% 不计） |
+| C5 | lang/en.lang 与 	ools/i18n-en.py 不同步、或译文表有空 value |
+
+### 18.6 常用命令
+`sh
+python tools/extract-strings.py            # 字符串账本 → build/msg-ledger.tsv（统计口径，≠词条数）
+python tools/i18n-wrap.py                  # 演练：列出将做的回填
+python tools/i18n-wrap.py --apply          # 落盘回填（幂等）
+python tools/i18n-wrap.py --skeleton       # 补新键 / 报进度 N/M
+python tools/i18n-wrap.py --gen-lang       # 译文表 → lang/en.lang
+python tools/check-i18n.py                 # 单独跑门禁
+SysRecover.exe --lang en help              # CLI 指定语言
+set SYSRECOVER_LANG=en && SysRecover.exe   # 环境变量指定语言（机房批量）
+`
+- 当前词条：**277**（en.lang 约 28.6 KB）。每增一语种 ≈ +28 KB。
