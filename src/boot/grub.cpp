@@ -1,4 +1,5 @@
 // GRUB4DOS 部署实现。
+#include "../common/i18n.h"
 #include "grub.h"
 
 #include <windows.h>
@@ -9,6 +10,7 @@
 #include "uefi.h"
 #include "../disk/disk.h"
 #include "../common/process.h"
+#include "../common/selfarch.h"
 
 namespace sysrecover {
 namespace {
@@ -90,34 +92,9 @@ bool RemoveTree(const std::wstring& path) {
 }  // namespace
 
 std::wstring ExeDir() {
-    wchar_t p[MAX_PATH] = {};
-    GetModuleFileNameW(nullptr, p, MAX_PATH);
-    std::wstring s = p;
-    size_t pos = s.find_last_of(L"\\/");
-    std::wstring dir =
-        pos == std::wstring::npos ? std::wstring(L".") : s.substr(0, pos);
-    // 启动器布局（见 src/launcher/launcher.cpp）：真正的程序在 <root>\x86\ 或 <root>\x64\ 下，
-    // 而 bootfiles/ skin/ logs/ 等**与位数无关**的资源放在 <root>，所以"应用目录"要上移一级。
-    // 仅在目录名恰为 x86/x64 **且**上一级确实是应用根（含 version.json 或 bootfiles）时才上移，
-    // 保证老的扁平布局（exe 直接在根目录）行为不变。
-    size_t p2 = dir.find_last_of(L"\\/");
-    if (p2 != std::wstring::npos) {
-        std::wstring leaf = dir.substr(p2 + 1);
-        for (size_t i = 0; i < leaf.size(); ++i) {
-            wchar_t c = leaf[i];
-            if (c >= L'A' && c <= L'Z')
-                leaf[i] = (wchar_t)(c - L'A' + L'a');
-        }
-        if (leaf == L"x86" || leaf == L"x64") {
-            std::wstring parent = dir.substr(0, p2);
-            if (GetFileAttributesW((parent + L"\\version.json").c_str()) !=
-                    INVALID_FILE_ATTRIBUTES ||
-                GetFileAttributesW((parent + L"\\bootfiles").c_str()) !=
-                    INVALID_FILE_ATTRIBUTES)
-                return parent;
-        }
-    }
-    return dir;
+    // 实现已下沉到 common（common 层的 i18n 也要定位 <root>\lang\，不能反向依赖 boot）；
+    // 本包装保留在原声明处（grub.h），全仓调用点无需改动。
+    return AppDir();
 }
 
 std::wstring FindDataDrive() {
@@ -240,7 +217,7 @@ bool InstallBootLayer(const std::wstring& deployDrive,
     ok &= WriteMenuLst(drive, log);
     std::string bcdLog;
     wchar_t dl = drive[0];
-    if (!BcdCreateBootsector(RecoveryGuid(), L"一键还原恢复环境", dl,
+    if (!BcdCreateBootsector(RecoveryGuid(), Tr(L"一键还原恢复环境"), dl,
                              bcdLog))
         ok = false;
     log += bcdLog;

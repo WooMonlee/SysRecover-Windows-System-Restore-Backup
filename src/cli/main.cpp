@@ -1,5 +1,6 @@
 ﻿// SysRecover CLI（Phase 0）：version / diag。完整命令见 AGENTS.md §9。
 // 退出码：0 成功，1 通用失败，2 参数错误（与 AGENTS.md §9 一致）。
+#include "../common/i18n.h"
 #include <windows.h>
 #include <shellapi.h>  // CommandLineToArgvW（P11：从宽命令行取参数）
 #include <shlobj.h>
@@ -28,6 +29,7 @@
 #include "../common/singleton.h"
 #include "../disk/disk.h"
 #include "../wim/exclude.h"
+using sysrecover::Tr;
 #include "../wim/wim.h"
 
 namespace {
@@ -62,7 +64,7 @@ int DiagText(std::string& out) {
     out += buf;
     if (sysrecover::IsUefiFirmware()) {
         snprintf(buf, sizeof(buf), "[diag] secureboot=%s\n",
-                 sysrecover::IsSecureBootEnabled() ? "ON (需签名引导)" : "off");
+                 sysrecover::IsSecureBootEnabled() ? Tr("ON (需签名引导)") : "off");
         out += buf;
         std::string detail;
         bool installed = sysrecover::UefiBootEntryExists(detail);
@@ -77,8 +79,7 @@ int DiagText(std::string& out) {
         out += buf;
         if (ca && !(ca & sysrecover::kFirmwareCa2011) &&
             (ca & sysrecover::kFirmwareCa2023))
-            out += "[diag] WARN: 本机固件只信任 CA2023，而我们的救援环境用 CA2011 "
-                   "签名 → 可能起不来（见 PLAN.md §11 备选 B/C）\n";
+            out += Tr("[diag] WARN: 本机固件只信任 CA2023，而我们的救援环境用 CA2011 " "签名 → 可能起不来（见 PLAN.md §11 备选 B/C）\n");
     }
     int rc = wimlib_global_init(0);
     snprintf(buf, sizeof(buf), "[diag] wimlib_global_init -> %d (%s)\n", rc,
@@ -253,7 +254,7 @@ bool ConsoleProgress(int pct, const std::string& stage) {
     last = pct;
     lastStage = stage;
     lastElapsed = el;
-    std::printf("\r  %3d%%  %s   已用 %s   ", pct, stage.c_str(), el.c_str());
+    std::printf(Tr("\r  %3d%%  %s   已用 %s   "), pct, stage.c_str(), el.c_str());
     fflush(stdout);
     sysrecover::ProgressUpdate(g_phase, pct, stage);
     return false;
@@ -262,7 +263,7 @@ bool ConsoleProgress(int pct, const std::string& stage) {
 int CmdBackup(const std::vector<std::string>& a) {
     std::string dest = Opt(a, "--dest");
     if (dest.empty()) {
-        std::printf("缺少 --dest <wim路径>\n");
+        std::printf(Tr("缺少 --dest <wim路径>\n"));
         return 2;
     }
     sysrecover::BackupRequest req;
@@ -276,26 +277,27 @@ int CmdBackup(const std::vector<std::string>& a) {
     DWORD attr = GetFileAttributesW(req.dest.c_str());
     if (attr != INVALID_FILE_ATTRIBUTES && !req.append && !Has(a, "--yes") &&
         !Has(a, "-y")) {
-        std::printf("目标文件已存在，覆盖需加 --yes 确认（追加请用 --append）\n");
+        std::printf(Tr("目标文件已存在，覆盖需加 --yes 确认（追加请用 --append）\n"));
         return 2;
     }
     std::string err;
+    sysrecover::ErrAdvice adv = sysrecover::ADV_NONE;
     g_start = std::chrono::steady_clock::now();
-    int rc = sysrecover::RunBackup(req, ConsoleProgress, err);
+    int rc = sysrecover::RunBackup(req, ConsoleProgress, err, &adv);
     std::printf("\n");
     if (rc != 0) {
         std::printf("%s\n", err.c_str());
-        std::string advice = sysrecover::ErrorAdvice(rc, err);  // P8
+        std::string advice = sysrecover::ErrorAdvice(rc, adv);  // P8（按建议码取词）
         if (!advice.empty())
             std::printf("%s\n", advice.c_str());
         if (g_cancel) {
-            std::printf("已取消\n");
+            std::printf(Tr("已取消\n"));
             return 6;  // §9 退出码 6=取消
         }
         return rc == 5 ? 5 : 1;
     }
-    std::printf("%s（用时 %s）\n",
-                req.verify ? "备份并校验完成" : "备份完成",
+    std::printf(Tr("%s（用时 %s）\n"),
+                req.verify ? Tr("备份并校验完成") : Tr("备份完成"),
                 FmtElapsed().c_str());
     return 0;
 }
@@ -305,11 +307,11 @@ int CmdRestore(const std::vector<std::string>& a) {
     std::string diskS = Opt(a, "--disk");
     std::string partS = Opt(a, "--part");
     if (image.empty() || diskS.empty() || partS.empty()) {
-        std::printf("缺少 --image/--disk/--part\n");
+        std::printf(Tr("缺少 --image/--disk/--part\n"));
         return 2;
     }
     if (!Has(a, "--yes") && !Has(a, "-y")) {
-        std::printf("还原将覆盖目标分区，需加 --yes 确认\n");
+        std::printf(Tr("还原将覆盖目标分区，需加 --yes 确认\n"));
         return 2;
     }
     int disk = std::atoi(diskS.c_str());
@@ -333,37 +335,37 @@ int CmdRestore(const std::vector<std::string>& a) {
             }
         }
         if (!found) {
-            std::printf("找不到目标分区 磁盘%d 分区%d\n", disk, part);
+            std::printf(Tr("找不到目标分区 磁盘%d 分区%d\n"), disk, part);
             return 1;
         }
         if (!sysrecover::AcquireOpLock()) {
-            std::printf("已有备份/还原实例在运行，本次退出\n");
+            std::printf(Tr("已有备份/还原实例在运行，本次退出\n"));
             return 1;
         }
         g_phase = "restore";
         sysrecover::ProgressUpdate(g_phase, 0, "start");
         g_start = std::chrono::steady_clock::now();
         if (target.letter.empty()) {
-            std::printf("目标分区无盘符，无法直接应用\n");
+            std::printf(Tr("目标分区无盘符，无法直接应用\n"));
             return 1;
         }
         if (target.isSystem)
-            std::wprintf(L"警告：目标是系统分区，还原后需重启\n");
+            std::wprintf(Tr(L"警告：目标是系统分区，还原后需重启\n"));
         sysrecover::WimEngine engine;
         if (!engine.ok()) {
-            std::printf("wimlib 初始化失败\n");
+            std::printf(Tr("wimlib 初始化失败\n"));
             return 1;
         }
         int rc = engine.Apply(ToWide(image), index, target.letter + L":/",
                               ConsoleProgress);
         std::printf("\n");
         if (rc != 0) {
-            std::wprintf(L"还原失败(rc=%d)：%ls\n", rc,
+            std::wprintf(Tr(L"还原失败(rc=%d)：%ls\n"), rc,
                          sysrecover::WimEngine::ErrorString(rc));
             sysrecover::ProgressDone("restore", "failed");
             return 1;
         }
-        std::printf("还原完成\n");
+        std::printf(Tr("还原完成\n"));
         sysrecover::ProgressDone("restore", "done");
         return 0;
     }
@@ -388,8 +390,7 @@ int CmdRestore(const std::vector<std::string>& a) {
                 list += W2U8(v);
             }
             std::printf(
-                "警告：本机存在 BitLocker 加密卷（%s）——\n"
-                "      如果没有密码 / 恢复密钥，还原后这些卷的数据将无法恢复。\n",
+                Tr("警告：本机存在 BitLocker 加密卷（%s）——\n" "      如果没有密码 / 恢复密钥，还原后这些卷的数据将无法恢复。\n"),
                 list.c_str());
         }
     }
@@ -399,52 +400,53 @@ int CmdRestore(const std::vector<std::string>& a) {
         if (!hw.empty())
             std::printf("%s\n", hw.c_str());
     }
-    int rc = sysrecover::StageRestore(req, err, &needReboot);
+    sysrecover::ErrAdvice adv = sysrecover::ADV_NONE;
+    int rc = sysrecover::StageRestore(req, err, &needReboot, nullptr, &adv);
     if (rc != 0) {
         std::printf("%s\n", err.c_str());
-        std::string advice = sysrecover::ErrorAdvice(rc, err);  // P8
+        std::string advice = sysrecover::ErrorAdvice(rc, adv);  // P8（按建议码取词）
         if (!advice.empty())
             std::printf("%s\n", advice.c_str());
         return (rc == 2 || rc == 4 || rc == 5) ? rc : 1;
     }
     if (needReboot)
-        std::printf("已暂存还原任务，重启后由引导层执行。\n");
+        std::printf(Tr("已暂存还原任务，重启后由引导层执行。\n"));
     else
-        std::printf("还原已完成（目标分区未被占用，直接就地还原，无需重启）。\n");
+        std::printf(Tr("还原已完成（目标分区未被占用，直接就地还原，无需重启）。\n"));
     return 0;
 }
 
 int CmdVerify(const std::vector<std::string>& a) {
     std::string image = Opt(a, "--image");
     if (image.empty()) {
-        std::printf("缺少 --image\n");
+        std::printf(Tr("缺少 --image\n"));
         return 2;
     }
     sysrecover::WimEngine engine;
     if (!engine.ok()) {
-        std::printf("wimlib 初始化失败\n");
+        std::printf(Tr("wimlib 初始化失败\n"));
         return 1;
     }
     int rc = engine.Verify(ToWide(image));
-    std::printf(rc == 0 ? "校验通过\n" : "校验失败\n");
+    std::printf(rc == 0 ? Tr("校验通过\n") : Tr("校验失败\n"));
     return rc == 0 ? 0 : 5;
 }
 
 int CmdImages(const std::vector<std::string>& a) {
     std::string file = Opt(a, "--file");
     if (file.empty()) {
-        std::printf("缺少 --file\n");
+        std::printf(Tr("缺少 --file\n"));
         return 2;
     }
     sysrecover::WimEngine engine;
     if (!engine.ok()) {
-        std::printf("wimlib 初始化失败\n");
+        std::printf(Tr("wimlib 初始化失败\n"));
         return 1;
     }
     std::vector<sysrecover::ImageDesc> list;
     int rc = engine.ListImages(ToWide(file), list);
     if (rc != 0) {
-        std::printf("读取失败：%ls\n",
+        std::printf(Tr("读取失败：%ls\n"),
                     sysrecover::WimEngine::ErrorString(rc));
         return 1;
     }
@@ -485,30 +487,26 @@ int CmdExtract(const std::vector<std::string>& a) {
             paths.push_back(ToWide(a[i + 1]));
     if (file.empty() || dest.empty() || paths.empty()) {
         std::printf(
-            "用法: SysRecover.exe extract --file <镜像> [--index N] "
-            "--path <镜像内路径> [--path ...] --dest <输出目录>\n"
-            "  路径用 Windows 风格、以 \\ 开头，支持通配符，例如：\n"
-            "    --path \"\\Windows\\win.ini\"\n"
-            "    --path \"\\Users\\*\\Desktop\\*.txt\"\n");
+            Tr("用法: SysRecover.exe extract --file <镜像> [--index N] " "--path <镜像内路径> [--path ...] --dest <输出目录>\n" "  路径用 Windows 风格、以 \\ 开头，支持通配符，例如：\n" "    --path \"\\Windows\\win.ini\"\n" "    --path \"\\Users\\*\\Desktop\\*.txt\"\n"));
         return 2;
     }
     // 输出目录：不存在就建（父目录需已存在）
     if (!CreateDirectoryW(ToWide(dest).c_str(), nullptr) &&
         ::GetLastError() != ERROR_ALREADY_EXISTS) {
-        std::printf("无法创建输出目录（父目录需已存在）\n");
+        std::printf(Tr("无法创建输出目录（父目录需已存在）\n"));
         return 1;
     }
     sysrecover::WimEngine engine;
     if (!engine.ok()) {
-        std::printf("wimlib 初始化失败\n");
+        std::printf(Tr("wimlib 初始化失败\n"));
         return 1;
     }
     int rc = engine.ExtractPaths(ToWide(file), index, paths, ToWide(dest));
     if (rc != 0) {
-        std::printf("提取失败：%ls\n", sysrecover::WimEngine::ErrorString(rc));
+        std::printf(Tr("提取失败：%ls\n"), sysrecover::WimEngine::ErrorString(rc));
         return 1;
     }
-    std::printf("已提取 %zu 个路径到 %s\n", paths.size(), dest.c_str());
+    std::printf(Tr("已提取 %zu 个路径到 %s\n"), paths.size(), dest.c_str());
     return 0;
 }
 
@@ -533,7 +531,7 @@ int CmdDiagZip(const std::vector<std::string>& a) {
     }
     sysrecover::ZipWriter zip(outPath);
     if (!zip.ok()) {
-        std::printf("无法创建诊断包：%ls\n", outPath.c_str());
+        std::printf(Tr("无法创建诊断包：%ls\n"), outPath.c_str());
         return 1;
     }
     int n = 0;
@@ -576,10 +574,10 @@ int CmdDiagZip(const std::vector<std::string>& a) {
         }
     }
     if (!zip.Close()) {
-        std::printf("写诊断包失败\n");
+        std::printf(Tr("写诊断包失败\n"));
         return 1;
     }
-    std::printf("已导出诊断包（%d 个文件）：%ls\n", n, outPath.c_str());
+    std::printf(Tr("已导出诊断包（%d 个文件）：%ls\n"), n, outPath.c_str());
     return 0;
 }
 
@@ -593,7 +591,7 @@ int CmdHistory(const std::vector<std::string>& a) {
                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                            OPEN_EXISTING, 0, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
-        std::printf("还没有历史记录（备份或还原成功后会写 %ls）\n", path.c_str());
+        std::printf(Tr("还没有历史记录（备份或还原成功后会写 %ls）\n"), path.c_str());
         return 0;
     }
     LARGE_INTEGER sz = {};
@@ -641,37 +639,37 @@ int CmdList() {    const auto disks = sysrecover::EnumerateDisks();
 }
 
 int CmdShortcut(const std::vector<std::string>& a) {
-    std::string name = Opt(a, "--name", "一键还原");
+    std::string name = Opt(a, "--name", Tr("一键还原"));
     std::string target = Opt(a, "--target");
     std::string targetArgs = Opt(a, "--args");
     if (target.empty()) {
-        std::printf("缺少 --target <exe路径>\n");
+        std::printf(Tr("缺少 --target <exe路径>\n"));
         return 2;
     }
     wchar_t folder[MAX_PATH] = {};
     if (Has(a, "--startmenu")) {
         if (FAILED(SHGetFolderPathW(nullptr, CSIDL_PROGRAMS, nullptr, 0,
                                     folder))) {
-            std::printf("取开始菜单目录失败\n");
+            std::printf(Tr("取开始菜单目录失败\n"));
             return 1;
         }
     } else {
         if (FAILED(SHGetFolderPathW(nullptr, CSIDL_DESKTOP, nullptr, 0,
                                     folder))) {
-            std::printf("取桌面目录失败\n");
+            std::printf(Tr("取桌面目录失败\n"));
             return 1;
         }
     }
     std::wstring out;
     if (!sysrecover::CreateShortcut(folder, ToWide(name), ToWide(target),
                                     ToWide(targetArgs), out)) {
-        std::printf("创建快捷方式失败\n");
+        std::printf(Tr("创建快捷方式失败\n"));
         return 1;
     }
     char narrow[MAX_PATH * 2] = {};
     WideCharToMultiByte(CP_UTF8, 0, out.c_str(), -1, narrow, sizeof(narrow),
                         nullptr, nullptr);
-    std::printf("已创建：%s\n", narrow);
+    std::printf(Tr("已创建：%s\n"), narrow);
     return 0;
 }
 
@@ -681,54 +679,26 @@ struct CmdHelp {
     const char* text;
 };
 const CmdHelp kCmdHelp[] = {
-    {"list", "list\n  列出磁盘/分区/文件系统/盘符/ESP 与系统标记。"},
+    {"list", Tr("list\n  列出磁盘/分区/文件系统/盘符/ESP 与系统标记。")},
     {"diag",
-     "diag [--zip [--out <zip>]]\n"
-     "  自检（管理员/固件/Secure Boot/启动项/wimlib）。\n"
-     "  --zip 导出诊断包（diag 文本 + logs/ + 契约文件），排错时直接发回。"},
-    {"images", "images --file <镜像>\n  列出镜像里的子镜像：<index> - <名称>（<大小>）。"},
+     Tr("diag [--zip [--out <zip>]]\n" "  自检（管理员/固件/Secure Boot/启动项/wimlib）。\n" "  --zip 导出诊断包（diag 文本 + logs/ + 契约文件），排错时直接发回。")},
+    {"images", Tr("images --file <镜像>\n  列出镜像里的子镜像：<index> - <名称>（<大小>）。")},
     {"backup",
-     "backup --dest <文件> [--source <目录/>] [--compress fast|maximum|recovery]\n"
-     "       [--name <名>] [--append] [--verify] [--yes]\n"
-     "  --source 以 `/` 结尾（如 C:/）触发 VSS 热备；--compress 决定体积/速度；\n"
-     "  --verify 写完立即校验；--append 追加为同一 WIM 的新子镜像。"},
+     Tr("backup --dest <文件> [--source <目录/>] [--compress fast|maximum|recovery]\n" "       [--name <名>] [--append] [--verify] [--yes]\n" "  --source 以 `/` 结尾（如 C:/）触发 VSS 热备；--compress 决定体积/速度；\n" "  --verify 写完立即校验；--append 追加为同一 WIM 的新子镜像。")},
     {"restore",
-     "restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--yes]\n"
-     "  目标是正在运行的系统盘 → 暂存并重启进救援层；否则就地还原（不重启）。\n"
-     "  用 `list` 先确认磁盘号/分区号；镜像必须在**本地分区**。"},
-    {"verify", "verify --image <文件>\n  校验镜像完整性（成功 0，失败 5）。"},
+     Tr("restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--yes]\n" "  目标是正在运行的系统盘 → 暂存并重启进救援层；否则就地还原（不重启）。\n" "  用 `list` 先确认磁盘号/分区号；镜像必须在**本地分区**。")},
+    {"verify", Tr("verify --image <文件>\n  校验镜像完整性（成功 0，失败 5）。")},
     {"extract",
-     "extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]\n"
-     "  从镜像里取单个/一组文件（--path 支持通配符、可重复）。"},
-    {"history", "history\n  列出操作历史（logs/history.jsonl）。"},
-    {"shortcut", "shortcut --target <exe> [--args <...>] [--name <名>]\n  在桌面建快捷方式。"},
-    {"version", "version\n  显示版本号。"},
+     Tr("extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]\n" "  从镜像里取单个/一组文件（--path 支持通配符、可重复）。")},
+    {"history", Tr("history\n  列出操作历史（logs/history.jsonl）。")},
+    {"shortcut", Tr("shortcut --target <exe> [--args <...>] [--name <名>]\n  在桌面建快捷方式。")},
+    {"version", Tr("version\n  显示版本号。")},
 };
 const size_t kCmdHelpN = sizeof(kCmdHelp) / sizeof(kCmdHelp[0]);
 
 void PrintAllUsage() {
     std::printf(
-        "SysRecover 九转还原 · 命令行\n"
-        "\n"
-        "用法: SysRecover.exe <命令> [选项]      （`SysRecover.exe help <命令>` 看单项）\n"
-        "\n"
-        "命令:\n"
-        "  list                        列出磁盘/分区/文件系统/盘符/ESP/系统标记\n"
-        "  diag [--zip [--out <zip>]]  自检（固件/Secure Boot/启动项/wimlib）；--zip 导出诊断包\n"
-        "  images --file <镜像>        列出镜像里的子镜像（含大小/描述）\n"
-        "  backup --dest <文件> [--source <目录/>] [--compress fast|maximum|recovery]\n"
-        "         [--name <名>] [--append] [--verify] [--yes]\n"
-        "  restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--yes]\n"
-        "  verify --image <文件>       校验镜像完整性\n"
-        "  extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]\n"
-        "                              从镜像里取单个/一组文件（支持通配符）\n"
-        "  history                     列出操作历史（logs/history.jsonl）\n"
-        "  shortcut --target <exe> [--args <...>] [--name <名>]   建快捷方式\n"
-        "  version                     显示版本\n"
-        "  help [命令]                 本帮助\n"
-        "\n"
-        "退出码: 0 成功 / 1 通用失败 / 2 参数错 / 3 需管理员 / 4 危险目标被拒 / 5 镜像校验失败 / 6 取消\n"
-        "注意: 还原系统盘会重启进救援层，镜像必须放在**本地分区**（救援层访问不到网络）。\n");
+        Tr("SysRecover 九转还原 · 命令行\n" "\n" "用法: SysRecover.exe <命令> [选项]      （`SysRecover.exe help <命令>` 看单项）\n" "\n" "命令:\n" "  list                        列出磁盘/分区/文件系统/盘符/ESP/系统标记\n" "  diag [--zip [--out <zip>]]  自检（固件/Secure Boot/启动项/wimlib）；--zip 导出诊断包\n" "  images --file <镜像>        列出镜像里的子镜像（含大小/描述）\n" "  backup --dest <文件> [--source <目录/>] [--compress fast|maximum|recovery]\n" "         [--name <名>] [--append] [--verify] [--yes]\n" "  restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--yes]\n" "  verify --image <文件>       校验镜像完整性\n" "  extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]\n" "                              从镜像里取单个/一组文件（支持通配符）\n" "  history                     列出操作历史（logs/history.jsonl）\n" "  shortcut --target <exe> [--args <...>] [--name <名>]   建快捷方式\n" "  version                     显示版本\n" "  help [命令]                 本帮助\n" "\n" "退出码: 0 成功 / 1 通用失败 / 2 参数错 / 3 需管理员 / 4 危险目标被拒 / 5 镜像校验失败 / 6 取消\n" "注意: 还原系统盘会重启进救援层，镜像必须放在**本地分区**（救援层访问不到网络）。\n"));
 }
 
 // 返回 true = 找到了该命令的说明。
@@ -766,6 +736,24 @@ int main() {
     SetConsoleOutputCP(CP_UTF8);
 
     std::vector<std::string> args = Utf8Args();
+    // --lang xx | --lang=xx：显式指定界面语言（机器可读标记，本身不翻译）。
+    // 不给则由 InitI18n(nullptr) 按 SYSRECOVER_LANG / 系统界面语言自动判定。
+    // 必须在 Usage()/任何 Tr() 之前 —— 帮助文本也是翻过的。
+    std::string langArg;
+    // ⚠️ Utf8Args() 已经丢掉 argv[0]（见 201 行），所以从 i=0 开始扫 ——
+    // 从 1 开始会正好跳过位于首位的 `--lang`，表现为"开关完全没生效"。
+    for (size_t i = 0; i < args.size();) {
+        if (args[i] == "--lang" && i + 1 < args.size()) {
+            langArg = args[i + 1];
+            args.erase(args.begin() + (long)i, args.begin() + (long)i + 2);
+        } else if (args[i].rfind("--lang=", 0) == 0) {
+            langArg = args[i].substr(7);
+            args.erase(args.begin() + (long)i);
+        } else {
+            ++i;
+        }
+    }
+    sysrecover::InitI18n(langArg.empty() ? nullptr : langArg.c_str());
     if (args.empty())
         return Usage();
     // 帮助（问题清单 C1）：`help [命令]` / `--help` / `-h`，以及 `<命令> --help`。

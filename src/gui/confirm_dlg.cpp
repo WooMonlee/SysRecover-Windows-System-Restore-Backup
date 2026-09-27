@@ -1,5 +1,7 @@
+#include "common/i18n.h"
 #include "confirm_dlg.h"
 
+using sysrecover::Tr;
 #include "ui_skin.h"
 
 namespace {
@@ -10,7 +12,13 @@ const int kCorner = 24;
 }  // namespace
 
 CDuiString CConfirmDlg::GetSkinFolder() { return _T("skin\\"); }
-CDuiString CConfirmDlg::GetSkinFile()  { return _T("confirm.xml"); }
+CDuiString CConfirmDlg::GetSkinFile() {
+    // 词典把皮肤 XML 的 UI 文案翻好再交给 builder（它认 "<" 开头的整段 XML，
+    // 见 UIDlgBuilder.cpp）；读不到/无译文时回退原文件名，行为与改动前一致。
+    std::wstring xml = sysrecover::LoadSkinXml(L"confirm.xml");
+    if (!xml.empty()) return CDuiString(xml.c_str());
+    return _T("confirm.xml");
+}
 LPCTSTR   CConfirmDlg::GetWindowClassName() const { return _T("SysRecoverUI.Confirm"); }
 
 CControlUI* CConfirmDlg::CreateControl(LPCTSTR pstrClass) {
@@ -94,7 +102,7 @@ int CConfirmDlg::Ask2(HWND owner, const std::wstring& title,
     dlg->m_defaultRight = defaultIsRight;
 
     // 无系统外框（WS_POPUP）+ 不进任务栏；owner = 主窗口（模态禁用）。
-    HWND h = dlg->Create(owner, _T("九转还原"),
+    HWND h = dlg->Create(owner, Tr(L"九转还原"),
                          WS_POPUP | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
                          WS_EX_TOOLWINDOW, 0, 0, kWndW, kWndH);
     if (!h) {

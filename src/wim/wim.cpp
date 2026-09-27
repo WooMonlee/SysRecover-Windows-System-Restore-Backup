@@ -1,4 +1,5 @@
 // WIM 引擎实现：libwim C API 直连。
+#include "common/i18n.h"
 #include "wim.h"
 
 #include <windows.h>  // WideCharToMultiByte（XML 是 UTF-16LE，见 ImageSize）
@@ -287,7 +288,7 @@ int WimEngine::Verify(const std::wstring& imagePath) {
 int WimEngine::Probe(const std::wstring& imagePath, std::wstring& why) {
     why.clear();
     if (!inited_) {
-        why = L"wimlib 初始化失败";
+        why = Tr(L"wimlib 初始化失败");
         return -1;
     }
     WimHandle h;
@@ -302,15 +303,15 @@ int WimEngine::Probe(const std::wstring& imagePath, std::wstring& why) {
     struct wimlib_wim_info info = {};
     rc = wimlib_get_wim_info(h.w, &info);
     if (rc != 0) {
-        why = L"读取镜像信息失败";
+        why = Tr(L"读取镜像信息失败");
         return rc;
     }
     if (info.write_in_progress) {
-        why = L"上次写入未完成，镜像不完整（很可能是上次备份中途退出/中断）";
+        why = Tr(L"上次写入未完成，镜像不完整（很可能是上次备份中途退出/中断）");
         return -1;
     }
     if (info.image_count == 0) {
-        why = L"镜像里没有任何子镜像";
+        why = Tr(L"镜像里没有任何子镜像");
         return -1;
     }
     return 0;

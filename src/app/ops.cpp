@@ -1,4 +1,5 @@
 // 备份/还原共享操作层实现。语义对齐 CLI（Phase 2-4 已验证）与旧 C# 编排器。
+#include "../common/i18n.h"
 #include "ops.h"
 
 #include <windows.h>
@@ -106,7 +107,7 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
                             letter + L": /FS:NTFS /Q /Y", out);
         LogInfo("format.com rc=" + std::to_string(rc) + " / " + out);
         if (rc != 0) {
-            err = "就地还原：格式化目标分区失败（" + out + "）";
+            err = Tr("就地还原：格式化目标分区失败（") + out + Tr("）");
             LogError(err);
             ProgressDone("restore", "failed");
             return 1;
@@ -115,7 +116,7 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
     // 2) 应用镜像（目录模式）
     WimEngine wim;
     if (!wim.ok()) {
-        err = "wimlib 初始化失败";
+        err = Tr("wimlib 初始化失败");
         ProgressDone("restore", "failed");
         return 1;
     }
@@ -128,7 +129,7 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
                             return false;
                         });
     if (arc != 0) {
-        err = "就地还原：应用镜像失败 rc=" + std::to_string(arc) + " (" +
+        err = Tr("就地还原：应用镜像失败 rc=") + std::to_string(arc) + " (" +
               W2U(WimEngine::ErrorString(arc)) + ")";
         LogError(err);
         ProgressDone("restore", "failed");
@@ -180,15 +181,21 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
 // 判据（用户规格）：不是正在运行的系统盘，且能对该卷加独占锁 ——
 // FSCTL_LOCK_VOLUME 会因"卷上有打开的文件/句柄"而失败。
 // 能就地写 → 直接还原（PE 里 / 还原到非系统盘）；否则走暂存 + 重启 + Linux。
-bool CanRestoreInPlace(const PartitionInfo& t, std::string& why) {
+bool CanRestoreInPlace(const PartitionInfo& t, std::string& why,
+                       InPlaceReason* reason) {
+    // reason：给调用方一个**稳定码**来选显示文案（GUI 确认框原来靠
+    // `why.find("系统盘")` 匹配中文子串，消息一翻译就失效 —— PLAN §14 M1）
+    auto setr = [&](InPlaceReason r) { if (reason) *reason = r; };
     if (t.letter.empty()) {
-        why = "目标分区没有盘符（无法就地写）";
+        setr(INPLACE_NO_LETTER);
+        why = Tr("目标分区没有盘符（无法就地写）");
         return false;
     }
     wchar_t winDir[MAX_PATH] = {};
     if (GetWindowsDirectoryW(winDir, MAX_PATH) &&
         SameDrive(winDir[0], t.letter[0])) {
-        why = "目标是正在运行的系统盘（必须重启后脱机还原）";
+        setr(INPLACE_SYSTEM_DISK);
+        why = Tr("目标是正在运行的系统盘（必须重启后脱机还原）");
         return false;
     }
     // 用户规格（2026-09-23）：**PE 里只要目标不是正在运行的系统盘，就应该就地还原**，
@@ -196,7 +203,7 @@ bool CanRestoreInPlace(const PartitionInfo& t, std::string& why) {
     // 可能因各种句柄失败 → 会误判成"必须重启"（用户实测踩到）。所以 PE 下直接放行；
     // 正常 Windows 仍用卷锁判定，只有真的锁不上（分区被占用、无法就地还原）才提示重启。
     if (IsWinPE()) {
-        why = "在 PE 中运行（目标非运行系统盘）→ 就地还原";
+        why = Tr("在 PE 中运行（目标非运行系统盘）→ 就地还原");
         // PE 下 FSCTL_LOCK_VOLUME 常因各种句柄失败 → 不能据此判"必须重启"（会把 PE
         // 误判成"要重启"，用户实测踩到）。所以**放行**，但仍**试一下锁**：锁不上只记
         // warn 继续（而不是拒绝）——这样格式化/wimlib 真失败时日志里有线索（问题清单 M-04）。
@@ -220,6 +227,7 @@ bool CanRestoreInPlace(const PartitionInfo& t, std::string& why) {
             }
             CloseHandle(peH);
         }
+        setr(INPLACE_PE);
         return true;
     }
     std::wstring dev = L"\\\\.\\" + t.letter + L":";
@@ -227,7 +235,8 @@ bool CanRestoreInPlace(const PartitionInfo& t, std::string& why) {
                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                            OPEN_EXISTING, 0, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
-        why = "打开目标卷失败 err=" + std::to_string(GetLastError());
+        setr(INPLACE_OPEN_FAIL);
+        why = Tr("打开目标卷失败 err=") + std::to_string(GetLastError());
         return false;
     }
     DWORD ret = 0;
@@ -237,7 +246,8 @@ bool CanRestoreInPlace(const PartitionInfo& t, std::string& why) {
         DeviceIoControl(h, FSCTL_UNLOCK_VOLUME, nullptr, 0, nullptr, 0, &ret,
                         nullptr);
     CloseHandle(h);
-    why = locked ? "目标分区未被占用" : "目标分区正被使用（有打开的文件或句柄）";
+    setr(locked ? INPLACE_OK : INPLACE_LOCKED);
+    why = locked ? Tr("目标分区未被占用") : Tr("目标分区正被使用（有打开的文件或句柄）");
     return locked != FALSE;
 }
 // 还原前空间预检（P1）—— 见 ops.h。**必须在格式化之前**调用。
@@ -263,8 +273,7 @@ int CheckRestoreSpace(const std::wstring& imagePath, int index,
     LogInfo(buf);
     if (have && need > have) {
         snprintf(buf, sizeof(buf),
-                 "目标分区空间不足：镜像解压后约需 %.1f GB（已含余量），"
-                 "但目标分区只有 %.1f GB。\n请换更大的目标分区，或改用更小的镜像。",
+                 Tr("目标分区空间不足：镜像解压后约需 %.1f GB（已含余量），" "但目标分区只有 %.1f GB。\n请换更大的目标分区，或改用更小的镜像。"),
                  need / 1073741824.0, have / 1073741824.0);
         err = buf;
         return 1;
@@ -272,33 +281,10 @@ int CheckRestoreSpace(const std::wstring& imagePath, int index,
     return 0;
 }
 
-// 失败后的"下一步"（P8）—— 见 ops.h。按错误文本/退出码匹配，匹配不上返回空串。
-std::string ErrorAdvice(int rc, const std::string& err) {
-    auto has = [&err](const char* k) { return err.find(k) != std::string::npos; };
-    // VSS 前置检查失败：消息里已自带完整处理步骤（services.msc / sc 两条路），
-    // 必须放在最前短路 —— 否则下面的通用词分支（"管理员"，我们的提示词里也有）
-    // 会追加"建议：以管理员身份运行"，而失败原因根本不是权限，纯属误导。
-    if (has("卷影复制服务") || has("影子副本提供程序") || has("swprv"))
-        return {};
-    if (has("BitLocker") || has("bitlocker"))
-        return "\n\n建议：目标盘启用了 BitLocker。请先在「管理员命令提示符」里挂起保护，"
-               "然后重试：\n    manage-bde -protectors -disable X: -rebootcount 1\n"
-               "（X 换成目标盘符。还原会覆盖该盘数据，之后不需要恢复保护。）";
-    if (has("空间不足"))
-        return "\n\n建议：换一个更大的目标分区，或改用内容更小的镜像。";
-    if (has("写入未完成") || has("不完整"))
-        return "\n\n建议：该镜像上次没有写完（备份中途中断过）。请重新做一次备份。";
-    if (rc == 88 || has("concurrent") || has("正在被修改"))
-        return "\n\n建议：备份源里有文件在持续变化（数据库/下载/云同步目录）。"
-               "先停掉这些程序，或把它们所在目录加入排除清单后再备份。";
-    if (has("镜像在目标分区内"))
-        return "\n\n建议：把镜像文件移到别的分区 —— 它不能放在会被格式化的目标分区上。";
-    if (has("管理员"))
-        return "\n\n建议：以管理员身份运行（本程序要读写分区与引导）。";
-    if (rc == 6)
-        return "\n\n（任务已被用户取消，没有改动目标分区。）";
-    return {};
-}
+// 失败后的"下一步"（P8）已迁到 advice.cpp —— 见 advice.h。原因（PLAN §14 M1）：
+// 本文件里旧版靠「中文关键词匹配中文消息」，消息一被翻译就全部失配 → 静默不给建议。
+// 下面这行 = 把老签名**声明为已删除**：谁在本翻译单元里再按旧签名调用，编译期就报错。
+std::string ErrorAdvice(int rc, const std::string& err) = delete;
 
 // 历史记录（P7）：往 <exeDir>\logs\history.jsonl 追加一行（JSON Lines，外部/AI 好读）。
 // 记"什么时候做了什么"：备份完成、就地还原、暂存还原（暂存的实际结果在救援层日志里）。
@@ -356,13 +342,14 @@ void AppendHistory(const char* action, const std::wstring& image,
 }
 
 int RunBackup(const BackupRequest& req, ProgressFn progress,
-              std::string& err) {
+              std::string& err, ErrAdvice* adv) {
+    if (adv) *adv = ADV_NONE;
     if (req.dest.empty()) {
-        err = "缺少目标镜像路径";
+        err = Tr("缺少目标镜像路径");
         return 1;
     }
     if (!AcquireOpLock()) {
-        err = "已有备份/还原实例在运行";
+        err = Tr("已有备份/还原实例在运行");
         return 1;
     }
     ProgressUpdate("backup", 0, "start");
@@ -382,6 +369,7 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
     if (snapshot && !vss_guard.Ensure(errw)) {
         ReleaseOpLock();
         ProgressDone("backup", "failed");
+        if (adv) *adv = ADV_VSS;  // 消息自带处理步骤 → ErrorAdvice 不再追加
         err = W2U(errw);  // 多行中文处理指引（GUI MessageBox / CLI 原样打印）
         LogError(err);
         return 1;
@@ -399,7 +387,7 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
     if (!engine.ok()) {
         ReleaseOpLock();
         ProgressDone("backup", "failed");
-        err = "wimlib 初始化失败";
+        err = Tr("wimlib 初始化失败");
         return 1;
     }
     std::wstring cfg = EnsureExclusionConfig(req.source);
@@ -418,7 +406,7 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
         ReleaseOpLock();
         ProgressDone("backup", "failed");
         char buf[128];
-        snprintf(buf, sizeof(buf), "备份失败(rc=%d): ", rc);
+        snprintf(buf, sizeof(buf), Tr("备份失败(rc=%d): "), rc);
         err = buf;
         err += W2U(WimEngine::ErrorString(rc));
         LogError(err);
@@ -431,7 +419,7 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
             ReleaseOpLock();
             ProgressDone("backup", "verify-failed");
             char buf[128];
-            snprintf(buf, sizeof(buf), "备份已写出但校验失败(rc=%d): ", vrc);
+            snprintf(buf, sizeof(buf), Tr("备份已写出但校验失败(rc=%d): "), vrc);
             err = buf;
             err += W2U(WimEngine::ErrorString(vrc));
             LogError(err);
@@ -447,7 +435,8 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
         if (probe.Probe(req.dest, why) != 0) {
             ReleaseOpLock();
             ProgressDone("backup", "failed");
-            err = "备份镜像不可用（写入未完成）：";
+            if (adv) *adv = ADV_INCOMPLETE;
+            err = Tr("备份镜像不可用（写入未完成）：");
             err += W2U(why);
             LogError(err);
             return 1;
@@ -461,9 +450,10 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
 }
 
 int StageRestore(const RestoreRequest& req, std::string& err,
-                 bool* needReboot, ProgressFn progress) {
+                 bool* needReboot, ProgressFn progress, ErrAdvice* adv) {
+    if (adv) *adv = ADV_NONE;
     if (req.image.empty()) {
-        err = "缺少镜像路径";
+        err = Tr("缺少镜像路径");
         return 1;
     }
     // 0) 镜像可用性检查：拒绝"上次没写完/不完整"的镜像（否则 Linux 侧 apply
@@ -472,7 +462,8 @@ int StageRestore(const RestoreRequest& req, std::string& err,
         WimEngine probe;
         std::wstring why;
         if (probe.Probe(req.image, why) != 0) {
-            err = "镜像不可用，请重新备份：";
+            if (adv) *adv = ADV_INCOMPLETE;
+            err = Tr("镜像不可用，请重新备份：");
             err += W2U(why);
             LogError(err);
             return 5;
@@ -495,7 +486,7 @@ int StageRestore(const RestoreRequest& req, std::string& err,
     }
     if (!found) {
         char buf[96];
-        snprintf(buf, sizeof(buf), "找不到目标分区 磁盘%d 分区%d", req.disk,
+        snprintf(buf, sizeof(buf), Tr("找不到目标分区 磁盘%d 分区%d"), req.disk,
                  req.part);
         err = buf;
         return 1;
@@ -511,7 +502,8 @@ int StageRestore(const RestoreRequest& req, std::string& err,
         if (tgtLetter && imagePath.size() > 1 && imagePath[1] == L':' &&
             SameDrive(imagePath[0], tgtLetter)) {
             if (keep.empty()) {
-                err = "镜像在目标分区内，且找不到可存放它的数据盘；请先手动移走镜像";
+                if (adv) *adv = ADV_IMAGE_IN_TARGET;
+                err = Tr("镜像在目标分区内，且找不到可存放它的数据盘；请先手动移走镜像");
                 return 4;
             }
             CreateDirectoryW(keep.c_str(), nullptr);
@@ -522,7 +514,8 @@ int StageRestore(const RestoreRequest& req, std::string& err,
             LogInfo("image on target partition; moving to " + W2U(dst));
             if (!MoveFileExW(imagePath.c_str(), dst.c_str(),
                              MOVEFILE_COPY_ALLOWED | MOVEFILE_REPLACE_EXISTING)) {
-                err = "镜像在目标分区内，搬到数据盘失败（空间不足？）；请先手动移走镜像";
+                err = Tr("镜像在目标分区内，搬到数据盘失败（空间不足？）；请先手动移走镜像");
+                if (adv) *adv = ADV_SPACE;  // 旧关键词版命中的也是"空间不足"（保留原建议）
                 return 4;
             }
             imagePath = dst;
@@ -538,7 +531,7 @@ int StageRestore(const RestoreRequest& req, std::string& err,
         }
     }
     // 2) 安全门禁（fail-closed，§11）
-    std::string reason = CheckRestoreTarget(target, imagePath);
+    std::string reason = CheckRestoreTarget(target, imagePath, adv);
     if (!reason.empty()) {
         err = reason;
         return 4;
@@ -557,12 +550,13 @@ int StageRestore(const RestoreRequest& req, std::string& err,
         std::string spErr;
         if (CheckRestoreSpace(imagePath, req.index, target, spErr) == 1) {
             err = spErr;
+            if (adv) *adv = ADV_SPACE;
             LogError("space precheck failed: " + spErr);
             return 1;
         }
     }
     if (!AcquireOpLock()) {
-        err = "已有备份/还原实例在运行";
+        err = Tr("已有备份/还原实例在运行");
         return 1;
     }
     ProgressUpdate("restore", 0, "start");
@@ -590,8 +584,7 @@ int StageRestore(const RestoreRequest& req, std::string& err,
         //（就地还原不在此列 —— 那是 Windows 自己读，网络没问题）。
         if (IsNetworkPath(imagePath)) {
             err =
-                "镜像在网络路径上（UNC 或映射网络驱动器）。还原系统盘需要重启进救援层，"
-                "而救援层无法访问网络 —— 请先把镜像复制到**本地分区**（如 D:\\）再还原。";
+                Tr("镜像在网络路径上（UNC 或映射网络驱动器）。还原系统盘需要重启进救援层，" "而救援层无法访问网络 —— 请先把镜像复制到**本地分区**（如 D:\\）再还原。");
             LogError("staged restore rejected: image on network path");
             AppendHistory("restore-rejected", req.image, imagePath, 0,
                           "image on network path");
@@ -667,7 +660,7 @@ int StageRestore(const RestoreRequest& req, std::string& err,
     if (target.letter.empty()) {
         ReleaseOpLock();
         ProgressDone("restore", "failed");
-        err = "目标分区无盘符，无法写恢复日志（Linux 侧将无法定位目标）";
+        err = Tr("目标分区无盘符，无法写恢复日志（Linux 侧将无法定位目标）");
         LogError(err);
         return 1;
     }
@@ -675,7 +668,8 @@ int StageRestore(const RestoreRequest& req, std::string& err,
     if (!WriteRestoreLog(target.letter[0], t, tlog)) {
         ReleaseOpLock();
         ProgressDone("restore", "failed");
-        err = "写恢复日志失败（需管理员权限写 " + W2U(target.letter) + ":\\）";
+        if (adv) *adv = ADV_ADMIN;
+        err = Tr("写恢复日志失败（需管理员权限写 ") + W2U(target.letter) + Tr(":\\）");
         LogError(err + " / " + tlog);
         return 1;
     }
@@ -722,9 +716,7 @@ int StageRestore(const RestoreRequest& req, std::string& err,
                 // （走 bootapp 链不需要注册，见 PIT-063。）
                 ReleaseOpLock();
                 ProgressDone("restore", "failed");
-                err = "本机开启了 Secure Boot，但还没注册启动密钥：请先点"
-                      "「安装启动还原」，重启一次，在蓝底界面选 "
-                      "Enroll key -> 选 zj-mok.cer -> 注册，之后回来再还原";
+                err = Tr("本机开启了 Secure Boot，但还没注册启动密钥：请先点" "「安装启动还原」，重启一次，在蓝底界面选 " "Enroll key -> 选 zj-mok.cer -> 注册，之后回来再还原");
                 LogError(err);
                 return 1;
             }
@@ -732,7 +724,7 @@ int StageRestore(const RestoreRequest& req, std::string& err,
             if (!FindEspPartition(esp)) {
                 ReleaseOpLock();
                 ProgressDone("restore", "failed");
-                err = "UEFI 机器未找到 ESP 分区，无法部署引导层";
+                err = Tr("UEFI 机器未找到 ESP 分区，无法部署引导层");
                 LogError(err);
                 return 1;
             }
@@ -740,7 +732,7 @@ int StageRestore(const RestoreRequest& req, std::string& err,
             if (espRoot.empty()) {
                 ReleaseOpLock();
                 ProgressDone("restore", "failed");
-                err = "无法给 ESP 分配盘符（mountvol X: /s 失败）";
+                err = Tr("无法给 ESP 分配盘符（mountvol X: /s 失败）");
                 LogError(err + " / " + blog);
                 return 1;
             }
@@ -763,7 +755,7 @@ int StageRestore(const RestoreRequest& req, std::string& err,
             if (!ok) {
                 ReleaseOpLock();
                 ProgressDone("restore", "failed");
-                err = "安装 UEFI 引导层失败: " + blog;
+                err = Tr("安装 UEFI 引导层失败: ") + blog;
                 LogError(err);
                 return 1;
             }
@@ -775,7 +767,7 @@ int StageRestore(const RestoreRequest& req, std::string& err,
             if (!InstallBootLayer(deployDrive, exeDir, blog)) {
                 ReleaseOpLock();
                 ProgressDone("restore", "failed");
-                err = "安装引导层失败: " + blog;
+                err = Tr("安装引导层失败: ") + blog;
                 LogError(err);
                 return 1;
             }
@@ -798,14 +790,14 @@ int StageRestore(const RestoreRequest& req, std::string& err,
             if (!SetUefiBootNext(blog)) {
                 ReleaseOpLock();
                 ProgressDone("restore", "failed");
-                err = "设置固件单次启动失败: " + blog;
+                err = Tr("设置固件单次启动失败: ") + blog;
                 LogError(err);
                 return 1;
             }
         } else if (!IsUefiFirmware() && !BcdSetBootsequence(RecoveryGuid())) {
             ReleaseOpLock();
             ProgressDone("restore", "failed");
-            err = "设置单次启动失败";
+            err = Tr("设置单次启动失败");
             LogError(err);
             return 1;
         }

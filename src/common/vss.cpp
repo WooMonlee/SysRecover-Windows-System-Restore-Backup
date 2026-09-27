@@ -1,5 +1,7 @@
+#include "common/i18n.h"
 #include "vss.h"
 #include <windows.h>
+using sysrecover::Tr;
 #include "logger.h"
 
 using sysrecover::LogError;
@@ -37,23 +39,23 @@ bool WaitState(SC_HANDLE h, DWORD want, DWORD timeout_ms) {
 }
 
 std::wstring FixHint(const SvcSpec& s) {
-    std::wstring t = L"处理（任选其一，在管理员窗口操作）：\r\n";
-    t += L"  1) Win+R 输入 services.msc → 找到「";
+    std::wstring t = Tr(L"处理（任选其一，在管理员窗口操作）：\r\n");
+    t += Tr(L"  1) Win+R 输入 services.msc → 找到「");
     t += s.disp;
-    t += L"」→ 启动类型改为「手动」→ 点「启动」\r\n";
-    t += L"  2) 命令行执行：sc config ";
+    t += Tr(L"」→ 启动类型改为「手动」→ 点「启动」\r\n");
+    t += Tr(L"  2) 命令行执行：sc config ");
     t += s.name;
     t += L" start= demand && sc start ";
     t += s.name;
     return t;
 }
 
-std::wstring Head() { return L"备份前检查失败："; }
+std::wstring Head() { return Tr(L"备份前检查失败："); }
 
 const SvcSpec* SpecList(bool* a, bool* b) {
     static SvcSpec k[2];
-    k[0] = {L"VSS", L"卷影复制服务(VSS)", L"Volume Shadow Copy", "vss", a};
-    k[1] = {L"swprv", L"影子副本提供程序(swprv)",
+    k[0] = {L"VSS", Tr(L"卷影复制服务(VSS)"), L"Volume Shadow Copy", "vss", a};
+    k[1] = {L"swprv", Tr(L"影子副本提供程序(swprv)"),
             L"Microsoft Software Shadow Copy Provider", "swprv", b};
     return k;
 }
@@ -67,17 +69,15 @@ bool BackupGuard::Ensure(std::wstring& err) {
     //    正常路径 selfarch 已自举成 x64；走到这里说明 x64\SysRecover.exe 缺失/没起来。
     BOOL wow = FALSE;
     if (IsWow64Process(GetCurrentProcess(), &wow) && wow) {
-        err = Head() + L"当前以 32 位程序运行在 64 位 Windows 上。\r\n"
-              L"wimlib 的卷影快照不支持 WOW64 模式，热备份必然失败（rc=89）。\r\n"
-              L"请改用安装目录 x64\\ 下的 64 位程序后重试。";
+        err = Head() + Tr(L"当前以 32 位程序运行在 64 位 Windows 上。\r\n" L"wimlib 的卷影快照不支持 WOW64 模式，热备份必然失败（rc=89）。\r\n" L"请改用安装目录 x64\\ 下的 64 位程序后重试。");
         LogError("vss precheck: 32-bit process on 64-bit OS (WoW64), snapshot unsupported");
         return false;
     }
 
     SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
     if (!scm) {
-        err = Head() + L"无法打开服务控制管理器（错误 " +
-              std::to_wstring(GetLastError()) + L"）。";
+        err = Head() + Tr(L"无法打开服务控制管理器（错误 ") +
+              std::to_wstring(GetLastError()) + Tr(L"）。");
         return false;
     }
 
@@ -90,20 +90,18 @@ bool BackupGuard::Ensure(std::wstring& err) {
         if (!h) {
             DWORD e = GetLastError();
             if (e == ERROR_SERVICE_DOES_NOT_EXIST)
-                err = Head() + L"系统缺少服务「" + s.cn +
-                      L"」（服务不存在），无法创建卷影快照。\r\n"
-                      L"（精简/封装版 Windows 可能删除了它；不修复则备份必报 "
-                      L"rc=89: Unable to create a filesystem snapshot。）";
+                err = Head() + Tr(L"系统缺少服务「") + s.cn +
+                      Tr(L"」（服务不存在），无法创建卷影快照。\r\n" L"（精简/封装版 Windows 可能删除了它；不修复则备份必报 " L"rc=89: Unable to create a filesystem snapshot。）");
             else
-                err = Head() + L"无法打开服务「" + s.cn + L"」（错误 " +
-                      std::to_wstring(e) + L"）。";
+                err = Head() + Tr(L"无法打开服务「") + s.cn + Tr(L"」（错误 ") +
+                      std::to_wstring(e) + Tr(L"）。");
             ok = false;
             break;
         }
         DWORD st = 0;
         if (!QueryState(h, &st)) {
-            err = Head() + L"读取服务「" + s.cn + L"」状态失败（错误 " +
-                  std::to_wstring(GetLastError()) + L"）。";
+            err = Head() + Tr(L"读取服务「") + s.cn + Tr(L"」状态失败（错误 ") +
+                  std::to_wstring(GetLastError()) + Tr(L"）。");
             CloseServiceHandle(h);
             ok = false;
             break;
@@ -115,22 +113,20 @@ bool BackupGuard::Ensure(std::wstring& err) {
                 DWORD e = GetLastError();
                 if (e != ERROR_SERVICE_ALREADY_RUNNING) {
                     if (e == ERROR_SERVICE_DISABLED)
-                        err = Head() + L"服务「" + s.cn +
-                              L"」已被禁用，无法创建卷影快照。\r\n"
-                              L"（热备份必需；不修复则备份必报 "
-                              L"rc=89: Unable to create a filesystem snapshot。）\r\n" +
+                        err = Head() + Tr(L"服务「") + s.cn +
+                              Tr(L"」已被禁用，无法创建卷影快照。\r\n" L"（热备份必需；不修复则备份必报 " L"rc=89: Unable to create a filesystem snapshot。）\r\n") +
                               FixHint(s);
                     else
-                        err = Head() + L"启动服务「" + s.cn + L"」失败（错误 " +
-                              std::to_wstring(e) + L"）。\r\n" + FixHint(s);
+                        err = Head() + Tr(L"启动服务「") + s.cn + Tr(L"」失败（错误 ") +
+                              std::to_wstring(e) + Tr(L"）。\r\n") + FixHint(s);
                     CloseServiceHandle(h);
                     ok = false;
                     break;
                 }
             }
             if (!WaitState(h, SERVICE_RUNNING, 30000)) {
-                err = Head() + L"服务「" + s.cn +
-                      L"」启动超时（30 秒未进入运行状态），可能被安全软件或策略拦截。\r\n" +
+                err = Head() + Tr(L"服务「") + s.cn +
+                      Tr(L"」启动超时（30 秒未进入运行状态），可能被安全软件或策略拦截。\r\n") +
                       FixHint(s);
                 CloseServiceHandle(h);
                 ok = false;

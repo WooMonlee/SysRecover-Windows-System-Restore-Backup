@@ -2,6 +2,7 @@
 // 依据：UEFI 规范 §3 Boot Manager（Boot#### 的 OptionalData 作为该镜像的
 // LoadOptions 传递）；内核 efi-stub 的 efi_convert_cmdline() 按 efi_char16_t*
 // 读取，故命令行必须是 UTF-16LE。Rufus 的 EFICreateNewEntry 为同款实现。
+#include "../common/i18n.h"
 #include "uefi.h"
 
 #include <windows.h>
@@ -485,8 +486,7 @@ bool InstallUefiBootEntry(const std::wstring& espRoot,
         log += line;
         if (freeBytes.QuadPart < need + kMargin) {
             snprintf(line, sizeof(line),
-                     "ESP 空间不足：需要 %.1fMB，可用 %.1fMB。请缩小 ESP 上的"
-                     "其它文件，或换用更小的 initramfs\n",
+                     Tr("ESP 空间不足：需要 %.1fMB，可用 %.1fMB。请缩小 ESP 上的" "其它文件，或换用更小的 initramfs\n"),
                      need / 1048576.0, freeBytes.QuadPart / 1048576.0);
             log += line;
             return false;
@@ -619,11 +619,11 @@ bool InstallUefiBootEntry(const std::wstring& espRoot,
 bool UefiBootEntryExists(std::string& detail) {
     int num = FindOurEntry();
     if (num < 0) {
-        detail = "未安装（固件启动项不存在）";
+        detail = Tr("未安装（固件启动项不存在）");
         return false;
     }
     char line[64];
-    snprintf(line, sizeof(line), "已安装 Boot%04X", num);
+    snprintf(line, sizeof(line), Tr("已安装 Boot%04X"), num);
     detail = line;
     return true;
 }

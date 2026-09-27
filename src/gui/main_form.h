@@ -17,6 +17,7 @@
 #include "StdAfx.h"
 
 #include "common/sysinfo.h"  // SystemDescription（备份信息/默认文件名）
+#include "app/advice.h"       // ErrAdvice（worker 建议码回传；头文件零依赖，可单独 include）
 
 using namespace DuiLib;
 
@@ -98,6 +99,7 @@ private:
     std::string       m_workerCompress; // StartBackupAsync 用：压缩方式
     std::wstring      m_workerName;     // StartBackupAsync 用：子镜像名
     std::string       last_err_;        // worker 错误回传
+    sysrecover::ErrAdvice last_adv_ = sysrecover::ADV_NONE;  // worker 建议码回传
     // 进度节流（100ms）
     std::chrono::steady_clock::time_point m_lastProgressPost;
     std::chrono::steady_clock::time_point m_start{};

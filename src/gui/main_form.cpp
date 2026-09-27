@@ -1,5 +1,6 @@
 // 主窗口实现。Phase 5：CLI 逻辑经 app/ops 共享层桥接到 GUI。
 // 注意：所有 C++ 标准头已通过 main_form.h 在 StdAfx.h 之前 include（PIT-012）。
+#include "common/i18n.h"
 #include "main_form.h"
 
 #include <shobjidl.h>
@@ -134,7 +135,13 @@ CMainForm::~CMainForm() {
 }
 
 CDuiString CMainForm::GetSkinFolder() { return _T("skin\\"); }
-CDuiString CMainForm::GetSkinFile()  { return _T("main.xml"); }
+CDuiString CMainForm::GetSkinFile()  {
+    // 交给 builder 的是**已按词典翻译的整段 XML**（builder 认 "<" 开头的字符串，
+    // 见 UIDlgBuilder.cpp）；读不到/无译文时回退原文件名，行为与改动前一致。
+    std::wstring xml = sysrecover::LoadSkinXml(L"main.xml");
+    if (!xml.empty()) return CDuiString(xml.c_str());
+    return _T("main.xml");
+}
 LPCTSTR CMainForm::GetWindowClassName() const { return _T("SysRecoverUI"); }
 
 void CMainForm::InitWindow() {
@@ -209,7 +216,7 @@ LRESULT CMainForm::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
     }
     if (msg == WM_TIMER && wParam == 1) {
         if (m_busy)
-            SetStatus(m_lastStage + L"    已用 " + ElapsedText());
+            SetStatus(m_lastStage + Tr(L"    已用 ") + ElapsedText());
         return 0;
     }
     if (msg == WM_PROGRESS_UPDATE) {
@@ -279,17 +286,17 @@ CControlUI* CMainForm::CreateControl(LPCTSTR pstrClass) {
 
 // wimlib 阶段名 → 中文（进度条左侧显示，用户要求别出现英文 "write"）
 static std::wstring StageCn(const std::wstring& s) {
-    if (s.compare(0, 5, L"write") == 0) return L"写入";
-    if (s.compare(0, 7, L"extract") == 0) return L"写入";
+    if (s.compare(0, 5, L"write") == 0) return Tr(L"写入");
+    if (s.compare(0, 7, L"extract") == 0) return Tr(L"写入");
     if (s.compare(0, 4, L"scan") == 0)
-        return s.size() > 5 ? L"扫描 " + s.substr(5) : L"扫描";
+        return s.size() > 5 ? Tr(L"扫描 ") + s.substr(5) : Tr(L"扫描");
     return s;
 }
 
 void CMainForm::OnProgressUpdate(int pct, const std::wstring& stage) {
     SetProgress(pct);
     m_lastStage = StageCn(stage);
-    SetStatus(m_lastStage + L"    已用 " + ElapsedText());
+    SetStatus(m_lastStage + Tr(L"    已用 ") + ElapsedText());
     CControlUI* pPct = m_PaintManager.FindControl(_T("PercentText"));
     if (pPct) {
         wchar_t b[16];
@@ -327,38 +334,39 @@ void CMainForm::OnTaskComplete(int rc) {
     UpdateMainAction();
     if (rc == 4) {
         SetStatus(U2W(last_err_));
-        MessageBoxW(m_hWnd, U2W(last_err_).c_str(), L"安全门禁拒绝", MB_OK | MB_ICONERROR);
+        MessageBoxW(m_hWnd, U2W(last_err_).c_str(), Tr(L"安全门禁拒绝"), MB_OK | MB_ICONERROR);
     } else if (rc != 0) {
-        // P8：把"下一步怎么办"一起给用户（空间不足/BitLocker/坏镜像等都有对应建议）
-        std::string advice = sysrecover::ErrorAdvice(rc, last_err_);
+        // P8：把"下一步怎么办"一起给用户（空间不足/坏镜像等都有对应建议）。
+        // M1（PLAN §14）：按**建议码**取词，不再匹配消息文本（消息一翻译关键词就失配）。
+        std::string advice = sysrecover::ErrorAdvice(rc, last_adv_);
         std::wstring box = U2W(last_err_) + U2W(advice);
         SetStatus(U2W(last_err_));
         MessageBoxW(m_hWnd, box.c_str(),
-                    m_backupMode ? L"备份失败" : L"暂存失败", MB_OK | MB_ICONERROR);
+                    m_backupMode ? Tr(L"备份失败") : Tr(L"暂存失败"), MB_OK | MB_ICONERROR);
     } else if (m_backupMode) {
         m_imageOk = true;  // 产物就是刚写的有效镜像 → 切到还原页主按钮即可用
-        SetStatus(L"备份完成（用时 " + ElapsedText() + L"）");
+        SetStatus(Tr(L"备份完成（用时 ") + ElapsedText() + Tr(L"）"));
         if (!IsSilent())
             MessageBoxW(m_hWnd,
-                        (L"系统备份已完成。\n用时 " + ElapsedText() + L"。")
+                        (Tr(L"系统备份已完成。\n用时 ") + ElapsedText() + Tr(L"。"))
                             .c_str(),
-                        L"备份成功", MB_OK | MB_ICONINFORMATION);
+                        Tr(L"备份成功"), MB_OK | MB_ICONINFORMATION);
     } else if (m_needReboot) {
         // 需要重启（还原运行中的系统盘）：静默或用户已选「退出并重启」→ 直接重启
-        SetStatus(L"暂存完成（用时 " + ElapsedText() + L"），正在重启...");
+        SetStatus(Tr(L"暂存完成（用时 ") + ElapsedText() + Tr(L"），正在重启..."));
         RebootNow();
     } else {
         // 就地还原完成（PE 里 / 还原到非系统盘）：不重启，直接报完成。
         // ⚠️ 文案（用户 2026-09-23 反馈）：原来写"无需重启"，用户会理解成
         // "现在就能用还原好的系统了" ✗ —— 其实必须**重启**才能进入还原的系统
         // （我们只是没有自动重启而已）。所以明确写"重启后即可进入"。
-        SetStatus(L"还原完成（用时 " + ElapsedText() + L"）");
+        SetStatus(Tr(L"还原完成（用时 ") + ElapsedText() + Tr(L"）"));
         if (!IsSilent())
             MessageBoxW(m_hWnd,
-                        (L"系统还原已完成，用时 " + ElapsedText() +
-                         L"。\n重启后即可进入恢复的系统。")
+                        (Tr(L"系统还原已完成，用时 ") + ElapsedText() +
+                         Tr(L"。\n重启后即可进入恢复的系统。"))
                             .c_str(),
-                        L"还原成功", MB_OK | MB_ICONINFORMATION);
+                        Tr(L"还原成功"), MB_OK | MB_ICONINFORMATION);
     }
 }
 
@@ -373,12 +381,10 @@ void CMainForm::OnTaskComplete(int rc) {
 bool CMainForm::AskBusyClose() {
     if (!m_busy)
         return true;
-    std::wstring msg = L"任务正在执行中（已用 " + ElapsedText() + L"）。\n"
-                       L"选择「继续等待」：任务照常进行，不受影响。\n"
-                       L"选择「终止并退出」：立即中止任务，并删除未写完的镜像文件。";
+    std::wstring msg = Tr(L"任务正在执行中（已用 ") + ElapsedText() + Tr(L"）。\n" L"选择「继续等待」：任务照常进行，不受影响。\n" L"选择「终止并退出」：立即中止任务，并删除未写完的镜像文件。");
     // 默认项 = 左按钮 =「继续等待」：回车/ESC 都落在安全项上，防误取消。
-    int r = CConfirmDlg::Ask2(m_hWnd, L"任务执行中", msg, L"继续等待",
-                              L"终止并退出", /*defaultIsRight=*/false);
+    int r = CConfirmDlg::Ask2(m_hWnd, Tr(L"任务执行中"), msg, Tr(L"继续等待"),
+                              Tr(L"终止并退出"), /*defaultIsRight=*/false);
     return r != 0;  // 0 = 继续等待
 }
 
@@ -391,7 +397,7 @@ bool CMainForm::AskBitLockerWarning(const std::vector<std::wstring>& vols) {
     std::wstring list;
     for (size_t i = 0; i < vols.size(); ++i) {
         if (i)
-            list += L"、";
+            list += Tr(L"、");
         list += vols[i];
     }
     LogInfo("BitLocker volumes detected: " + W2U(list));
@@ -399,10 +405,8 @@ bool CMainForm::AskBitLockerWarning(const std::vector<std::wstring>& vols) {
         return true;
     // 文案按用户 2026-09-23 的反馈断行（原第 2 行太长被右边裁掉）：
     // 在"这些卷的数据在还原后"处加逗号换行，末尾挪到下一行。
-    std::wstring msg = L"检测到本机有 BitLocker 加密的卷：" + list + L"\n" +
-                       L"如果你没有对应的密码 / 恢复密钥，这些卷的数据在还原后，\n" +
-                       L"将无法恢复。是否继续还原？";
-    return CConfirmDlg::Ask2(m_hWnd, L"BitLocker 提醒", msg, L"退出", L"继续",
+    std::wstring msg = Tr(L"检测到本机有 BitLocker 加密的卷：") + list + Tr(L"\n" L"如果你没有对应的密码 / 恢复密钥，这些卷的数据在还原后，\n" L"将无法恢复。是否继续还原？");
+    return CConfirmDlg::Ask2(m_hWnd, Tr(L"BitLocker 提醒"), msg, Tr(L"退出"), Tr(L"继续"),
                              /*defaultIsRight=*/false) == 1;
 }
 
@@ -416,8 +420,8 @@ bool CMainForm::AskDiskHealthWarning(int diskIndex) {
     LogInfo("target disk health warning: " + hw);
     if (IsSilent())
         return true;
-    std::wstring msg = U2W(hw) + L"\n\n是否仍要继续还原？";
-    return CConfirmDlg::Ask2(m_hWnd, L"磁盘健康警告", msg, L"取消", L"仍然继续",
+    std::wstring msg = U2W(hw) + Tr(L"\n\n是否仍要继续还原？");
+    return CConfirmDlg::Ask2(m_hWnd, Tr(L"磁盘健康警告"), msg, Tr(L"取消"), Tr(L"仍然继续"),
                              /*defaultIsRight=*/false) == 1;
 }
 
@@ -510,7 +514,7 @@ void CMainForm::Notify(TNotifyUI& msg) {
             // grldr/grldr.mbr/menu.lst/ZJRESTORE（用户要求：要清就清干净）
             std::string log;
             bool ok = RemoveBootLayer(log);
-            SetStatus(ok ? L"已清除引导项与相关文件" : L"清除引导项未完全成功");
+            SetStatus(ok ? Tr(L"已清除引导项与相关文件") : Tr(L"清除引导项未完全成功"));
             LogInfo(std::string("GUI remove boot layer: ") + log);
         } else if (name == _T("BootMenuBtn")) {
             ToggleBootMenu();
@@ -565,7 +569,7 @@ void CMainForm::RefreshBootMenuBtn() {
     bool on = BootMenuInstalled(detail);
     CControlUI* p = m_PaintManager.FindControl(_T("BootMenuBtn"));
     if (p) {
-        p->SetText(on ? _T("删除启动还原") : _T("安装启动还原"));
+        p->SetText(on ? Tr(L"删除启动还原") : Tr(L"安装启动还原"));
         p->Invalidate();
     }
 }
@@ -574,38 +578,33 @@ void CMainForm::ToggleBootMenu() {
     std::string detail, log;
     if (BootMenuInstalled(detail)) {
         bool ok = RemoveBootLayer(log);
-        SetStatus(ok ? L"已删除启动还原" : L"删除启动还原未完全成功");
+        SetStatus(ok ? Tr(L"已删除启动还原") : Tr(L"删除启动还原未完全成功"));
     } else if (IsUefiFirmware()) {
         if (IsSecureBootEnabled() && !IsMokEnrolled(ExeDir())) {
             MessageBoxW(m_hWnd,
-                        L"本机开启了 Secure Boot（安全启动）。\n\n"
-                        L"我们的救援内核没有微软签名，需要借开源的 shim 引导链：\n"
-                        L"装好后请**重启一次**，会出现蓝底的 MokManager 界面，\n"
-                        L"选择 Enroll key（或 Enroll key from disk），\n"
-                        L"选中 ZJRESTORE 里的 zj-mok.cer，确认并重启。\n\n"
-                        L"这一次性注册完成后，以后每次还原都能正常进救援。",
-                        L"九转还原", MB_OK | MB_ICONINFORMATION);
+                        Tr(L"本机开启了 Secure Boot（安全启动）。\n\n" L"我们的救援内核没有微软签名，需要借开源的 shim 引导链：\n" L"装好后请**重启一次**，会出现蓝底的 MokManager 界面，\n" L"选择 Enroll key（或 Enroll key from disk），\n" L"选中 ZJRESTORE 里的 zj-mok.cer，确认并重启。\n\n" L"这一次性注册完成后，以后每次还原都能正常进救援。"),
+                        Tr(L"九转还原"), MB_OK | MB_ICONINFORMATION);
         }
         PartitionInfo esp;
         if (!FindEspPartition(esp)) {
-            MessageBoxW(m_hWnd, L"未找到 ESP 分区，无法安装启动还原。",
-                        L"九转还原", MB_OK | MB_ICONWARNING);
+            MessageBoxW(m_hWnd, Tr(L"未找到 ESP 分区，无法安装启动还原。"),
+                        Tr(L"九转还原"), MB_OK | MB_ICONWARNING);
             return;
         }
         std::wstring espRoot = MountEsp(log);
         if (espRoot.empty()) {
-            MessageBoxW(m_hWnd, L"无法给 ESP 分区分配盘符（mountvol X: /s 失败）。",
-                        L"九转还原", MB_OK | MB_ICONERROR);
+            MessageBoxW(m_hWnd, Tr(L"无法给 ESP 分区分配盘符（mountvol X: /s 失败）。"),
+                        Tr(L"九转还原"), MB_OK | MB_ICONERROR);
             LogInfo(std::string("GUI install boot menu: ") + log);
             return;
         }
         bool ok = InstallUefiBootEntry(espRoot, ExeDir(), log);
         UnmountEsp(espRoot, log);
-        SetStatus(ok ? L"启动还原已安装（开机启动菜单可选）"
-                     : L"安装启动还原失败");
+        SetStatus(ok ? Tr(L"启动还原已安装（开机启动菜单可选）")
+                     : Tr(L"安装启动还原失败"));
     } else {
         bool ok = InstallBootLayer(SystemDrive(), ExeDir(), log);
-        SetStatus(ok ? L"启动还原已安装" : L"安装启动还原失败");
+        SetStatus(ok ? Tr(L"启动还原已安装") : Tr(L"安装启动还原失败"));
     }
     LogInfo(std::string("GUI boot menu toggle: ") + log);
     RefreshBootMenuBtn();
@@ -638,14 +637,14 @@ void CMainForm::PopulatePartitions() {
                             ? part.sizeBytes - part.freeBytes : 0;
             std::wstring cap  = FormatGb(used) + L" / " + FormatGb(part.sizeBytes);
             std::wstring freeTxt = part.freeBytes > 0
-                                   ? (L"可用 " + FormatGb(part.freeBytes))
-                                   : L"系统保留";
+                                   ? (Tr(L"可用 ") + FormatGb(part.freeBytes))
+                                   : Tr(L"系统保留");
             int pct = part.sizeBytes
                       ? (int)(used * 100 / part.sizeBytes) : 0;
-            item->SetPart(part.letter.empty() ? L"—" : part.letter.c_str(),
+            item->SetPart(part.letter.empty() ? Tr(L"—") : part.letter.c_str(),
                           U2W(StyleName(disk.style)).c_str(),
                           part.fs.c_str(), part.isSystem,
-                          disk.model.empty() ? L"本地磁盘" : disk.model.c_str(),
+                          disk.model.empty() ? Tr(L"本地磁盘") : disk.model.c_str(),
                           part.label.c_str(), partNo,
                           cap.c_str(), freeTxt.c_str(), pct);
             pCombo->Add(item);
@@ -667,13 +666,13 @@ void CMainForm::BrowseWimFile() {
     IFileOpenDialog* pDlg = nullptr;
     HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, nullptr,
                                   CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pDlg));
-    if (FAILED(hr) || !pDlg) { SetStatus(L"文件对话框创建失败"); return; }
+    if (FAILED(hr) || !pDlg) { SetStatus(Tr(L"文件对话框创建失败")); return; }
     COMDLG_FILTERSPEC filters[] = {
-        {L"WIM/ESD 镜像", L"*.wim;*.esd"},
-        {L"所有文件", L"*.*"},
+        {Tr(L"WIM/ESD 镜像"), L"*.wim;*.esd"},
+        {Tr(L"所有文件"), L"*.*"},
     };
     pDlg->SetFileTypes(2, filters);
-    pDlg->SetTitle(L"选择系统镜像文件");
+    pDlg->SetTitle(Tr(L"选择系统镜像文件"));
     if (SUCCEEDED(pDlg->Show(m_hWnd))) {
         IShellItem* pItem = nullptr;
         if (SUCCEEDED(pDlg->GetResult(&pItem))) {
@@ -697,13 +696,13 @@ void CMainForm::BrowseSaveFile() {
     IFileSaveDialog* pDlg = nullptr;
     HRESULT hr = CoCreateInstance(CLSID_FileSaveDialog, nullptr,
                                   CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pDlg));
-    if (FAILED(hr) || !pDlg) { SetStatus(L"文件对话框创建失败"); return; }
+    if (FAILED(hr) || !pDlg) { SetStatus(Tr(L"文件对话框创建失败")); return; }
     COMDLG_FILTERSPEC filters[] = {
-        {L"WIM 镜像（标准压比，较快）", L"*.wim"},
-        {L"ESD 镜像（高压比省空间）", L"*.esd"},
+        {Tr(L"WIM 镜像（标准压比，较快）"), L"*.wim"},
+        {Tr(L"ESD 镜像（高压比省空间）"), L"*.esd"},
     };
     pDlg->SetFileTypes(2, filters);
-    pDlg->SetTitle(L"选择备份保存位置");
+    pDlg->SetTitle(Tr(L"选择备份保存位置"));
     int fmtIdx = BackupFmt();
     pDlg->SetFileTypeIndex(fmtIdx == 0 ? 2 : 1);  // COMDLG 1-based
     const wchar_t* ext = fmtIdx == 0 ? L".esd" : L".wim";
@@ -711,7 +710,7 @@ void CMainForm::BrowseSaveFile() {
     std::wstring defName = TimestampDate() +
                            (m_sysDesc.shortTag.empty() ? TimestampName()
                                                        : m_sysDesc.shortTag) +
-                           L"备份" + ext;
+                           Tr(L"备份") + ext;
     pDlg->SetFileName(defName.c_str());
     if (SUCCEEDED(pDlg->Show(m_hWnd))) {
         IShellItem* pItem = nullptr;
@@ -724,7 +723,7 @@ void CMainForm::BrowseSaveFile() {
                 CEditUI* pEdit =
                     static_cast<CEditUI*>(m_PaintManager.FindControl(_T("ImagePath")));
                 if (pEdit) pEdit->SetText(m_wimPath.c_str());
-                SetStatus(L"备份保存至：" + m_wimPath);
+                SetStatus(Tr(L"备份保存至：") + m_wimPath);
             }
             pItem->Release();
         }
@@ -755,7 +754,7 @@ void CMainForm::HandleDroppedFiles(WPARAM wParam) {
         dropped.size() >= 4 ? dropped.substr(dropped.size() - 4) : L"";
     for (auto& c : ext) c = (wchar_t)towlower(c);
     if (ext != L".esd" && ext != L".wim") {
-        SetStatus(L"只支持拖入 .esd / .wim 镜像文件");
+        SetStatus(Tr(L"只支持拖入 .esd / .wim 镜像文件"));
         return;
     }
     m_wimPath = dropped;
@@ -763,11 +762,11 @@ void CMainForm::HandleDroppedFiles(WPARAM wParam) {
         static_cast<CEditUI*>(m_PaintManager.FindControl(_T("ImagePath")));
     if (pEdit) pEdit->SetText(m_wimPath.c_str());
     if (m_backupMode) {
-        SetStatus(L"备份保存至：" + m_wimPath);
+        SetStatus(Tr(L"备份保存至：") + m_wimPath);
         UpdateMainAction();
     } else {
         LoadWimImages(m_wimPath);  // 内部设 m_imageOk 并刷新主按钮
-        SetStatus(L"已载入镜像：" + m_wimPath);
+        SetStatus(Tr(L"已载入镜像：") + m_wimPath);
     }
 }
 
@@ -780,7 +779,7 @@ void CMainForm::LoadWimImages(const std::wstring& path) {
     m_imgIdx.clear();
     WimEngine wim;
     if (!wim.ok()) {
-        SetStatus(L"wimlib 初始化失败");
+        SetStatus(Tr(L"wimlib 初始化失败"));
         UpdateMainAction();
         return;
     }
@@ -790,7 +789,7 @@ void CMainForm::LoadWimImages(const std::wstring& path) {
         // 关键：读取失败（例如上次备份中途退出留下"写入未完成"的坏镜像）
         // 时必须保持 m_imageOk=false 并刷新按钮，否则主按钮的状态会停在
         // 上一次的可用态（用户看到"灰色按钮切一下模式又能点了"的怪象）。
-        SetStatus(std::wstring(L"镜像不可用（可能上次备份未完成，请重新备份）: ") +
+        SetStatus(std::wstring(Tr(L"镜像不可用（可能上次备份未完成，请重新备份）: ")) +
                   WimEngine::ErrorString(rc));
         UpdateMainAction();
         return;
@@ -804,7 +803,7 @@ void CMainForm::LoadWimImages(const std::wstring& path) {
         // 注意：MinGW 下 swprintf 的 %s 当**窄**字符串用（PIT-007）—— 传 wchar_t*
         // 会在第一个字符的高字节 0x00 处截断（症状：镜像名只剩首字母 "1 - W"）。
         // 宽字符串必须用 %ls。
-        swprintf(buf, 512, L"%d - %ls（%.1f GB）", img.index, img.name.c_str(),
+        swprintf(buf, 512, Tr(L"%d - %ls（%.1f GB）"), img.index, img.name.c_str(),
                  img.sizeBytes / 1073741824.0);
         item->SetText(buf);
         pCombo->Add(item);
@@ -828,9 +827,9 @@ int CMainForm::BackupFmt() const {
 // ────────────────── 还原（UI 校验 + worker 线程暂存） ──────────────────
 
 void CMainForm::StartRestore() {
-    if (m_wimPath.empty()) { SetStatus(L"请先选择镜像文件"); return; }
+    if (m_wimPath.empty()) { SetStatus(Tr(L"请先选择镜像文件")); return; }
     if (m_selPart < 0 || m_selPart >= (int)m_parts.size()) {
-        SetStatus(L"请选择目标分区"); return;
+        SetStatus(Tr(L"请选择目标分区")); return;
     }
     const PartitionInfo& part = m_parts[m_selPart];
     // BitLocker 提醒（用户规格 2026-09-23）：**只要系统里有加密卷**就提醒。
@@ -846,7 +845,8 @@ void CMainForm::StartRestore() {
         // "就地还原、不重启"，以前这里一律写"重启后还原"，用户 2026-09-21 在 PE 里
         // 实测被误导。判断复用 ops 层同一个函数（CanRestoreInPlace），两边不漂移。
         std::string why;
-        bool needReboot = !CanRestoreInPlace(part, why);
+        InPlaceReason whyReason = INPLACE_OK;
+        bool needReboot = !CanRestoreInPlace(part, why, &whyReason);
         // 日志落点：（用户 2026-09-23）**合并进本确认框**，不要再弹第二个 MessageBox。
         // 只在"程序在目标盘或只读盘上"时才需要提这一句。
         std::wstring logNote;
@@ -860,7 +860,7 @@ void CMainForm::StartRestore() {
             if (onTarget || !fixedDisk) {
                 std::wstring dd = FindDataDrive();
                 logNote = dd.empty() ? std::wstring()
-                                     : (L"（还原日志将放到 " + dd.substr(0, 1) + L": 盘）");
+                                     : (Tr(L"（还原日志将放到 ") + dd.substr(0, 1) + Tr(L": 盘）"));
                 LogInfo("logs will be placed on data drive (exe dir is target/"
                         "read-only)");
             }
@@ -870,29 +870,27 @@ void CMainForm::StartRestore() {
             // 把**判定原因**也显示出来（用户 2026-09-23：PE 里系统盘是 X:，还原 C:
             // 本不该重启 → 需要一眼看出到底卡在哪个条件）。文案保持短，避免被
             // 确认框右侧裁掉（PIT-074 的教训）。
+            // 按**原因码**选文案（M1：原来 `why.find("系统盘")` 是中文子串匹配，
+            // 消息一翻译就恒不成立 → 永远显示"被占用"那个分支）。
             std::wstring shortWhy =
-                why.find("系统盘") != std::string::npos
-                    ? L"目标是正在运行的系统盘"
-                    : L"目标分区当前被占用";
+                whyReason == INPLACE_SYSTEM_DISK
+                    ? Tr(L"目标是正在运行的系统盘")
+                    : Tr(L"目标分区当前被占用");
             swprintf(confirm, 640,
-                     L"即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n"
-                     L"该分区上的所有数据将被覆盖！%ls\n"
-                     L"原因：%ls；将暂存任务并在重启后执行。",
+                     Tr(L"即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n" L"该分区上的所有数据将被覆盖！%ls\n" L"原因：%ls；将暂存任务并在重启后执行。"),
                      part.letter.empty() ? L"?" : part.letter.c_str(),
                      part.diskIndex, part.partNumber, logNote.c_str(),
                      shortWhy.c_str());
-            if (CConfirmDlg::Ask2(m_hWnd, L"确认还原", confirm, L"退出",
-                                  L"退出并重启", /*defaultIsRight=*/true) != 1)
+            if (CConfirmDlg::Ask2(m_hWnd, Tr(L"确认还原"), confirm, Tr(L"退出"),
+                                  Tr(L"退出并重启"), /*defaultIsRight=*/true) != 1)
                 return;
         } else {
             swprintf(confirm, 640,
-                     L"即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n"
-                     L"该分区上的所有数据将被覆盖！%ls\n"
-                     L"目标分区当前未被占用，将立即就地还原，不需要重启。",
+                     Tr(L"即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n" L"该分区上的所有数据将被覆盖！%ls\n" L"目标分区当前未被占用，将立即就地还原，不需要重启。"),
                      part.letter.empty() ? L"?" : part.letter.c_str(),
                      part.diskIndex, part.partNumber, logNote.c_str());
-            if (CConfirmDlg::Ask2(m_hWnd, L"确认还原", confirm, L"取消",
-                                  L"开始还原", /*defaultIsRight=*/true) != 1)
+            if (CConfirmDlg::Ask2(m_hWnd, Tr(L"确认还原"), confirm, Tr(L"取消"),
+                                  Tr(L"开始还原"), /*defaultIsRight=*/true) != 1)
                 return;
         }
     }
@@ -900,7 +898,7 @@ void CMainForm::StartRestore() {
     //   反馈连续两个提示框很烦。这里只留一行日志备查。）
     m_busy = true;
     UpdateMainAction();
-    SetStatus(L"正在校验镜像并暂存还原任务...");
+    SetStatus(Tr(L"正在校验镜像并暂存还原任务..."));
     SetProgress(0);
     m_start = std::chrono::steady_clock::now();
     SetTimer(m_hWnd, 1, 1000, nullptr);
@@ -911,8 +909,8 @@ void CMainForm::StartRestore() {
     } catch (...) {
         m_busy = false;
         UpdateMainAction();
-        SetStatus(L"线程创建失败");
-        MessageBoxW(m_hWnd, L"无法创建工作线程，请重试", L"错误", MB_OK | MB_ICONERROR);
+        SetStatus(Tr(L"线程创建失败"));
+        MessageBoxW(m_hWnd, Tr(L"无法创建工作线程，请重试"), Tr(L"错误"), MB_OK | MB_ICONERROR);
     }
 }
 
@@ -946,7 +944,7 @@ void CMainForm::StartRestoreAsync() {
         return false;
     };
     m_lastProgressPost = std::chrono::steady_clock::now();
-    int rc = StageRestore(req, err, &needReboot, progressFn);
+    int rc = StageRestore(req, err, &needReboot, progressFn, &last_adv_);
     last_err_ = err;
     m_needReboot = needReboot;
     PostMessage(WM_TASK_COMPLETE, (WPARAM)rc, 0);
@@ -962,18 +960,18 @@ void CMainForm::StartBackup() {
     if (dest.empty()) {
         std::wstring dataDrive = FindDataDrive();
         if (dataDrive.empty()) {
-            SetStatus(L"未找到数据盘，请用浏览指定保存位置"); return;
+            SetStatus(Tr(L"未找到数据盘，请用浏览指定保存位置")); return;
         }
         std::wstring dir = dataDrive + kRecoveryDir;
         CreateDirectoryW(dir.c_str(), nullptr);
         dest = dir + L"\\" + TimestampDate() +
                (m_sysDesc.shortTag.empty() ? TimestampName()
                                            : m_sysDesc.shortTag) +
-               L"备份" +
+               Tr(L"备份") +
                (fmt == 0 ? L".esd" : L".wim");
     }
     if (GetFileAttributesW(dest.c_str()) != INVALID_FILE_ATTRIBUTES) {
-        if (MessageBoxW(m_hWnd, L"目标镜像文件已存在，覆盖？", L"确认备份",
+        if (MessageBoxW(m_hWnd, Tr(L"目标镜像文件已存在，覆盖？"), Tr(L"确认备份"),
                         MB_YESNO | MB_ICONWARNING) != IDYES)
             return;
     }
@@ -986,7 +984,7 @@ void CMainForm::StartBackup() {
     }
     m_busy = true;
     UpdateMainAction();
-    SetStatus(L"正在备份...");
+    SetStatus(Tr(L"正在备份..."));
     SetProgress(0);
     m_start = std::chrono::steady_clock::now();
     SetTimer(m_hWnd, 1, 1000, nullptr);
@@ -1010,8 +1008,8 @@ void CMainForm::StartBackup() {
     } catch (...) {
         m_busy = false;
         UpdateMainAction();
-        SetStatus(L"线程创建失败");
-        MessageBoxW(m_hWnd, L"无法创建工作线程，请重试", L"错误", MB_OK | MB_ICONERROR);
+        SetStatus(Tr(L"线程创建失败"));
+        MessageBoxW(m_hWnd, Tr(L"无法创建工作线程，请重试"), Tr(L"错误"), MB_OK | MB_ICONERROR);
     }
 }
 
@@ -1035,7 +1033,7 @@ void CMainForm::StartBackupAsync() {
         return false;
     };
     std::string err;
-    int rc = RunBackup(req, progressFn, err);
+    int rc = RunBackup(req, progressFn, err, &last_adv_);
     last_err_ = err;
     PostMessage(WM_TASK_COMPLETE, (WPARAM)rc, 0);
 }
@@ -1056,9 +1054,9 @@ void CMainForm::ApplyModeUi() {
         if (p) { RECT rc = { l, t, r, b }; p->SetPos(rc); }
     };
     if (m_backupMode) {
-        Text(_T("BrowseBtn"),   _T("浏览保存位置…"));
-        Text(_T("MainAction"),  _T("开始备份系统"));
-        Text(_T("NoteLabel"),   _T("备份备注："));
+        Text(_T("BrowseBtn"),   Tr(L"浏览保存位置…"));
+        Text(_T("MainAction"),  Tr(L"开始备份系统"));
+        Text(_T("NoteLabel"),   Tr(L"备份备注："));
         Vis(_T("ImageIndexBox"), false);
         Vis(_T("NoteText"),     false);
         Vis(_T("NoteInput"),    true);
@@ -1080,14 +1078,14 @@ void CMainForm::ApplyModeUi() {
             CControlUI* pNote = m_PaintManager.FindControl(_T("NoteInput"));
             if (pNote && pNote->GetText().IsEmpty() && !m_sysDesc.full.empty()) {
                 std::wstring info =
-                    TimestampDate() + L" " + m_sysDesc.full + L" 备份";
+                    TimestampDate() + L" " + m_sysDesc.full + Tr(L" 备份");
                 pNote->SetText(info.c_str());
             }
         }
         Vis(_T("RepairBootBtn"),true);
         Vis(_T("BootMenuBtn"),  true);
-        Text(_T("PartTitle"),   _T("备份源分区"));
-        Text(_T("PartHint"),    _T("选择要备份为镜像的源分区（移动盘已隐藏）"));
+        Text(_T("PartTitle"),   Tr(L"备份源分区"));
+        Text(_T("PartHint"),    Tr(L"选择要备份为镜像的源分区（移动盘已隐藏）"));
         // 第三步右侧：备份模式 = 静默模式 + 「格式：」+ 下拉；引导按钮两模式共用
         // 同一位置（XML 定）。整窗收窄到 745 后，右侧一组整体左移：
         //   静默 248..340 / 格式：348..396 / 下拉 402..524 / 清除 530..612 / 菜单 618..706
@@ -1097,9 +1095,9 @@ void CMainForm::ApplyModeUi() {
         // 注：状态栏固定「执行进度」（老界面如此），模式名不写进状态栏；
         // 进度文字仍由 SetStatus 在任务执行中写入。
     } else {
-        Text(_T("BrowseBtn"),   _T("浏览系统镜像文件"));
-        Text(_T("MainAction"),  _T("开始恢复系统"));
-        Text(_T("NoteLabel"),   _T("镜像说明："));
+        Text(_T("BrowseBtn"),   Tr(L"浏览系统镜像文件"));
+        Text(_T("MainAction"),  Tr(L"开始恢复系统"));
+        Text(_T("NoteLabel"),   Tr(L"镜像说明："));
         Vis(_T("ImageIndexBox"), true);
         Vis(_T("NoteText"),     true);
         Vis(_T("NoteInput"),    false);
@@ -1107,8 +1105,8 @@ void CMainForm::ApplyModeUi() {
         Vis(_T("FormatBox"),    false);
         Vis(_T("RepairBootBtn"),true);
         Vis(_T("BootMenuBtn"),  true);
-        Text(_T("PartTitle"),   _T("系统安装位置"));
-        Text(_T("PartHint"),    _T("选择要安装恢复镜像的目标分区（移动盘已隐藏）"));
+        Text(_T("PartTitle"),   Tr(L"系统安装位置"));
+        Text(_T("PartHint"),    Tr(L"选择要安装恢复镜像的目标分区（移动盘已隐藏）"));
         // 还原模式几何（切回时必须复位第三步右侧那三个；与 XML 默认一致）
         Pos(_T("Silent"),        420, 302, 520, 326);
         Pos(_T("FormatLabel"),   350, 302, 388, 326);
@@ -1136,12 +1134,12 @@ void CMainForm::UpdateMainAction() {
     // 完全无从判断缺哪一步）。只在空闲且确实不可用时提示，避免覆盖任务中的状态。
     if (!ok && !m_busy) {
         if (m_wimPath.empty())
-            SetStatus(m_backupMode ? L"请先选择保存位置" : L"请先选择镜像文件");
+            SetStatus(m_backupMode ? Tr(L"请先选择保存位置") : Tr(L"请先选择镜像文件"));
         else if (m_selPart < 0)
-            SetStatus(m_backupMode ? L"请选择第二步的源分区"
-                                   : L"请选择第二步的目标分区");
+            SetStatus(m_backupMode ? Tr(L"请选择第二步的源分区")
+                                   : Tr(L"请选择第二步的目标分区"));
         else if (!m_backupMode && !m_imageOk)
-            SetStatus(L"镜像不可用（解析失败或文件不存在）");
+            SetStatus(Tr(L"镜像不可用（解析失败或文件不存在）"));
     }
 }
 

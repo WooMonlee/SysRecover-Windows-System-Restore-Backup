@@ -3,6 +3,7 @@
 //
 // 注意：<gdiplus.h> 必须在 StdAfx.h 之前（duilib 的 StdAfx 把 min/max 定义成
 // 函数宏，会污染 GDI+ 头）。
+#include "common/i18n.h"
 #include <windows.h>
 #include <commctrl.h>
 #include <gdiplus.h>
@@ -13,6 +14,7 @@
 #include <wchar.h>
 #include <string>  // std::wstring（SyncTextFromNative 用；标准头须在 StdAfx.h 之前，PIT-012）
 
+using sysrecover::Tr;
 #include "ui_skin.h"
 
 namespace {
@@ -419,7 +421,7 @@ void CPartItemUI::SetPart(const wchar_t* letter, const wchar_t* ptype, const wch
     m_free   = freeText ? freeText : L"";
     m_pct    = usedPct < 0 ? 0 : (usedPct > 100 ? 100 : usedPct);
     // 角色标签：系统分区绿字，其余用普通蓝（老项目 TypeBrush；当前只区分系统/非系统）
-    m_tag = isSystem ? L"当前系统" : L"";
+    m_tag = isSystem ? Tr(L"当前系统") : L"";
 }
 
 // 四列布局（相对 rc.left 的实测偏移，来自老界面逐像素测量）
@@ -485,7 +487,7 @@ void CPartItemUI::PaintRow(HDC hDC, const RECT& rc, bool collapsed) {
 
     // ── 列2：磁盘型号（灰） / 卷标（深，无则「—」）──
     if (!m_disk.IsEmpty()) TextAt(hDC, m_disk, rc.left + kCol2, b1, 12, C_SECOND);
-    TextAt(hDC, m_sub.IsEmpty() ? L"—" : m_sub.GetData(), rc.left + kCol2, b2, 13, C_TEXT);
+    TextAt(hDC, m_sub.IsEmpty() ? Tr(L"—") : m_sub.GetData(), rc.left + kCol2, b2, 13, C_TEXT);
 
     // ── 列3：磁盘号/分区号（单行，垂直居中）──
     TextAt(hDC, m_partNo, rc.left + kCol3, BaselineOf(mid, 13), 13, C_TEXT);

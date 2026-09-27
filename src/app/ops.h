@@ -5,6 +5,7 @@
 
 #include "../disk/disk.h"
 #include "../wim/wim.h"
+#include "advice.h"  // ErrAdvice / ErrorAdvice（M1 从本文件迁到 advice.h，留在命名空间同处）
 
 namespace sysrecover {
 
@@ -28,17 +29,31 @@ struct RestoreRequest {
 
 // 备份。覆盖确认由调用方负责（CLI --yes / GUI 对话框）。
 // 返回：0 成功；1 失败（err=原因 UTF-8）。
-int RunBackup(const BackupRequest& req, ProgressFn progress, std::string& err);
+// adv（可选）：失败时给出**建议码**，供 ErrorAdvice 取"下一步怎么办"
+//（M1：不再靠中文关键词猜，见 advice.h）。
+int RunBackup(const BackupRequest& req, ProgressFn progress, std::string& err,
+              ErrAdvice* adv = nullptr);
+
+// 就地还原不可行的原因码（M1：替代 GUI 里 `why.find("系统盘")` 这种中文子串匹配，
+// 否则消息一翻译判定就失效）。文案仍由调用方决定（各自语言各自渲染）。
+enum InPlaceReason {
+    INPLACE_OK = 0,       // 可就地还原（不重启）
+    INPLACE_NO_LETTER,    // 目标无盘符
+    INPLACE_SYSTEM_DISK,  // 目标是正在运行的系统盘 → 必须重启脱机还原
+    INPLACE_LOCKED,       // 卷被占用（锁不上）→ 必须重启
+    INPLACE_OPEN_FAIL,    // 打开目标卷失败
+    INPLACE_PE,           // PE 中放行
+};
 
 // 目标分区是否可以**就地还原**（不重启）？
 // 供调用方（GUI 的确认框文案、CLI 的提示）决定"要不要说重启"——
 // StageRestore 内部调用的是同一个函数，两处不会漂移（PIT-072）。
 // 判据：目标不是正在运行的系统盘，且能对目标卷加独占锁（FSCTL_LOCK_VOLUME）。
-bool CanRestoreInPlace(const PartitionInfo& target, std::string& why);
+bool CanRestoreInPlace(const PartitionInfo& target, std::string& why,
+                       InPlaceReason* reason = nullptr);
 
 // 给常见失败配一句"下一步怎么办"（P8）。CLI 打印、GUI 弹窗都会附上它。
-// 匹配不上就返回空串（宁可不给，也不给错的建议）。
-std::string ErrorAdvice(int rc, const std::string& err);
+// 实现已迁到 advice.h / advice.cpp（**按建议码取词**，不再匹配消息文本）。
 
 // 还原前**空间预检**（P1）：镜像的**未压缩**内容大小 vs 目标分区大小。
 // 必须在"格式化之前"拦下，否则会出现"数据没了、系统也没装上"（先格式化再 apply）。
@@ -52,7 +67,9 @@ int CheckRestoreSpace(const std::wstring& imagePath, int index,
 //   * 目标被占用（还原正在运行的系统盘）→ 暂存任务 + 重启进 Linux 救援层执行
 //     （§2 禁令1），needReboot=true。
 // 返回：0 成功；1 失败（err=原因）；4 安全门禁拒绝（err=理由）。
+// adv（可选）：失败时给出建议码（空间不足/半截镜像/镜像在目标分区内/权限…）。
 int StageRestore(const RestoreRequest& req, std::string& err,
-                 bool* needReboot = nullptr, ProgressFn progress = nullptr);
+                 bool* needReboot = nullptr, ProgressFn progress = nullptr,
+                 ErrAdvice* adv = nullptr);
 
 }  // namespace sysrecover
