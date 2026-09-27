@@ -128,6 +128,7 @@ const wchar_t* kSiteUrl =
 
 CMainForm::CMainForm() : m_lastProgressPost(std::chrono::steady_clock::now()) {}
 CMainForm::~CMainForm() {
+    if (m_tipHwnd) { ::DestroyWindow(m_tipHwnd); m_tipHwnd = NULL; }
     if (m_worker.joinable()) {
         m_cancel = true;
         m_worker.join();
@@ -166,11 +167,55 @@ void CMainForm::InitWindow() {
     ApplyModeUi();
     RefreshBootMenuBtn();
     SetTimer(m_hWnd, 2, 500, nullptr);  // 路径输入兜底同步（见 WM_TIMER/wParam==2）
+    m_tipHwnd = ::CreateWindowEx(0, TOOLTIPS_CLASS, NULL,
+        WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
+        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+        m_hWnd, NULL, ::GetModuleHandle(NULL), NULL);
+    if (m_tipHwnd) {
+        // cbSize 必须用 V1 尺寸：本 exe 无 comctl32 v6 清单（PIT-018）→ 跑 v5，
+        // 而 MinGW 的 TOOLINFOW 多带一个 v6 才有的 void* lpReserved（sizeof=72），
+        // v5 只认 V1/V2 尺寸 → 传 sizeof(TOOLINFO) 会被拒，TTM_ADDTOOL 返回 FALSE。
+        m_tipInfo.cbSize = TTTOOLINFO_V1_SIZE;
+        m_tipInfo.uFlags = 0;
+        m_tipInfo.hwnd = m_hWnd;
+        m_tipInfo.uId = 1;
+        m_tipInfo.lpszText = const_cast<LPTSTR>(_T(""));
+        m_tipInfo.rect = {0, 0, 0, 0};
+        ::SendMessage(m_tipHwnd, TTM_ADDTOOL, 0, (LPARAM)&m_tipInfo);
+        ::SendMessage(m_tipHwnd, TTM_SETMAXTIPWIDTH, 0, 300);
+    }
 }
 
 // ────────────────── HandleMessage（worker 线程安全回调） ──────────────────
 
 LRESULT CMainForm::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_MOUSELEAVE) {
+        ::SendMessage(m_tipHwnd, TTM_POP, 0, 0);
+    }
+    if (msg == WM_MOUSEMOVE) {
+        POINT pt = {(short)LOWORD(lParam), (short)HIWORD(lParam)};
+        CControlUI* pControl = m_PaintManager.FindControl(pt);
+        if (pControl && !pControl->GetToolTip().IsEmpty()) {
+            m_tipText = pControl->GetToolTip().GetData();
+            m_tipInfo.rect = pControl->GetPos();
+            m_tipInfo.lpszText = const_cast<LPTSTR>(m_tipText.c_str());
+            ::SendMessage(m_tipHwnd, TTM_SETTOOLINFO, 0, (LPARAM)&m_tipInfo);
+        } else {
+            // 移到无说明区域：清空矩形并收起，避免 TTM_RELAYEVENT 沿用旧矩形再弹。
+            m_tipInfo.rect = {0, 0, 0, 0};
+            m_tipInfo.lpszText = const_cast<LPTSTR>(_T(""));
+            ::SendMessage(m_tipHwnd, TTM_SETTOOLINFO, 0, (LPARAM)&m_tipInfo);
+            ::SendMessage(m_tipHwnd, TTM_POP, 0, 0);
+        }
+        MSG msgStruct = {};
+        msgStruct.hwnd = m_hWnd;
+        msgStruct.message = msg;
+        msgStruct.wParam = wParam;
+        msgStruct.lParam = lParam;
+        msgStruct.time = ::GetTickCount();
+        msgStruct.pt = pt;
+        ::SendMessage(m_tipHwnd, TTM_RELAYEVENT, 0, (LPARAM)&msgStruct);
+    }
     if (msg == WM_COMMAND && HIWORD(wParam) == EN_CHANGE) {
         // 输入框内容变化 —— 原生 EDIT 的 EN_CHANGE 会送到父窗口（=主窗口，Duilib
         // 控件本身不是窗口）。用户 2026-09-23 反馈：**手动输入**镜像路径时
@@ -294,6 +339,9 @@ static std::wstring StageCn(const std::wstring& s) {
 }
 
 void CMainForm::OnProgressUpdate(int pct, const std::wstring& stage) {
+    // 进度条随**第一条进度**出现（不是点按钮那一刻）：校验/暂存阶段没有进度，
+    // 整行状态栏留给状态文字；真开始跑进度了，文字才收在进度条左边。
+    ShowProgress(true);
     SetProgress(pct);
     m_lastStage = StageCn(stage);
     SetStatus(m_lastStage + Tr(L"    已用 ") + ElapsedText());
@@ -326,8 +374,12 @@ void CMainForm::OnTaskComplete(int rc) {
         // 用户选了「终止并退出」：不要再弹任何"失败"提示（窗口马上要关掉），
         // 只留一条日志；半成品镜像由 CancelAndExit → CleanupIncompleteOutput 清。
         LogInfo("task aborted by user (cancel-and-exit)");
+        ShowProgress(false);  // 收起进度条，状态栏回到整行可用
         return;
     }
+    // 任务结束立刻收起进度条：完成/失败消息（英文可达 453px）需要整行，
+    // 而进度条一在，状态文字就被卡在 179px 里。
+    ShowProgress(false);
     SetProgress(rc == 0 ? 100 : 0);
     CControlUI* pPct = m_PaintManager.FindControl(_T("PercentText"));
     if (pPct) pPct->SetText(rc == 0 ? _T("100%") : _T(""));
@@ -570,6 +622,10 @@ void CMainForm::RefreshBootMenuBtn() {
     CControlUI* p = m_PaintManager.FindControl(_T("BootMenuBtn"));
     if (p) {
         p->SetText(on ? Tr(L"删除启动还原") : Tr(L"安装启动还原"));
+        // 按钮只有 88px，英/中都塞不下"这个按钮到底干什么"→ 交给悬停提示。
+        // 文字随安装状态变，提示也得跟着变（否则会指反）。
+        p->SetToolTip(on ? Tr(L"移除上面那条开机启动项，并清掉目标/数据盘上的恢复文件")
+                         : Tr(L"写一条开机启动项：重启后可进恢复环境（UEFI 写固件启动项，BIOS 写 BCD）"));
         p->Invalidate();
     }
 }
@@ -1092,8 +1148,8 @@ void CMainForm::ApplyModeUi() {
         Pos(_T("Silent"),        248, 302, 340, 326);
         Pos(_T("FormatLabel"),   350, 302, 388, 326);
         Pos(_T("FormatBox"),     388, 294, 510, 332);
-        // 注：状态栏固定「执行进度」（老界面如此），模式名不写进状态栏；
-        // 进度文字仍由 SetStatus 在任务执行中写入。
+        // 注：状态栏在空闲时显示**当前模式说明**（见本函数末尾），任务执行中
+        // 显示进度文字；进度条只在跑进度时出现（ShowProgress）。
     } else {
         Text(_T("BrowseBtn"),   Tr(L"浏览系统镜像文件"));
         Text(_T("MainAction"),  Tr(L"开始恢复系统"));
@@ -1113,6 +1169,16 @@ void CMainForm::ApplyModeUi() {
         Pos(_T("FormatBox"),     388, 294, 510, 332);
     }
     UpdateMainAction();
+    // 空闲时状态栏 = **当前模式说明**（用户 2026-09-27 规格）：
+    //   · 鼠标悬停走 tooltip，键盘/不悬停的人看这一行 —— 两层解释并存；
+    //   · 只在切 Tab 时写一次，切到另一个模式自然被新的一条替换；
+    //   · 期间任何 SetStatus（选文件/报错/进度）都会盖掉它，再切回来又恢复
+    //     —— 没有定时器、没有“谁优先”，正好是规格里“切换即替换”的语义。
+    // 放在 UpdateMainAction() **之后**：那里面在按钮不可用时会写
+    // 「请先选择镜像文件」之类的提示，会把说明行冲掉。
+    SetStatus(Tr(m_backupMode
+                     ? L"把当前系统热备份为镜像文件（VSS 快照，可在运行中备份）"
+                     : L"选择镜像与目标分区后开始；还原系统盘会重启进恢复环境，非系统盘就地还原"));
 }
 
 void CMainForm::UpdateMainAction() {
@@ -1207,11 +1273,74 @@ bool CMainForm::IsSilent() {
     return p && p->IsSelected();
 }
 
+// 状态文字的可用宽度：进度条只在任务跑进度时出现（见 ShowProgress），
+// 静止时可以一直写到右下角「讨论」链接前面（约 638px）；进度条一出现就
+// 必须收在它左边（179px）。
+// 超宽一律「掐头 + … + 留尾」—— 尾部多是时间 / 文件名 / 错误码，信息价值
+// 最高；这样任意长的路径和英文长句都不会压到进度条上（英文状态消息最长
+// 453px，是中文的 1.5 倍，以前直接画穿进度条）。
+static std::wstring FitStatusLine(CPaintManagerUI& pm, const std::wstring& s) {
+    CControlUI* pStatus = pm.FindControl(_T("StatusText"));
+    if (!pStatus) return s;
+    RECT rc = pStatus->GetPos();
+    int right = rc.right;
+    CControlUI* pProg = pm.FindControl(_T("Progress"));
+    if (pProg && pProg->IsVisible()) {
+        right = pProg->GetPos().left - 4;
+    } else {
+        CControlUI* pLink = pm.FindControl(_T("SiteLink"));
+        if (pLink) right = pLink->GetPos().left - 8;
+    }
+    int avail = right - rc.left;
+    if (avail <= 16) return s;
+    const int px = 13;  // StatusText 的 fontsize（skin/main.xml）
+    HDC hdc = ::GetDC(nullptr);
+    if (!hdc) return s;
+    std::wstring out = s;
+    if (ui_skin::TextW(hdc, s.c_str(), px, false) > avail) {
+        const std::wstring ell = L"\x2026";  // …
+        const size_t n = s.size();
+        const size_t tailLen = (n > 8) ? 8 : 0;
+        const std::wstring tail = s.substr(n - tailLen);
+        size_t lo = 0, hi = n - tailLen;
+        while (lo < hi) {  // 二分：前缀 + … + 尾部 尽量长
+            size_t mid = (lo + hi + 1) / 2;
+            std::wstring cand = s.substr(0, mid) + ell + tail;
+            if (ui_skin::TextW(hdc, cand.c_str(), px, false) <= avail) lo = mid;
+            else hi = mid - 1;
+        }
+        out = s.substr(0, lo) + ell + tail;
+        if (ui_skin::TextW(hdc, out.c_str(), px, false) > avail) {  // 尾部本身就放不下
+            out = ell;
+            for (wchar_t c : s) {
+                std::wstring t = out + c;
+                if (ui_skin::TextW(hdc, t.c_str(), px, false) > avail) break;
+                out.swap(t);
+            }
+        }
+    }
+    ::ReleaseDC(nullptr, hdc);
+    return out;
+}
+
 void CMainForm::SetStatus(const std::wstring& text) {
     // StatusText 是自绘的 CSkinLabelUI（不是 CLabelUI）
+    m_lastStatus = text;
     CControlUI* p = m_PaintManager.FindControl(_T("StatusText"));
-    if (p) p->SetText(text.c_str());
+    if (p) p->SetText(FitStatusLine(m_PaintManager, text).c_str());
     LogInfo(std::string("GUI status: ") + W2U(text));
+}
+
+void CMainForm::ShowProgress(bool show) {
+    for (const TCHAR* name : {_T("Progress"), _T("PercentText")}) {
+        CControlUI* p = m_PaintManager.FindControl(name);
+        if (p && p->IsVisible() != show) p->SetVisible(show);
+    }
+    // 进度条显隐会改变状态文字的可用宽度 → 把已显示的那条按新宽度重新收放
+    if (!m_lastStatus.empty()) {
+        CControlUI* p = m_PaintManager.FindControl(_T("StatusText"));
+        if (p) p->SetText(FitStatusLine(m_PaintManager, m_lastStatus).c_str());
+    }
 }
 
 void CMainForm::SetProgress(int pct) {

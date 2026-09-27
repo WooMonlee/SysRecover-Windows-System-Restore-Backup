@@ -72,6 +72,8 @@ private:
     bool IsSilent();   // 「静默模式」勾选态
     void SetStatus(const std::wstring& text);
     void SetProgress(int pct);
+    // 进度条（+百分比）只在任务执行中显示；静止时整行状态栏让给状态文字（见 .cpp）。
+    void ShowProgress(bool show);
     void OnProgressUpdate(int pct, const std::wstring& stage);
     void OnTaskComplete(int rc);
     int  BackupFmt() const;  // combo 0/1/2
@@ -104,5 +106,9 @@ private:
     std::chrono::steady_clock::time_point m_lastProgressPost;
     std::chrono::steady_clock::time_point m_start{};
     std::wstring m_lastStage;  // WM_TIMER 刷新「已用」时复用
+    std::wstring m_lastStatus; // 最近一条状态文字（进度条显隐后要按新宽度重新收放）
     static constexpr int kProgressThrottleMs = 100;
+    HWND m_tipHwnd = NULL;   // 自管 tooltip（Duilib TTM_ADDTOOL 失败，见 PIT-089）
+    TOOLINFO m_tipInfo{};
+    std::wstring m_tipText;  // 当前 tooltip 文本（lpszText 要求存活到 SETTOOLINFO 之后）
 };

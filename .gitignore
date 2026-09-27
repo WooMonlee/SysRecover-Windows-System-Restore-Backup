@@ -2,6 +2,9 @@
 dist/
 dist-x86/
 build/*.exe
+# 构建/会话临时产物（字符串账本 tools/extract-strings.py、冒烟输出、草稿等）
+build/*.tsv
+build/*.txt
 build-x86/
 *.o
 *.d
