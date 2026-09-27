@@ -60,22 +60,27 @@
         <!-- ══════ 第三步行（无卡片，y293..332） ══════ -->
         <SkinLabel name="Step3Badge" float="true" pos="30,301,92,324" text="第三步" bkcolor="#FFE08A2E" borderround="8,8" color="#FFFFFFFF" fontsize="13" align="center" />
         <SkinButton name="MainAction" float="true" pos="117,293,237,332" text="开始恢复系统" fontsize="16" bold="true" bkcolor="#FFE2E6EE" bordercolor="#FFE4E8EF" borderround="12,12" textcolor="#FF9AA3B2" enabled="false" />
-        <GlyphCheck name="Silent" float="true" pos="420,302,520,326" text="静默模式" />
+        <!-- tooltip：鼠标悬停解释（Win32 Tooltip，300px 自动换行；LoadSkinXml 会翻属性值） -->
+    <GlyphCheck name="Silent" float="true" pos="420,302,520,326" text="静默模式"
+                tooltip="不弹任何确认框，直接暂存任务并重启（无人值守/批量部署用）" />
         <SkinLabel name="FormatLabel" float="true" pos="350,302,388,326" text="格式：" color="#FF1B2432" fontsize="13" align="right" visible="false" />
         <Combo name="FormatBox" float="true" pos="388,294,510,332" bkcolor="#FFFFFFFF" bordersize="1" bordercolor="#FFC9D6F2" borderround="16,16" textpadding="0,0,0,0" visible="false">
           <TextItem text=".esd(慢速小体积)" height="30" />
           <TextItem text=".wim(正常大小)" height="30" />
           <TextItem text=".wim(高速大体积)" height="30" />
         </Combo>
-        <SkinButton name="RepairBootBtn" float="true" pos="530,296,612,329" text="清除引导项" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFE7ECF2" borderround="14,14" textcolor="#FF1B2432" />
+        <SkinButton name="RepairBootBtn" float="true" pos="530,296,612,329" text="清除引导项" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFE7ECF2" borderround="14,14" textcolor="#FF1B2432"
+                tooltip="删除恢复环境的启动项与 ZJRESTORE 文件；不动系统与数据" />
         <SkinButton name="BootMenuBtn"   float="true" pos="618,296,706,329" text="安装启动还原" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFE7ECF2" borderround="14,14" textcolor="#FF1B2432" />
 
         <!-- ══════ 状态栏（分隔线 1px + #FAFBFE，y370..405） ══════ -->
         <Control float="true" pos="0,370,741,371" bkcolor="#FFEEF1F6" />
         <Control float="true" pos="0,371,741,406" bkcolor="#FFFAFBFE" />
         <SkinLabel name="StatusText" float="true" pos="17,371,196,406" text="执行进度" color="#FF5F6C80" fontsize="13" />
-        <RoundProgress name="Progress" float="true" pos="200,385,560,392" value="0" />
-        <SkinLabel name="PercentText" float="true" pos="566,371,620,406" text="" color="#FF5F6C80" fontsize="13" align="right" />
+    <!-- 进度条只在任务执行中显示（ShowProgress）：静止时整行让给状态文字，
+         否则状态文字会被 179px 的 StatusText 卡住、并被进度条横穿（中英都溢出）。 -->
+    <RoundProgress name="Progress" float="true" pos="200,385,560,392" value="0" visible="false" />
+    <SkinLabel name="PercentText" float="true" pos="566,371,620,406" text="" color="#FF5F6C80" fontsize="13" align="right" visible="false" />
         <!-- 右下角「讨论」链接（用户规格 2026-09-23）。注意两点踩过的坑：
              ① 必须避开 PercentText（它声明在后=在顶层，会抢走点击 → 链接放它右边）；
              ② 不能用全透明 bkcolor：ui_skin.cpp:699 把 0 当"未设置"→画成白底 ✗，

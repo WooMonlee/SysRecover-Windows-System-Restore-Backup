@@ -526,6 +526,14 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · ③ **门禁 `load_lang` 用了 `strip()`** → 把键的**前导/尾随空格**吃掉（`' 备份'`→`'备份'`、`'    已用 '`→`'已用 '`）→ 报"重复键"假阳性。`.lang` 的键值**可以带空格**，必须与 C++ 解析器一致：只去尾部 `\r`、空行/首字符 `#` 跳过，**绝不 strip**。
   · **冒烟口径（可复用）**：CLI —— `dist\x64\SysRecover.exe help`（应中文）/ `--lang en help` / `set SYSRECOVER_LANG=en && ... help`（后两者应英文），看首行 `SysRecover · Command Line` vs `SysRecover 九转还原 · 命令行`；GUI —— 起 `SysRecoverUI.exe` 读 `Process.MainWindowTitle`：zh=`九转还原` / en=`SysRecover`（读之前 `[Console]::OutputEncoding = UTF8`，否则控制台按 GBK 打出来像乱码）。✅ 2026-09-27（`make check` 24 用例/148 断言 + `make package` 绿，双语冒烟通过）
 
+- PIT-089 **Duilib 的悬浮提示（tooltip）在我们配置下**永远不显示**，根因是 `cbSize` 传了 `sizeof(TOOLINFO)`：MinGW 的 `TTTOOLINFOW` 带一个 v6 才有的 `void* lpReserved`（x64 下 `sizeof`=**72**），而本 exe **无 comctl32 v6 清单**（PIT-018）→ 跑 **v5**，它只认 `TTTOOLINFOW_V1_SIZE`(56)/`V2_SIZE`(64) → `TTM_ADDTOOL` 返回 **FALSE**、`TTM_GETTOOLCOUNT`=0 → 窗口建了但没工具、永不显示（2026-09-27/28 定位）**：
+  · **症状极具误导性**：`WM_MOUSEHOVER` 到达（`msg=673`）、控件 `GetToolTip()` 非空（`tip=32`）、`CreateWindowEx` 成功（`GetTooltipWindow()` 有句柄）—— 三层都"正常"，但 tooltip 窗口 `IsWindowVisible=0`、`rect=(0,0)-(0,0)`、`toolcount=0`，屏幕无气泡。极易误判为"光标没停够久""DPI 不对""消息被 UIPI 拦"。
+  · **两层叠加（都要修）**：① `cbSize`（v5 拒绝 72）；② Duilib 的 `m_ToolTip.uFlags = TTF_IDISHWND` **没有 `TTF_SUBCLASS`**，且全库**从不发 `TTM_RELAYEVENT`** → 即使注册成功也收不到鼠标消息（MSDN：不设 `TTF_SUBCLASS` 就必须自己 relay）。
+  · **修复（选"自管 tooltip"，不动 third_party）**：`CMainForm` 里自己 `CreateWindowEx(TOOLTIPS_CLASS,…)` + `cbSize=TTTOOLINFO_V1_SIZE` + `uFlags=0`（矩形工具）+ `uId=1`；`WM_MOUSEMOVE` 时把命中控件的 `GetPos()`/`GetToolTip()` 写进 `TOOLINFO`、`TTM_SETTOOLINFO`，再 `TTM_RELAYEVENT`（**relay 必须在更新之后**，否则命中测试用的是旧矩形）；移到无提示区域时清空 `rect` + `TTM_POP`；`WM_MOUSELEAVE` 时 `TTM_POP`；析构里 `DestroyWindow`。
+  · **诊断手法（可复用，一步到位）**：`TTM_ADDTOOL` 后立刻 `SendMessage(hTip, TTM_GETTOOLCOUNT)` 打日志 —— `added=0 / toolcount=0` 就是没注册上，别再去调光标停留时间/DPI。`TTM_GETTOOLCOUNT = WM_USER+13`（A/W 同号），`sizeof` 用 `std::to_string(sizeof(TOOLINFO))` 一起打，72 vs 56 一眼看穿。
+  · ⚠️ 想直接改 Duilib 也行（`m_ToolTip.cbSize = TTTOOLINFO_V1_SIZE;` + `uFlags |= TTF_SUBCLASS`），但那样得改 `third_party` 且 `TTM_TRACKPOSITION` 在没 `TTF_TRACK` 时是空操作（定位不可控）；**自管更可控**。
+  · **冒烟口径（脚本已入库：`tools/ui/tooltip-smoke.ps1`，`powershell -File tools\ui\tooltip-smoke.ps1`，退出码 0/1）**：DPI-aware 探针把光标**先移开再落到**控件上（同点 `SetCursorPos` 不产生 `WM_MOUSEMOVE` → 不触发 hover），等 ~1.6s，枚举 `tooltips_class32` 里 pid 命中且 `toolcount>0 && IsWindowVisible` 的窗口，抓其矩形；再移到空白处断言它消失。中英文各 3 个控件（`RepairBootBtn`/`Silent`/`BootMenuBtn`）全过。✅ 2026-09-28（`make check` 24 用例/148 断言 + `make package` 绿，`0.4.1`）
+
 ---
 
 ## 14. License 合规（SBOM，随版本更新）

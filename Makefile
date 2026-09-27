@@ -153,6 +153,7 @@ check: $(TEST_BIN)
 	$(PYTHON) tests/test_version.py
 	$(PYTHON) tools/check-docs.py
 	$(PYTHON) tools/check-i18n.py
+	$(PYTHON) tools/check-widths.py
 
 $(TEST_BIN): $(TEST_SRC) $(TEST_UNITS) src/common/version.h | $(OBJDIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(TEST_SRC) $(TEST_UNITS) -o $(TEST_BIN) -static -mconsole -ladvapi32 -lole32 -luuid
