@@ -16,6 +16,7 @@
 #include "../common/process.h"
 #include "../common/progress.h"
 #include "../common/singleton.h"
+#include "../common/vss.h"
 #include "../common/version.h"
 #include "../disk/disk.h"
 #include "../wim/exclude.h"
@@ -274,6 +275,11 @@ int CheckRestoreSpace(const std::wstring& imagePath, int index,
 // 失败后的"下一步"（P8）—— 见 ops.h。按错误文本/退出码匹配，匹配不上返回空串。
 std::string ErrorAdvice(int rc, const std::string& err) {
     auto has = [&err](const char* k) { return err.find(k) != std::string::npos; };
+    // VSS 前置检查失败：消息里已自带完整处理步骤（services.msc / sc 两条路），
+    // 必须放在最前短路 —— 否则下面的通用词分支（"管理员"，我们的提示词里也有）
+    // 会追加"建议：以管理员身份运行"，而失败原因根本不是权限，纯属误导。
+    if (has("卷影复制服务") || has("影子副本提供程序") || has("swprv"))
+        return {};
     if (has("BitLocker") || has("bitlocker"))
         return "\n\n建议：目标盘启用了 BitLocker。请先在「管理员命令提示符」里挂起保护，"
                "然后重试：\n    manage-bde -protectors -disable X: -rebootcount 1\n"
@@ -368,6 +374,18 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
     bool snapshot = req.snapshot ||
                     (req.source.size() == 3 && req.source[1] == L':' &&
                      (req.source[2] == L'/' || req.source[2] == L'\\'));
+    std::wstring errw;  // VSS 检查的多行提示（成功路径不会用到）
+    // VSS 前置检查（用户 2026-09-26 规格）：服务停着就帮用户启动、起不来就给
+    // 明确的处理指引（别等 wimlib 报 rc=89 让人干猜）；guard 析构把我们启动的
+    // 服务停回原状（"完成后关闭"），覆盖下面所有成功/失败退出路径。
+    vss::BackupGuard vss_guard;
+    if (snapshot && !vss_guard.Ensure(errw)) {
+        ReleaseOpLock();
+        ProgressDone("backup", "failed");
+        err = W2U(errw);  // 多行中文处理指引（GUI MessageBox / CLI 原样打印）
+        LogError(err);
+        return 1;
+    }
     // 热备前把注册表 hive 刷盘：运行中的 hive 常处于"脏"状态
     // （REGF base block 的 primary_seq != secondary_seq），刷一次可让 VSS 抓到
     // 干净的 hive；即便仍是脏的，随包捕获的 *.LOG1/.LOG2 也能在开机时恢复

@@ -50,7 +50,7 @@ LDLIBS   = -L$(WIMLIB) -l:libwim-15.dll -ladvapi32 -lole32 -lshell32 -luuid
 APP_SRC = src/disk/disk.cpp src/wim/wim.cpp src/wim/exclude.cpp \
       src/common/process.cpp src/common/logger.cpp src/common/progress.cpp \
       src/common/singleton.cpp src/common/sysinfo.cpp src/common/zip.cpp \
-      src/common/selfarch.cpp src/common/crash.cpp src/boot/bcd.cpp src/boot/grub.cpp \
+      src/common/selfarch.cpp src/common/crash.cpp src/common/vss.cpp src/boot/bcd.cpp src/boot/grub.cpp \
       src/boot/uefi.cpp src/boot/task.cpp src/boot/bootfix.cpp \
       src/app/safety.cpp \
       src/app/shortcut.cpp src/app/ops.cpp
