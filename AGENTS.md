@@ -517,6 +517,8 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **实测**（本机）：`disk0` SATA HDD → `smart=ata realloc=0 pending=0 uncorrect=0`；`disk1` NVMe → `smart=nvme crit=0x00 media=0 errlog=0 used=1% temp=46C`（数值合理）。⚠️ **未实测"真坏盘告警"**（本机盘都健康）——需拿有坏道的盘回归一次"弹框/打印确实出现"。
   · **附带（同批提交）**：产品中文名改 **「九转还原」**（原"九转一键还原"，用户 2026-09-26："可读性和分辨性更强"）—— 全仓 22 处 + 2 处"产品定义行"同步（皮肤 XML、窗口/对话框标题、README、docs、AGENTS §15/§17.3 品牌表），复检零残留；`九转还原` 四字标题更居中好看。✅ 2026-09-26（`0.3.15`）
 
+- PIT-087 **热备份前置 VSS 检查（用户 2026-09-26 规格）：服务不可用时 wimlib 只报 `rc=89`，只字不提服务名**（2026-09-27 实测定位并落地）：备份靠 `WIMLIB_ADD_FLAG_SNAPSHOT` → Windows VSS 卷影快照。**实测三事实**（Win11 dev 机）：① `vss=禁用` 或 `swprv=禁用`（任一）→ 备份均失败 `备份失败(rc=89): Unable to create a filesystem snapshot`，**报错完全不提服务** → 用户无从下手（"为什么没有成功"的根源）；② Windows 默认「停止+手动」态 wimlib 自己能拉起，但**跑完不关**（vss+swprv 留 Running 残留，与"完成后关闭"规格不符）；③ `wimlib.h` 明文 VSS 快照不支持 WoW64（64 位系统必须 64 位程序——正常由 selfarch 自举保证，x64 缺失时兜底提示）。**实现**：新增 `src/common/vss.{h,cpp}`（`vss::BackupGuard`，纯 Win32 SCM API `OpenSCManagerW/OpenServiceW/StartServiceW/ControlService/QueryServiceStatusEx`，禁 WMI）；`RunBackup` 算出 `snapshot` 后（RegFlush 之前）调 `Ensure()`：VSS + swprv 逐个查——**缺服务/被禁用/启动失败/30s 超时 → err = 多行中文处理指引**（services.msc 与 `sc config X start= demand && sc start X` 两条路，附 rc=89 因果说明），阻断在动数据之前；「停止」则启动并记录原状态。**析构回滚**（覆盖所有退出路径，含失败路径）：只停「亲眼确认过备份前是停止、且现在在运行」的（=只关我们开的；备份前就在跑 → 不动）。**坑**：`ErrorAdvice` 的 `has("管理员")` 会命中提示词里的"管理员窗口" → 追加误导性建议"以管理员身份运行"（失败根本不是权限）→ 在 `ErrorAdvice` **最前**加 VSS 短路分支返回 `{}`。**回归 4 场景全过**：正常（停→启→备份成功→停回）/ vss 禁用（指引+状态原样+exit=1+无 wim）/ swprv 禁用（指引+**已拉起的 VSS 回滚停回**）/ 预运行（成功+保持运行不关）。`make check`/`make package` 绿。✅ 2026-09-27（`0.3.17`）
+
 ---
 
 ## 14. License 合规（SBOM，随版本更新）
