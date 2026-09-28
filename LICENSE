@@ -1,0 +1,39 @@
+MIT License
+
+Copyright (c) 2026 DreamGrain
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+-------------------------------------------------------------------------------
+
+Note on scope / 适用范围说明
+
+This MIT license applies to SysRecover's own source code (everything under
+src/, skin/, tools/, tests/ and the build files authored for this project).
+
+It does NOT apply to the third-party components that are separately
+aggregated with the product (Linux kernel and modules, GRUB, shim, GRUB4DOS,
+busybox, musl, ntfs-3g, util-linux, wimlib, Duilib, UCRT, ...). Those remain
+under their own licenses - see THIRD_PARTY_LICENSES.txt for the full list,
+the license texts and where to obtain their sources.
+
+本 MIT 许可仅覆盖 SysRecover 自有源码；随产品「单独分发（聚合）」的第三方组件
+（Linux 内核与模块、GRUB、shim、GRUB4DOS、busybox、musl、ntfs-3g、util-linux、
+wimlib、Duilib、UCRT 等）各自遵循其原有许可，清单、全文与源码出处见
+THIRD_PARTY_LICENSES.txt。

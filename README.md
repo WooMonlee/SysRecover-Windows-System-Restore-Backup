@@ -1,7 +1,7 @@
 # SysRecover（九转还原 · 单机版）
 
-> 版本 `0.3.1`｜**64 位（x64）**，32 位（Win7/Win10 x86）计划中｜Windows 7 / 10 / 11 / WinPE｜发布包 ≈39 MB（其中 ≈90% 是救援层）
-> 许可：自有代码 + 第三方组件「单独分发」，清单与全文见 `THIRD_PARTY_LICENSES.txt`
+> 版本 `0.4.1`｜**x64 + x86 双架构**（Windows 侧跟随系统位数，Linux 救援层固定 x64）｜Windows 7 / 10 / 11 / WinPE｜发布包 ≈47 MB（其中 ≈90% 是救援层）
+> 许可：自有代码 **MIT**（见 [`LICENSE`](LICENSE)）；第三方组件「单独分发」，清单、全文与源码出处见 [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt)
 
 一句话：**把 Windows 系统备份成一个镜像文件，需要的时候一键还原回去。**
 
@@ -118,7 +118,7 @@
 | **PE / 非系统盘「就地还原」（不重启）** | 🚧 **待实测**（代码已就绪，验收清单见 [`docs/09`](docs/09-PE直装验收清单.md)） |
 | **忙时关闭「终止并退出」**（`0.1.4`） | 🚧 **待实测** |
 | 服务器 RAID **真机**、Win7 **零安装** | 🚧 待验（机制已就绪） |
-| 32 位系统（Win7/Win10 x86）| 🚧 计划中（`0.3`，见 [`docs/08`](docs/08-32位支持评估（待实施）.md)） |
+| 32 位系统（Win7/Win10 x86）| ✅ **已支持**：随包双架构，根目录启动器自动选；32 位程序在 64 位系统上会自举成 `x64\` 那份（见 [`docs/08`](docs/08-32位支持（评估与实现）.md)） |
 
 > 表里写 🚧 的，就**别当它已经能用** —— 这是我们自己定的规矩：没真跑通不写 ✅。
 
@@ -235,14 +235,14 @@ skin/ resources/ version.json THIRD_PARTY_LICENSES.txt
 
 > **位数策略**：Windows 侧**跟随系统位数**（32 位系统跑 x86、64 位系统跑 x64，主要为备份压缩速度）——
 > 根目录是 x86 整套，32 位程序在 64 位系统上会**自动把自己换成 `x64\` 那份**（`src/common/selfarch.cpp`），
-> 所以**不需要独立启动器**。**Linux 救援层固定 x86_64**（与宿主位数无关）。详见 [`docs/08`](docs/08-32位支持评估（待实施）.md) §0。
+> 所以**不需要独立启动器**。**Linux 救援层固定 x86_64**（与宿主位数无关）。详见 [`docs/08`](docs/08-32位支持（评估与实现）.md) §0。
 
 ---
 
 ## 十、已知限制与待验证
 
 - **32 位 Windows**：已支持（Windows 侧跟随系统位数；发布包启动器自动选）。**Win7 x86 真机实测待做**；
-  代价：32 位系统上备份压缩比 64 位慢（`fast`≈0~10%、`recovery`≈20~35%），**还原 0%**。见 [`docs/08`](docs/08-32位支持评估（待实施）.md) §0。
+  代价：32 位系统上备份压缩比 64 位慢（`fast`≈0~10%、`recovery`≈20~35%），**还原 0%**。见 [`docs/08`](docs/08-32位支持（评估与实现）.md) §0。
 - **2026 新硬件 Secure Boot**：已换 **Debian 双签 shim（CA2011+CA2023）**，覆盖"只信新证书（CA2023）的
   2026 新固件"（Ubuntu 单签做不到）。机制见 [`PLAN.md` §11.1](PLAN.md)。用户 VMware（SB 开）实测还原成功 ✓，
   "只信 CA2023 的新固件"仍**待真机验证**。
@@ -269,9 +269,14 @@ skin/ resources/ version.json THIRD_PARTY_LICENSES.txt
 
 ## 十一、许可与第三方
 
+- **自有代码：MIT 许可**（见 [`LICENSE`](LICENSE)）—— 覆盖 `src/`、`skin/`、`tools/`、`tests/` 与为本项目编写的构建文件；
+  欢迎学习、修改、再分发（保留版权声明即可）。
 - 本产品自身代码**未静态链接任何 GPL 组件、未修改任何第三方源码**（`libwim-15.dll` 为 **LGPL 动态链接**，
-  其余为「单独分发」的聚合）→ 不受 copyleft 的衍生作品条款约束。**是否开源为待决事项，与合规无关。**
-- 第三方组件清单、版本、用法与许可全文：`THIRD_PARTY_LICENSES.txt`（随包分发）。
+  其余为「单独分发」的聚合）→ 不受 copyleft 的衍生作品条款约束。
+- 第三方组件（Debian 内核与内核模块、GRUB、shim、GRUB4DOS、busybox、musl、ntfs-3g、util-linux、
+  wimlib、Duilib、UCRT…）各自遵循其原有许可。**全部为未修改的上游发行版二进制**，其源码获取方式
+  （Debian pool / Alpine CDN / wimlib 官网 / GRUB4DOS 官方发布页）见
+  [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt)「三、第三方源码获取方式」（该文件随包分发）。
 - 构建/测试期工具（MinGW-w64、osslsigncode、QEMU/OVMF、mtools）**不随产品分发**。
 
 ---
@@ -285,5 +290,6 @@ skin/ resources/ version.json THIRD_PARTY_LICENSES.txt
 | [`docs/12-相对优势与竞品对比`](docs/12-相对优势与竞品对比.md) | 和同类工具比，我们好在哪、差在哪（含对客户的话术、含 Image for Windows 专节） |
 | [`docs/13-开源同类调研（Clonezilla-Rescuezilla-FOG）`](docs/13-开源同类调研（Clonezilla-Rescuezilla-FOG）.md) | 开源同类（Clonezilla / Rescuezilla / FOG）调研 |
 | [`docs/14-成熟技术借鉴（可靠性机制调研）`](docs/14-成熟技术借鉴（可靠性机制调研）.md) | Windows `recoverysequence` / Android A/B / RAUC 等成熟可靠性机制，我们已在用哪些、建议学哪些 |
-| [`AGENTS.md`](AGENTS.md) | 操作手册：§0 五条红线、§7 引导 SOP、**§13 坑位册（PIT-001~081）** |
+| [`AGENTS.md`](AGENTS.md) | 操作手册：§0 五条红线、§7 引导 SOP、**§13 坑位册（PIT-001~089）**、§18 国际化纪律 |
 | [`PLAN.md`](PLAN.md) | 路线图、版本号规则、待决事项 |
+| [`LICENSE`](LICENSE) / [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt) | 自有代码 MIT；第三方组件清单、全文与源码出处 |

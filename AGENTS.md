@@ -560,7 +560,7 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 | Dism++ 主程序 | — | 闭源 | **禁止抄袭** |
 
 > **豁免依据**：本产品自身代码**未静态链接任何 GPL 组件、未修改任何第三方源码**（`libwim-15.dll`
-> 动态链接；其余为「单独分发」的聚合）→ 不受 copyleft 衍生作品条款约束。**是否开源为待决事项**。
+> 动态链接；其余为「单独分发」的聚合）→ 不受 copyleft 衍生作品条款约束。**本产品自有代码以 MIT 许可开源**（见仓库根 `LICENSE`）。
 > 上表全部内容 + 各许可全文已生成 `THIRD_PARTY_LICENSES.txt`，由 `make package` 拷进 `dist/` ✓。
 > 构建/测试期工具（MinGW-w64、osslsigncode、QEMU/OVMF、mtools）**不随产品分发**。
 
@@ -632,7 +632,7 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 
 ## 17. 工程纪律与约定（2026-09-26 借鉴自 DreamGrain 电子教室）
 
-> 参考：`D:\Prog\_Project\DreamGrain\Group\DreamGrainClass\AGENTS.md`。只抄"**机器可校验 / 能防错**"的那几条，不抄它项目特有的东西。
+> 参考：同作者另一项目「DreamGrain 电子教室」的 AGENTS.md（其工程纪律）。只抄"**机器可校验 / 能防错**"的那几条，不抄它项目特有的东西。
 
 ### 17.1 开工序（每个会话 / 换人）
 1. 读 `docs/11-接手指南（读我优先）`（现状 / 下一步 / 文档地图）。
