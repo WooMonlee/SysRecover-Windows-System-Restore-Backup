@@ -4,7 +4,9 @@ SysRecover —— 第三方组件与许可声明（Third-Party Licenses / SBOM�
 
 一、关于本产品自身代码
 ------------------------------------------------------------------------------
-SysRecover（SysRecover.exe / SysRecoverUI.exe 及 src/ 下的源码）为独立开发。
+SysRecover（SysRecover.exe / SysRecoverUI.exe 及 src/ 下的源码）为独立开发，
+以 **MIT 许可**发布（全文见仓库根目录 LICENSE 文件）。
+
 我们**未静态链接任何 GPL 组件**、**未修改任何第三方组件的源码**；第三方组件
 按其许可条款以「动态链接」或「单独分发（聚合）」的方式随产品提供。因此本产品
 自身代码不受这些许可的衍生作品（copyleft）条款约束。
@@ -26,18 +28,27 @@ SysRecover（SysRecover.exe / SysRecoverUI.exe 及 src/ 下的源码）为独立
 | GRUB（Debian 签名） | grub-efi-amd64-signed 1+2.12+9+deb13u2 | GPL-3.0 | 仅分发二进制（未修改） |
 | shim（Debian） | shim-signed 1.51+16.1-2（shimx64.efi） | BSD-2-Clause | 仅分发二进制（未修改，微软 CA2011+CA2023 双签） |
 | GRUB4DOS | grldr / grldr.mbr | GPL-2.0 | 仅分发二进制（未修改） |
+| Microsoft UCRT | ucrtbase.dll 等 16 个（x64 / x86） | Microsoft 可再分发（Windows SDK / app-local 部署） | 仅分发二进制（未修改，随包以支持 Win7 零安装运行） |
 
 构建/测试期使用、**不随产品分发**的工具：MinGW-w64 GCC、osslsigncode (GPL-3.0)、
 QEMU/OVMF (GPL-2.0)、mtools (GPL-3.0)、zstd、Python。
 
 三、第三方源码获取方式
 ------------------------------------------------------------------------------
+我们分发的是**未修改的上游发行版二进制**；对应源码可按下述方式获取：
 - wimlib：https://wimlib.net/downloads/ （我们未修改 libwim-15.dll）
-- Alpine 组件：https://dl-cdn.alpinelinux.org/alpine/ （按上表版本下载对应 apk；
+- Alpine 组件（busybox / musl / ntfs-3g / util-linux / wimlib.so）：
+  https://dl-cdn.alpinelinux.org/alpine/ （按上表版本下载对应 apk；
+  源码树见 https://gitlab.alpinelinux.org/alpine/aports ；
   可用随产品的 tools/build-debian-rescue.py 复现 initramfs 的组装过程）
-- Debian 内核 / 内核模块 / GRUB / shim：Debian 官方仓库
+- Debian 内核 / 内核模块 / GRUB / shim：
   https://deb.debian.org/debian/pool/ （上表版本，均为未修改的发行版二进制）
+  源码包见 https://sources.debian.org/ ；GRUB 与 shim 亦可从上游获取
+  （https://www.gnu.org/software/grub/ 、https://github.com/rhboot/shim ）
 - GRUB4DOS：官方发布页（仅分发官方二进制，未修改）
+- Microsoft UCRT：来自 Windows SDK / mingw-w64 的应用程序本地（app-local）
+  再分发件；获取方式见 https://learn.microsoft.com/cpp/windows/redistributing-components
+  与 https://www.mingw-w64.org/
 
 四、许可条款全文
 ------------------------------------------------------------------------------

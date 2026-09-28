@@ -200,6 +200,7 @@ package:
 	@copy /Y bootfiles\sb\grubx64.efi dist\bootfiles\sb\ >nul
 	@copy /Y bootfiles\sb\grub.cfg dist\bootfiles\sb\ >nul
 	@copy /Y THIRD_PARTY_LICENSES.txt dist\ >nul
+	@copy /Y LICENSE dist\ >nul
 # 随包使用说明（面向用户；文件名用 ASCII 以免 cmd 在中文代码页下解析出错，内容中文）
 	@copy /Y resources\README.txt dist\README.txt >nul
 	@if not exist dist\resources\themes\default\main mkdir dist\resources\themes\default\main
