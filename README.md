@@ -1,5 +1,7 @@
 # SysRecover（九转还原 · 单机版）
 
+> [中文](README.md) | **English**
+
 > 版本 `0.4.1`｜**x64 + x86 双架构**（Windows 侧跟随系统位数，Linux 救援层固定 x64）｜Windows 7 / 10 / 11 / WinPE｜发布包 ≈47 MB（其中 ≈90% 是救援层）
 > 许可：自有代码 **MIT**（见 [`LICENSE`](LICENSE)）；第三方组件「单独分发」，清单、全文与源码出处见 [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt)
 
