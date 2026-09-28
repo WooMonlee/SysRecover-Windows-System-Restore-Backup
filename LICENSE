@@ -19,21 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
--------------------------------------------------------------------------------
-
-Note on scope / 适用范围说明
-
-This MIT license applies to SysRecover's own source code (everything under
-src/, skin/, tools/, tests/ and the build files authored for this project).
-
-It does NOT apply to the third-party components that are separately
-aggregated with the product (Linux kernel and modules, GRUB, shim, GRUB4DOS,
-busybox, musl, ntfs-3g, util-linux, wimlib, Duilib, UCRT, ...). Those remain
-under their own licenses - see THIRD_PARTY_LICENSES.txt for the full list,
-the license texts and where to obtain their sources.
-
-本 MIT 许可仅覆盖 SysRecover 自有源码；随产品「单独分发（聚合）」的第三方组件
-（Linux 内核与模块、GRUB、shim、GRUB4DOS、busybox、musl、ntfs-3g、util-linux、
-wimlib、Duilib、UCRT 等）各自遵循其原有许可，清单、全文与源码出处见
-THIRD_PARTY_LICENSES.txt。
