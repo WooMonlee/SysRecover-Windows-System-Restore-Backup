@@ -72,6 +72,24 @@ int StageRestore(const RestoreRequest& req, std::string& err,
                  bool* needReboot = nullptr, ProgressFn progress = nullptr,
                  ErrAdvice* adv = nullptr);
 
+// 安装/更新「一键还原菜单项」（用户 2026-09-29 规格）：
+//   把当前选中的 **镜像 + 目标分区** 写成**常驻任务契约**（目标分区根 `_zjresy*.log`
+//   + 软件目录 `restore-task.conf`），并部署救援环境 + **常驻**启动项
+//   （UEFI 写固件启动项、BIOS 写 BCD 实模式扇区项）。
+//   与 `StageRestore` 的区别：**不重启、不设单次启动**（不写 BootNext / bootsequence），
+//   留给用户在开机菜单里自行选择；进入救援层后按契约把镜像还原到目标分区。
+//   与 `StageRestore` 共用同一套安全检查与契约写入（只是模式不同），不会漂移。
+// 返回：0 成功；1 失败；2 参数错（缺镜像 / 目标无盘符）；4 危险目标被拒；5 镜像不可用。
+int StageRestoreMenu(const RestoreRequest& req, std::string& err,
+                     ErrAdvice* adv = nullptr);
+
+// 读取"已安装菜单项"绑定的镜像/目标（供 GUI 显示与"是否与当前选择一致"判断）。
+// 数据源：<exeDir>\restore-task.conf（StageRestore/StageRestoreMenu 写的副契约）。
+// 返回 false = 没有绑定信息（未安装，或软件目录不是可写位置）。
+bool ReadMenuBinding(std::wstring* imagePath, int* imageIndex,
+                     unsigned long long* targetOffset,
+                     unsigned long long* targetSize);
+
 // 修复引导（docs/15 · P5）：给**已经坏的机器**用 —— 不重装即可修好引导。
 //   disk/part <= 0 → 自动找系统盘（含 \Windows\System32\winload.exe 的分区）；
 //   否则用指定的 磁盘号/分区号（分区必须有盘符）。

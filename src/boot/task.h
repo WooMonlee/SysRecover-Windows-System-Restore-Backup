@@ -53,4 +53,10 @@ std::string BuildRestoreLogText(const RestoreTask& t,
 // 失败返回 false（暂存流程应视为致命，缺日志则 Linux 侧找不到目标）。
 bool WriteRestoreLog(wchar_t letter, const RestoreTask& t, std::string& log);
 
+// 从 restore-task.conf 文本里取一个键的值（第一个匹配；找不到 → 空串）。
+// 纯逻辑（不碰文件系统），可单测。首字符 '#' 的行与空行跳过；值**不做 trim**
+//（路径可能带空格），只去掉行尾 \r。
+// 用途：GUI 判断"已安装的菜单项绑定的是哪个镜像/目标分区"（ops.cpp::ReadMenuBinding）。
+std::string TaskConfGet(const std::string& confText, const std::string& key);
+
 }  // namespace sysrecover

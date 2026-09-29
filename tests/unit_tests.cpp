@@ -378,6 +378,29 @@ TEST(pathutil_make_dir_tree) {
     RemoveDirectoryW(base.c_str());
 }
 
+// ── task：restore-task.conf 读取（GUI 判断"菜单项绑定了哪个镜像"）──────
+TEST(task_conf_get) {
+    std::string conf = BuildTaskConf(SampleTask());
+    // 契约里写过的键要能取回来（SampleTask 的 imageIndex = 2）
+    CHECK_EQ(TaskConfGet(conf, "image_index"), std::string("2"));
+    CHECK_EQ(TaskConfGet(conf, "image_path"),
+             std::string("D:\\images\\win10.esd"));
+    CHECK(!TaskConfGet(conf, "target_offset").empty());
+    CHECK_EQ(TaskConfGet(conf, "contract_version"), std::string("1"));
+    // 不存在的键 → 空串
+    CHECK_EQ(TaskConfGet(conf, "no_such_key"), std::string(""));
+    // 注释/空行跳过；行尾 \r 去掉；值里的空格保留（路径可能带空格）
+    std::string t = "# c\r\n\r\na=1\r\nb= x y z \nc#not-a-comment=9\n";
+    CHECK_EQ(TaskConfGet(t, "a"), std::string("1"));
+    CHECK_EQ(TaskConfGet(t, "b"), std::string(" x y z "));  // 值不做 trim
+    CHECK_EQ(TaskConfGet(t, "c"), std::string(""));
+    // 前缀相同的键不能误命中
+    std::string t2 = "target=GUID\ntarget_size=100\ntarget_offset=200\n";
+    CHECK_EQ(TaskConfGet(t2, "target"), std::string("GUID"));
+    CHECK_EQ(TaskConfGet(t2, "target_size"), std::string("100"));
+    CHECK_EQ(TaskConfGet(t2, "target_offset"), std::string("200"));
+}
+
 // ── bootpath：引导链选择（2026-09-29 用户实测回归）──────────────
 // 关键用例：**UEFI 固件 + MBR 盘**必须走 BIOS/GRUB4DOS 链 —— 这类机器（CSM/Legacy
 // 装的 Windows）没有 ESP，按固件类型选 UEFI 分支会直接报"未找到 ESP 分区"。
