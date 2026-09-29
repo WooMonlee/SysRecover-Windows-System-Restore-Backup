@@ -32,6 +32,24 @@ bool BcdEntryExists(const std::wstring& guid) {
     return ContainsGuid(out, guid);
 }
 
+int BcdGetBootmgrTimeout(std::string& log) {
+    std::string out;
+    RunProcess(SysToolPath(L"bcdedit.exe"), L"/enum {bootmgr}", out);
+    int v = ParseBootmgrTimeout(out);
+    if (v < 0)
+        log += out;  // 解析不到 → 把原文留进日志，便于排查本地化/输出差异
+    return v;
+}
+
+bool BcdSetBootmgrTimeout(int seconds, std::string& log) {
+    std::string out;
+    int rc = RunProcess(SysToolPath(L"bcdedit.exe"),
+                        L"/set {bootmgr} timeout " + std::to_wstring(seconds),
+                        out);
+    log += out;
+    return rc == 0;
+}
+
 bool BcdCreateBootsector(const std::wstring& guid, const std::wstring& desc,
                          wchar_t driveLetter, std::string& log) {
     std::string out;

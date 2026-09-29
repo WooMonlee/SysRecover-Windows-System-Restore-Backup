@@ -115,15 +115,6 @@ PartitionStyle DiskStyleOf(uint32_t diskIndex) {
     return PartitionStyle::Unknown;
 }
 
-// 目标分区该走 UEFI/ESP 分支吗？**以目标磁盘分区风格为准**（boot/bootpath.h）：
-//   MBR 目标 → BIOS/GRUB4DOS 链（哪怕固件是 UEFI：那台机器本来就是 legacy 启动的）；
-//   GPT 目标 → UEFI/ESP 链。
-// 2026-09-29 修：此前只看 `IsUefiFirmware()`，导致 "UEFI 固件 + MBR 系统盘" 的机器
-// 误走 ESP 分支 → "未找到 ESP 分区" 直接失败（用户实测，旧版 0.4.1 起一直存在）。
-bool UseUefiBootFor(const PartitionInfo& t) {
-    return ShouldUseUefiBoot(IsUefiFirmware(), DiskStyleOf(t.diskIndex));
-}
-
 // 取一个**可用的 ESP 根**（形如 "X:\\"）。顺序（docs/15 · P4）：
 //   ① `mountvol <空闲盘符>: /s` —— 固件**真正启动**的那个分区。关键点：它按固件
 //      启动项找，**不依赖分区类型 GUID**，所以 DiskGenius 把 ESP 标成 Basic Data
@@ -276,6 +267,17 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
 }
 
 }  // namespace
+
+// 目标分区该走 UEFI/ESP 分支吗？**以目标磁盘分区风格为准**（boot/bootpath.h）：
+//   MBR 目标 → BIOS/GRUB4DOS 链（哪怕固件是 UEFI：那台机器本来就是 legacy 启动的）；
+//   GPT 目标 → UEFI/ESP 链。
+// 2026-09-29 修：此前只看 `IsUefiFirmware()`，导致 "UEFI 固件 + MBR 系统盘" 的机器
+// 误走 ESP 分支 → "未找到 ESP 分区" 直接失败（用户实测，旧版 0.4.1 起一直存在）。
+// 对外声明在 ops.h（GUI 要用它给"安装菜单成功"的提示分链措辞，PIT-094）——
+// 定义必须在匿名命名空间**之外**，否则 ops.h 的声明没有外部定义、链接不到。
+bool UseUefiBootFor(const PartitionInfo& t) {
+    return ShouldUseUefiBoot(IsUefiFirmware(), DiskStyleOf(t.diskIndex));
+}
 
 // 目标分区是否**未**被占用（可以就地写）？—— 对外可见（ops.h），因为 GUI/CLI 要用它
 // 决定提示文案（"需不需要重启"）；StageRestore 内部用的是同一个函数，不会漂移。
@@ -989,6 +991,32 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
         //   BIOS/MBR           → BCD bootsequence
         // 单次启动**只在"暂存+重启"模式设**；菜单项模式保持"用户自己选"（用户规格）。
         if (menuEntry) {
+            // 常驻菜单**可被选中**的前提：{bootmgr} timeout > 0 —— timeout=0 时
+            // bootmgr 不停留直接进 Windows，按什么键都没用（用户 2026-09-29 实测；
+            // timeout=0 来源：还原后的系统 BCD 被 bootfix 写成 0，见 bootfix.cpp）。
+            // 策略**只升不降**：原值 ≥1 一律保留（用户："原来大于 1 就保留原值"），
+            // 0/缺失补成 1 秒（用户：1 秒足够用上下键选、几乎不拖慢开机）。
+            // 仅 BCD 菜单路径需要（BIOS，或 Secure Boot 的 bootapp 模式）；
+            // UEFI 常驻项在固件 BootOrder（开机按 F12 选），与 bootmgr timeout 无关。
+            if (!useUefi || CurrentSbMode() == SbMode::Bootapp) {
+                std::string tlog;
+                int cur = BcdGetBootmgrTimeout(tlog);
+                if (cur < 1) {
+                    if (!BcdSetBootmgrTimeout(1, tlog)) {
+                        ReleaseOpLock();
+                        ProgressDone("restore", "failed");
+                        err = Tr("设置启动菜单停留时间失败（菜单将无法被选中）: ") +
+                              tlog;
+                        LogError(err);
+                        return 1;
+                    }
+                    LogInfo("bootmgr timeout: " + std::to_string(cur) +
+                            " -> 1s (menu selectable)");
+                } else {
+                    LogInfo("bootmgr timeout kept at " + std::to_string(cur) +
+                            "s (>=1, menu selectable)");
+                }
+            }
             LogInfo("menu entry mode: no BootNext/bootsequence (user picks it in "
                     "the boot menu)");
         } else if (useUefi && CurrentSbMode() != SbMode::Bootapp) {

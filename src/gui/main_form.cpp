@@ -645,18 +645,25 @@ void CMainForm::RefreshBootMenuBtn() {
         // 用户规格（2026-09-29）：要换镜像请**先删除再安装**。
         if (hasBinding) {
             std::wstring tgt;
+            bool uefiPath = false;
             for (const auto& d : EnumerateDisks()) {
                 for (const auto& q : d.parts) {
                     if (boundOff && q.offsetBytes == boundOff &&
                         q.sizeBytes == boundSz && !q.letter.empty()) {
                         tgt = q.letter + Tr(L": 盘");
+                        uefiPath = UseUefiBootFor(q);  // UEFI=固件启动项，选法不同
                     }
                 }
             }
             if (tgt.empty()) tgt = Tr(L"（原目标分区）");
-            swprintf(tip, 512,
-                     Tr(L"已安装：开机菜单里选「SysRecover」即可把\n%ls（第 %d 个镜像）还原到 %ls。\n点此删除（要换镜像请先删除、再安装）"),
-                     boundImg.c_str(), boundIdx, tgt.c_str());
+            if (uefiPath)
+                swprintf(tip, 512,
+                         Tr(L"已安装：开机按 F12 启动菜单选「SysRecover」，\n把 %ls（第 %d 个镜像）还原到 %ls。\n点此删除（要换镜像请先删除、再安装）"),
+                         boundImg.c_str(), boundIdx, tgt.c_str());
+            else
+                swprintf(tip, 512,
+                         Tr(L"已安装：开机菜单里选「SysRecover」即可把\n%ls（第 %d 个镜像）还原到 %ls。\n点此删除（要换镜像请先删除、再安装）"),
+                         boundImg.c_str(), boundIdx, tgt.c_str());
         } else {
             wcscpy_s(tip, Tr(L"已安装启动还原（旧版安装，未绑定镜像）。点此删除"));
         }
@@ -734,7 +741,11 @@ void CMainForm::ToggleBootMenu() {
         int rc = StageRestoreMenu(req, err, &last_adv_);
         m_busy = false;
         if (rc == 0)
-            SetStatus(Tr(L"启动还原菜单已安装：开机选「SysRecover」即可还原该镜像"));
+            // 两条引导链的"进菜单"方式不同（PIT-092/094）：BIOS 在 bootmgr 的
+            // 选择菜单里选；UEFI 是固件启动项，要开机按 F12。
+            SetStatus(UseUefiBootFor(part)
+                          ? Tr(L"启动还原菜单已安装：开机按 F12 启动菜单选「SysRecover」即可还原该镜像")
+                          : Tr(L"启动还原菜单已安装：开机选「SysRecover」即可还原该镜像"));
         else if (!err.empty())
             SetStatus(U2W(err));
         else

@@ -567,6 +567,14 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **坑**：`CConfirmDlg` 正文**只显示 3 行、单行标签超宽会静默裁切**（PIT-039）→ 确认文案必须压成 3 行短句（第一版 7 行被裁了一半）；回车默认项要与高亮按钮一致（右=动作=回车，ESC=取消）。
   · **回归**：单测 `task_conf_get`（含"值不去空格/前缀键不误命中/注释跳过"）；`make check` **30 用例 / 195 断言**；GUI 截图实测四态：未选镜像=灰、选镜像后=亮、已安装=「删除菜单」+悬停说明、确认框 3 行不裁。✅ 2026-09-29
 
+- PIT-094 **常驻菜单装好了却"按什么键都选不了"：`{bootmgr} timeout=0` 时 bootmgr 不停留直接进 Windows**（2026-09-29 用户实测）：用户在笔记本（Win10 x64 MBR）与本机都装了「安装菜单」，重启后**无论按什么都进不去菜单**；手动 `bcdedit /set {bootmgr} timeout 30` 后成功进菜单、选中并**完整还原系统**（= PIT-093 的端到端真机验证通过 ✓）。
+  · **timeout=0 的来源**：凡我们还原过的机器，目标 BCD 由 bootfix 生成且**故意写 timeout 0**（`bootfix.cpp`："启动菜单不等待"——单条目时无感知，一旦加上常驻恢复条目就不停留）；新装机器本身也可能就是 0。
+  · **修复（用户 2026-09-29 规格：1 秒；"原来大于 1 就保留原值"）**：`StageRestoreMenu` 的 BCD 分支（BIOS + Secure Boot 的 bootapp 模式）装菜单时**只升不降**：原值 ≥1 一律保留、0/缺失补成 **1 秒**（1 秒足够用上下键选、几乎不拖慢开机）；设置失败 **fail-closed 中止**（菜单装上但选不了 = 静默坏，正是本次的坑）。**纯 UEFI 不碰** —— 其常驻项在固件 `BootOrder`（**开机按 F12** 选），与 bootmgr timeout 无关。
+  · **实现**：`bcd.h::ParseBootmgrTimeout()`（纯逻辑、单测覆盖；**不依赖标签语言**——按"整行恰好两 token、第二 token 全数字且 ≤1 天"取值，兼容本地化/其它写法）+ `bcd.cpp::BcdGetBootmgrTimeout/BcdSetBootmgrTimeout`；`ops.cpp` 菜单分支调用；GUI 成功提示与悬停提示按 `UseUefiBootFor()`（已提到 `ops.h`，与 `StageRestoreImpl` 内部同一函数）分链措辞：BIOS=开机菜单选、UEFI=按 F12。
+  · **顺带**：BCD 恢复条目描述由 `Tr(L"一键还原恢复环境")` 改为 **ASCII `SysRecover Recovery Environment`** —— bootmgr 菜单里中文描述在部分机器上显示成方框（PIT-054 实测），且与 UEFI bootapp 条目（desc `SysRecover`）、GUI 提示「选 SysRecover」三处一致（旧译文键随 skeleton 自动清除）。
+  · **边界（有意不改）**：还原完成后目标 BCD 是 bootfix 的单条目 + timeout 0 → 菜单自动消失、开机不停留，无需回写；**删除菜单也不回写 timeout**（单条目不显示菜单、无感知；双系统用户自己的停留时间不被动）。已手动调到 30 的机器按"只升不降"继续 30，想改回 1 秒手跑 `bcdedit /set {bootmgr} timeout 1` 即可。
+  · **回归**：单测 `bcd_parse_bootmgr_timeout`（英文输出/本地化标签/CR/无行尾/非数字/超限值跳过）→ `make check` **31 用例 / 204 断言**、`check-i18n` **328 keys**、`check-widths` OK（新 EN 状态文案曾超 638px 宽度门禁，已缩短）；`make package` 双架构。**待复测**：新构建在真机装菜单应自动把 0 → 1（日志 `bootmgr timeout: 0 -> 1s`），开机能用上下键选。✅ 2026-09-29
+
 ---
 
 ## 14. License 合规（SBOM，随版本更新）
