@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "bcd.h"
+#include "bcd_parse.h"
 #include "../common/process.h"
 
 // ── MOK/UKI 备选线（PIT-062）──────────────────────────────────────
@@ -270,6 +271,26 @@ unsigned long long FileSize(const std::wstring& path) {
     return (unsigned long long)sz.QuadPart;
 }
 
+// 文件/目录是否存在。
+bool PathExists(const std::wstring& p) {
+    return GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+bool DirExists(const std::wstring& p) {
+    DWORD a = GetFileAttributesW(p.c_str());
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+// 目录里是否存在匹配 pattern 的文件（如 Fonts\*_boot.ttf）。
+bool HasFileMatching(const std::wstring& dir, const wchar_t* pattern) {
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((dir + L"\\" + pattern).c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE)
+        return false;
+    FindClose(h);
+    return true;
+}
+
 // 递归删除文件/目录（先清属性，否则只读/隐藏的删不掉）。
 bool RemoveTree(const std::wstring& path) {
     DWORD a = GetFileAttributesW(path.c_str());
@@ -472,13 +493,17 @@ bool InstallUefiBootEntry(const std::wstring& espRoot,
     // 空间检查：ESP 一般只有 100MB，Windows 自己的引导文件已占 ~40MB，而我们要塞
     // ~52MB（内核+initramfs，或签名版 UKI + shim）。装不下时**提前算清并报错**，
     // 而不是拷到一半失败、留个半残的引导层。
+    // 余量 16MB（2026-09-29 由 1MB 提高）：`bcdboot` 刷新该分区上的
+    // `EFI\Microsoft\Boot` 目录（bootmgfw 1.5MB + bootmgr.efi 1.5MB + Fonts
+    // 4.5MB + Resources/MUI + BCD）实测约 8.6MB；留 16MB 才能保证"我们装完之后
+    // bcdboot 还写得进"（docs/15）。
     unsigned long long need = 0;
     for (const auto& f : files)
         need += FileSize(exeDir + f.first);
     ULARGE_INTEGER freeBytes{};
     if (need > 0 && GetDiskFreeSpaceExW(espRoot.c_str(), &freeBytes, nullptr,
                                         nullptr)) {
-        const unsigned long long kMargin = 1ull << 20;  // 1MB 余量
+        const unsigned long long kMargin = 16ull << 20;  // 16MB：给 bcdboot 留位
         char line[192];
         snprintf(line, sizeof(line),
                  "ESP space: need %.1f MB, free %.1f MB\n", need / 1048576.0,
@@ -787,6 +812,93 @@ SbMode CurrentSbMode() {
     // GRUB → Canonical 签名的内核 + 我们的 initramfs）→ 零注册、零成本、无绕过，
     // 实测 QEMU 全链通过（PIT-066 变体 D）。
     return SbMode::Grub;
+}
+
+// ── 引导层健康检查（docs/15 · P2/P3）──────────────────────────────
+// 起因：`bcdboot` 的返回码曾被丢弃（静默失败），且没人校验产物；ESP 一旦写残，
+// 还原后就是"选择操作系统"空菜单 / 各种 0xc00000xx。这三个函数把"写没写成"
+// 变成可判定的事实，并让调用方 fail-closed。
+bool TargetBcdTemplateOk(wchar_t targetLetter, std::string& detail) {
+    if (!targetLetter) {
+        detail = "target letter is empty";
+        return false;
+    }
+    std::wstring tpl = std::wstring(1, targetLetter) +
+                       L":\\Windows\\System32\\Config\\BCD-Template";
+    if (!PathExists(tpl)) {
+        detail = "missing \\Windows\\System32\\Config\\BCD-Template";
+        return false;
+    }
+    if (FileSize(tpl) == 0) {
+        detail = "empty \\Windows\\System32\\Config\\BCD-Template";
+        return false;
+    }
+    return true;
+}
+
+bool EspHasRoomForBcdboot(const std::wstring& espRoot, std::string& detail) {
+    // bcdboot 刷新 \EFI\Microsoft\Boot\ 实测约 8.6MB（bootmgfw + bootmgr.efi +
+    // Fonts 4.5MB + Resources + MUI + BCD）；要求 ≥ 24MB 留够余量。
+    const unsigned long long kNeed = 24ull << 20;
+    ULARGE_INTEGER freeBytes{};
+    if (!GetDiskFreeSpaceExW(espRoot.c_str(), &freeBytes, nullptr, nullptr)) {
+        detail = "cannot query free space on ESP";
+        return false;
+    }
+    char line[160];
+    snprintf(line, sizeof(line), "ESP free for bcdboot: %.1f MB (need %.0f MB)",
+             freeBytes.QuadPart / 1048576.0, kNeed / 1048576.0);
+    detail = line;
+    return freeBytes.QuadPart >= kNeed;
+}
+
+bool VerifyEspBcd(const std::wstring& espRoot, std::string& detail) {
+    // ① BCD 文件在不在
+    std::wstring bcd = espRoot + L"EFI\\Microsoft\\Boot\\BCD";
+    if (!PathExists(bcd)) {
+        detail = Tr("ESP 上没有 \\EFI\\Microsoft\\Boot\\BCD");
+        return false;
+    }
+    // ② bcdedit 能不能读出"有 displayorder + 有 winload 条目"
+    std::string out;
+    int rc = RunProcess(SysToolPath(L"bcdedit.exe"),
+                        L"/store \"" + bcd + L"\" /enum all", out);
+    if (rc != 0) {
+        detail = Tr("bcdedit 读取 ESP 上的 BCD 失败（rc=") +
+                 std::to_string(rc) + Tr("）");
+        return false;
+    }
+    std::string why;
+    if (!BcdEnumShowsOsEntry(out, &why)) {
+        detail = Tr("ESP 上的 BCD 不完整：") + why;
+        return false;
+    }
+    // ③ bcdboot "写一半"的特征文件集（docs/15 §4.5）
+    struct Item {
+        const wchar_t* path;   // 相对 ESP 根
+        const char* name;      // 报错用（ASCII）
+    };
+    const Item kItems[] = {
+        {L"EFI\\Microsoft\\Boot\\bootmgfw.efi", "bootmgfw.efi"},
+        {L"EFI\\Microsoft\\Boot\\Resources\\bootres.dll", "Resources\\bootres.dll"},
+        {L"EFI\\Boot\\bootx64.efi", "EFI\\Boot\\bootx64.efi"},
+    };
+    for (const auto& it : kItems) {
+        if (!PathExists(espRoot + it.path)) {
+            detail = std::string(Tr("ESP 上缺少引导文件：")) + it.name;
+            return false;
+        }
+    }
+    std::wstring bootDir = espRoot + L"EFI\\Microsoft\\Boot";
+    if (!HasFileMatching(bootDir + L"\\Fonts", L"*_boot.ttf")) {
+        detail = Tr("ESP 上缺少引导字体（Fonts\\*_boot.ttf）");
+        return false;
+    }
+    if (!DirExists(bootDir + L"\\zh-CN") && !DirExists(bootDir + L"\\en-US")) {
+        detail = Tr("ESP 上缺少引导语言资源目录（zh-CN / en-US）");
+        return false;
+    }
+    return true;
 }
 
 }  // namespace sysrecover

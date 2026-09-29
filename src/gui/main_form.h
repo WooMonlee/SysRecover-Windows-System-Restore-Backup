@@ -59,6 +59,10 @@ private:
     // 从界面（原生 EDIT 子窗口）回读镜像路径 → 同步 m_wimPath、必要时解析镜像、刷新按钮。
     // 供 EN_CHANGE 与 500ms 兜底定时器共用（用户 2026-09-23：手输/粘贴后按钮不亮）。
     void SyncImagePathFromUi();
+    // 备份模式：按第一步的文件后缀挑「格式」下拉（.wim → .wim(正常大小)）。
+    void SyncFormatFromPath();
+    // 「限制CPU」下拉 → m_cpuCap；备份中改了会立即作用到正在跑的任务。
+    void ApplyCpuCapFromUi();
     void ToggleBootMenu();       // 「安装/删除启动还原」按钮
     void RefreshBootMenuBtn();   // 按是否已安装刷新按钮文字
     void RebootNow();
@@ -87,6 +91,8 @@ private:
     sysrecover::SystemDescription m_sysDesc;  // 运行中系统的描述（InitWindow 里取）
     int m_selPart = -1;
     int m_selImageIndex = 1;
+    // 「限制CPU」下拉当前值（0=不限，25/50/75=整机 CPU 百分比上限，见 cpucap.h）
+    int m_cpuCap = 0;
     std::vector<int> m_imgIdx;
     std::vector<sysrecover::PartitionInfo> m_parts;
 
@@ -100,6 +106,7 @@ private:
     std::wstring      m_workerDest;     // StartBackupAsync 用：目标路径
     std::string       m_workerCompress; // StartBackupAsync 用：压缩方式
     std::wstring      m_workerName;     // StartBackupAsync 用：子镜像名
+    int               m_workerCpuCap = 0;  // StartBackupAsync 用：CPU 上限（起线程前定格）
     std::string       last_err_;        // worker 错误回传
     sysrecover::ErrAdvice last_adv_ = sysrecover::ADV_NONE;  // worker 建议码回传
     // 进度节流（100ms）

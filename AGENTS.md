@@ -536,6 +536,23 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 
 ---
 
+- PIT-090 **UEFI 引导写入的三个"静默失败"全部堵上（bcdboot rc / 空间 / 产物）+ 找不到 ESP 的回退 + `repair-boot` 一键修复**（2026-09-29，`0.4.2` 批次；分析全过程见 `docs/15`）：背景是机房学生机"还原后只剩『选择操作系统』空菜单"（判定为**镜像侧**，已停止深挖）与"DiskGenius 重建分区后找不到引导盘"（**我们代码的锅**）。逐条核实后确认 **5 处真缺陷**并修复：
+  · **① bcdboot 返回码被丢弃**（`ops.cpp` 暂存 UEFI / 就地 UEFI / 就地 BIOS 三处只 `LogInfo`）→ 现在 `rc != 0` 即 `fail-closed` 并把 BFSVC 原文给用户（实测拿假 Windows 目录触发：`rc=193 尝试复制启动文件失败`）。
+  · **② ESP 空间**：`InstallUefiBootEntry` 余量只有 **1MB**，且**先**拷我们 33MB 载荷、**后**跑 bcdboot → 空间被自己挤爆（实测满盘时 bcdboot `rc=112` 无声失败）→ 余量提到 **16MB**（bcdboot 实测需 ~8.6MB），并把**暂存流程改成"先 bcdboot、后放载荷"**。
+  · **③ 没有产物断言**：新增 `boot/bcd_parse.{h,cpp}`（纯逻辑 `BcdEnumShowsOsEntry`）+ `uefi.cpp::VerifyEspBcd` —— 断言 BCD 里 `displayorder` 非空且有 `winload` 条目，且 `bootmgfw.efi`/`Resources\bootres.dll`/`Fonts\*_boot.ttf`/`zh-CN|en-US` 齐全（bcdboot "写一半"的特征）。**这是无论根因都能拦住"空菜单"的保险丝。**
+  · **④ 找不到 ESP 只认精确类型 GUID**：新增 `disk.cpp::FindEspPartitionFallback`（**FAT 分区且根下有 `\EFI\Microsoft\Boot\bootmgfw.efi`** —— 固件只认路径不认类型 GUID）＋ `DescribePartitions()`（纯 ASCII 分区表摘要），报错文案改成能指导"漏建 ESP / 被标成 Basic Data"。
+  · **⑤ 没有修复手段**：新增 CLI `SysRecover.exe repair-boot [--disk N --part M]`（找系统盘 → 找 ESP（含回退）→ 模板/空间预检 → bcdboot → 产物校验），**已坏的机器不必重装**。
+  · 顺手：`extract --dest X:\`（**盘符根**）此前必报"无法创建输出目录"（`CreateDirectoryW("X:\\")` 失败）→ 现在把根目录视为已存在；失败时 `progress.json` 不再一律写 `percent=100`，改写**最后一个已知进度**。
+  · 验证：`make check` 28 用例/178 断言 + `check-i18n`（**322** keys）全绿；`--lang en help repair-boot` 正确；`repair-boot` 负例带分区表摘要、`rc=1` 且**零写盘**；`extract --dest W:\` 实测成功。
+  · ⚠️ **待做**：UEFI 分支的**机器侧回归**（本机 BIOS+MBR，走不到 ESP 分支）。✅ 2026-09-29
+
+- PIT-091 **`make package`（双架构）必须把两个工具链的 `bin` 都放进 PATH，否则 x86 那半**静默**失败**（2026-09-29，本机重装 i686 工具链时踩到）：只把 `D:\Prog\ProgIDE\mingw64\bin` 加进 PATH 就跑去 `make package`，x86 侧第一条编译就挂：
+  `D:/Prog/ProgIDE/mingw32/bin/i686-w64-mingw32-g++ … -c src/disk/disk.cpp -o build-x86/…` → `mingw32-make: *** [build-x86/app/disk/disk.o] Error 1`，**编译器一行诊断都不打**（`cc1plus` 找不到自己的 DLL，stderr 空）→ 极易误判成"源码有错"。实测把 `D:\Prog\ProgIDE\mingw32\bin` 也加进 PATH 后，同一条命令立刻成功、`make package` 双架构通过（PIT-086 记的是"直跑 `g++.exe`"的同款坑，这里是 **make 场景**）。
+  · **i686 工具链来源**（本机 2026-09-29 装回）：mingw-builds（niXman）与 x64 **同源同版本** —— `i686-14.2.0-release-posix-dwarf-ucrt-rt_v12-rev0.7z`（88MB，`https://github.com/niXman/mingw-builds-binaries/releases/tag/14.2.0-rt_v12-rev0`），解压出的顶层目录就是 `mingw32/`，直接解到 `D:\Prog\ProgIDE\` 即可（本机 x64 也是 mingw-builds：`x86_64-posix-seh-rev0` + UCRT `rt_v12-rev0`）。
+  · 验收：`i686-w64-mingw32-g++.exe --version` → `i686-posix-dwarf-rev0 … 14.2.0`；`objdump -f dist\SysRecover.exe` → `pei-i386`、`dist\x64\…` → `pei-x86-64`。✅ 2026-09-29
+
+---
+
 ## 14. License 合规（SBOM，随版本更新）
 
 | 组件 | 版本/来源 | License | 链接/分发方式 |

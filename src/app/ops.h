@@ -17,6 +17,7 @@ struct BackupRequest {
     bool append = false;           // true=追加到已有 WIM
     bool verify = false;           // true=写完后跑 wimlib_verify_wim
     bool snapshot = false;         // true=强制 VSS 快照（非盘符根也可用，如活动数据库目录）
+    int  cpuCap = 0;               // CPU 硬上限百分比（0=不限；1..100，见 common/cpucap.h）
 };
 
 struct RestoreRequest {
@@ -61,8 +62,7 @@ bool CanRestoreInPlace(const PartitionInfo& target, std::string& why,
 int CheckRestoreSpace(const std::wstring& imagePath, int index,
                       const PartitionInfo& target, std::string& err);
 
-// 还原。**两种执行方式自动选择**（PIT-064）：
-//   * 目标分区**没被占用**时（在 PE 里、或目标是别的分区）→ 就地还原：格式化 +
+// 还原。**两种执行方式自动选择**（PIT-064）：//   * 目标分区**没被占用**时（在 PE 里、或目标是别的分区）→ 就地还原：格式化 +
 //     apply + 修引导，**不重启**（needReboot=false）；
 //   * 目标被占用（还原正在运行的系统盘）→ 暂存任务 + 重启进 Linux 救援层执行
 //     （§2 禁令1），needReboot=true。
@@ -71,5 +71,13 @@ int CheckRestoreSpace(const std::wstring& imagePath, int index,
 int StageRestore(const RestoreRequest& req, std::string& err,
                  bool* needReboot = nullptr, ProgressFn progress = nullptr,
                  ErrAdvice* adv = nullptr);
+
+// 修复引导（docs/15 · P5）：给**已经坏的机器**用 —— 不重装即可修好引导。
+//   disk/part <= 0 → 自动找系统盘（含 \Windows\System32\winload.exe 的分区）；
+//   否则用指定的 磁盘号/分区号（分区必须有盘符）。
+// 流程：定位系统盘 → 找 ESP（GUID → mountvol → FAT 回退）→ 模板/空间预检 →
+//       `bcdboot <系统盘>:\Windows /s <ESP>: /f UEFI`（BIOS 走 /f BIOS）→ 产物断言。
+// 返回：0 成功；1 失败（msg 为 UTF-8，含分区表摘要等诊断）。
+int RepairBoot(int disk, int part, std::string& msg);
 
 }  // namespace sysrecover

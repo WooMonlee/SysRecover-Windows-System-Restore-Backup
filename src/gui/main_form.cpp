@@ -1,4 +1,4 @@
-// 主窗口实现。Phase 5：CLI 逻辑经 app/ops 共享层桥接到 GUI。
+﻿// 主窗口实现。Phase 5：CLI 逻辑经 app/ops 共享层桥接到 GUI。
 // 注意：所有 C++ 标准头已通过 main_form.h 在 StdAfx.h 之前 include（PIT-012）。
 #include "common/i18n.h"
 #include "main_form.h"
@@ -13,6 +13,7 @@
 #include "boot/bcd.h"
 #include "boot/grub.h"
 #include "boot/uefi.h"
+#include "common/cpucap.h"
 #include "common/logger.h"
 #include "common/process.h"
 #include "common/sysinfo.h"
@@ -219,7 +220,7 @@ LRESULT CMainForm::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
     if (msg == WM_COMMAND && HIWORD(wParam) == EN_CHANGE) {
         // 输入框内容变化 —— 原生 EDIT 的 EN_CHANGE 会送到父窗口（=主窗口，Duilib
         // 控件本身不是窗口）。用户 2026-09-23 反馈：**手动输入**镜像路径时
-        // "开始备份系统"按钮一直是灰的（以前只有"浏览…"/拖入才会刷新按钮）。
+        // "开始备份"按钮一直是灰的（以前只有"浏览…"/拖入才会刷新按钮）。
         // 这里把当前文本同步进 m_wimPath 并刷新按钮；还原模式下若指向存在的文件，
         // 顺手解析子镜像（用 m_lastLoadedWim 防止每敲一个键就重解析一遍）。
         CControlUI* pEdit = m_PaintManager.FindControl(_T("ImagePath"));
@@ -247,6 +248,7 @@ LRESULT CMainForm::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                     m_lastLoadedWim = m_wimPath;
                     LoadWimImages(m_wimPath);
                 }
+                SyncFormatFromPath();  // 备份：路径带 .wim/.esd → 自动定格式
                 UpdateMainAction();
             }
         }
@@ -554,7 +556,11 @@ void CMainForm::Notify(TNotifyUI& msg) {
             CancelAndExit();  // 选了「继续等待」则什么都不做（任务继续）
         return;
     }
-    if (m_busy) return;  // 任务执行中忽略其他点击
+    // 任务执行中只放行一件事：改「限制CPU」—— 用户 2026-09-28 规格明确要求
+    // 「点击或**备份过程中**点击」都能调（改的是 Job 速率，随时可改，安全）。
+    const bool cpuSel = msg.sType == DUI_MSGTYPE_ITEMSELECT &&
+                        msg.pSender && msg.pSender->GetName() == _T("CpuCapBox");
+    if (m_busy && !cpuSel) return;  // 任务执行中忽略其他点击
     if (msg.sType == DUI_MSGTYPE_CLICK) {
         CDuiString name = msg.pSender->GetName();
         if (name == _T("BrowseBtn")) {
@@ -562,7 +568,7 @@ void CMainForm::Notify(TNotifyUI& msg) {
         } else if (name == _T("MainAction")) {
             if (m_backupMode) StartBackup(); else StartRestore();
         } else if (name == _T("RepairBootBtn")) {
-            // 「清除引导项」：删 BCD 条目 + 清 bootsequence + 删数据盘上的
+            // 「清除引导」：删 BCD 条目 + 清 bootsequence + 删数据盘上的
             // grldr/grldr.mbr/menu.lst/ZJRESTORE（用户要求：要清就清干净）
             std::string log;
             bool ok = RemoveBootLayer(log);
@@ -596,6 +602,8 @@ void CMainForm::Notify(TNotifyUI& msg) {
         if (name == _T("PartitionBox")) {
             m_selPart = static_cast<CComboUI*>(msg.pSender)->GetCurSel();
             UpdateMainAction();
+        } else if (name == _T("CpuCapBox")) {
+            ApplyCpuCapFromUi();  // 空闲或备份中都直接生效
         } else if (name == _T("ImageIndexBox")) {
             int sel = static_cast<CComboUI*>(msg.pSender)->GetCurSel();
             if (sel >= 0 && sel < (int)m_imgIdx.size())
@@ -621,7 +629,7 @@ void CMainForm::RefreshBootMenuBtn() {
     bool on = BootMenuInstalled(detail);
     CControlUI* p = m_PaintManager.FindControl(_T("BootMenuBtn"));
     if (p) {
-        p->SetText(on ? Tr(L"删除启动还原") : Tr(L"安装启动还原"));
+        p->SetText(on ? Tr(L"删除菜单") : Tr(L"安装菜单"));
         // 按钮只有 88px，英/中都塞不下"这个按钮到底干什么"→ 交给悬停提示。
         // 文字随安装状态变，提示也得跟着变（否则会指反）。
         p->SetToolTip(on ? Tr(L"移除上面那条开机启动项，并清掉目标/数据盘上的恢复文件")
@@ -780,6 +788,7 @@ void CMainForm::BrowseSaveFile() {
                     static_cast<CEditUI*>(m_PaintManager.FindControl(_T("ImagePath")));
                 if (pEdit) pEdit->SetText(m_wimPath.c_str());
                 SetStatus(Tr(L"备份保存至：") + m_wimPath);
+                SyncFormatFromPath();  // 对话框里选的扩展名 → 定格式（后缀一致时是空操作）
             }
             pItem->Release();
         }
@@ -819,6 +828,7 @@ void CMainForm::HandleDroppedFiles(WPARAM wParam) {
     if (pEdit) pEdit->SetText(m_wimPath.c_str());
     if (m_backupMode) {
         SetStatus(Tr(L"备份保存至：") + m_wimPath);
+        SyncFormatFromPath();  // 拖进来的 .wim/.esd 同样决定格式
         UpdateMainAction();
     } else {
         LoadWimImages(m_wimPath);  // 内部设 m_imageOk 并刷新主按钮
@@ -878,6 +888,53 @@ int CMainForm::BackupFmt() const {
         static_cast<CComboUI*>(m_PaintManager.FindControl(_T("FormatBox")));
     int fmt = pFmt ? pFmt->GetCurSel() : 1;
     return (fmt < 0 || fmt > 2) ? 1 : fmt;
+}
+
+// 按第一步的文件后缀定「格式」（用户 2026-09-28 规格）：路径里输了 `.wim` 就自动
+// 选中「.wim(正常大小)」、`.esd` 选「.esd(慢速小体积)」，不必再手点一次下拉。
+// 只在**路径变化**时同步 —— 手动换格式不会改路径，所以不会被反复顶回去。
+void CMainForm::SyncFormatFromPath() {
+    if (!m_backupMode) return;
+    std::wstring p = m_wimPath;
+    while (!p.empty() && (p.back() == L' ' || p.back() == L'"' || p.back() == L'\''))
+        p.pop_back();
+    size_t slash = p.find_last_of(L"\\/");
+    std::wstring fn = (slash == std::wstring::npos) ? p : p.substr(slash + 1);
+    if (fn.size() < 4) return;  // 后缀还没输完，别乱动
+    std::wstring ext = fn.substr(fn.size() - 4);
+    for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+    if (ext != L".wim" && ext != L".esd") return;
+    int want = (ext == L".wim") ? 1 : 0;
+    CComboUI* pFmt =
+        static_cast<CComboUI*>(m_PaintManager.FindControl(_T("FormatBox")));
+    if (pFmt && pFmt->GetCount() > want && pFmt->GetCurSel() != want)
+        pFmt->SelectItem(want);
+}
+
+// 「限制CPU」下拉 → 上限百分比（下标 0/1/2/3 = 不限/25/50/75，见 skin/main.xml）。
+// 备份中改了立即生效：改的是 Job 对象的速率，不打断正在跑的 wimlib。
+void CMainForm::ApplyCpuCapFromUi() {
+    CComboUI* p =
+        static_cast<CComboUI*>(m_PaintManager.FindControl(_T("CpuCapBox")));
+    if (!p) return;
+    int sel = p->GetCurSel();
+    if (sel < 0) sel = 0;
+    m_cpuCap = sel * 25;
+    std::wstring msg = Tr(L"CPU 不限制");
+    if (m_cpuCap != 0) {
+        wchar_t buf[64];
+        swprintf(buf, 64, Tr(L"CPU 限制：%d%%"), m_cpuCap);
+        msg = buf;
+    }
+    if (m_busy) {
+        std::string why;
+        if (!SetCpuCap(m_cpuCap, &why)) {
+            LogWarn("cpu cap change failed: " + why);
+            SetStatus(U2W(why));
+            return;
+        }
+    }
+    SetStatus(msg);
 }
 
 // ────────────────── 还原（UI 校验 + worker 线程暂存） ──────────────────
@@ -1058,6 +1115,7 @@ void CMainForm::StartBackup() {
     m_workerDest    = dest;
     m_workerCompress = compress;
     m_workerName    = name;
+    m_workerCpuCap  = m_cpuCap;  // 起线程前定格（备份中再改走 SetCpuCap 直接生效）
     m_lastProgressPost = std::chrono::steady_clock::now();
     try {
         m_worker = std::thread(&CMainForm::StartBackupAsync, this);
@@ -1078,6 +1136,7 @@ void CMainForm::StartBackupAsync() {
     req.compress = m_workerCompress;
     req.name    = m_workerName;
     req.append  = false;
+    req.cpuCap  = m_workerCpuCap;
     auto progressFn = [this](int pct, const std::string& stage) -> bool {
         if (m_cancel) return true;  // 取消信号
         auto now = std::chrono::steady_clock::now();
@@ -1111,13 +1170,17 @@ void CMainForm::ApplyModeUi() {
     };
     if (m_backupMode) {
         Text(_T("BrowseBtn"),   Tr(L"浏览保存位置…"));
-        Text(_T("MainAction"),  Tr(L"开始备份系统"));
+        Text(_T("MainAction"),  Tr(L"开始备份"));
         Text(_T("NoteLabel"),   Tr(L"备份备注："));
         Vis(_T("ImageIndexBox"), false);
         Vis(_T("NoteText"),     false);
         Vis(_T("NoteInput"),    true);
         Vis(_T("FormatLabel"),  true);
         Vis(_T("FormatBox"),    true);
+        // CPU 下拉同理：**必须先显示再选默认项** —— CComboUI::SelectItem 在
+        // 条目 IsVisible()==false 时直接返回 false（容器隐藏会把子控件的
+        // internVisible 一起压掉），先选后显示的话收起框会是空白的。
+        Vis(_T("CpuCapBox"),    true);
         // FormatBox 的条目是 XML 里静态写的，首次显示前没有任何选中项 →
         // 收起框空白（老界面里显示「.esd（高压比省空间）」）。仅在未选中时补默认值，
         // 这样用户在两个模式间来回切换时不会丢失已选格式。
@@ -1126,6 +1189,11 @@ void CMainForm::ApplyModeUi() {
                 m_PaintManager.FindControl(_T("FormatBox")));
             if (pFmt && pFmt->GetCurSel() < 0 && pFmt->GetCount() > 0)
                 pFmt->SelectItem(0);
+            CComboUI* pCpu = static_cast<CComboUI*>(
+                m_PaintManager.FindControl(_T("CpuCapBox")));
+            if (pCpu && pCpu->GetCurSel() < 0 && pCpu->GetCount() > 0)
+                pCpu->SelectItem(0);
+            SyncFormatFromPath();  // 路径里已带 .wim/.esd 时按后缀定格式
         }
         // 镜像信息（用户规格 2026-09-21）：在文件名下方给出「日期 + 系统类型 + 备份」，
         // 例如 `20260921 Windows 10 IoT 企业版 LTSC 21H2 19044.4046 备份`。
@@ -1138,27 +1206,31 @@ void CMainForm::ApplyModeUi() {
                 pNote->SetText(info.c_str());
             }
         }
-        Vis(_T("RepairBootBtn"),true);
+        // 备份模式不给「清除引导项」（那是还原/清理用的，用户 2026-09-28 规格），
+        // 空出来的位置换成「限制CPU」下拉（见上方 Vis(CpuCapBox)）；还原模式反过来。
+        Vis(_T("RepairBootBtn"),false);
         Vis(_T("BootMenuBtn"),  true);
         Text(_T("PartTitle"),   Tr(L"备份源分区"));
         Text(_T("PartHint"),    Tr(L"选择要备份为镜像的源分区（移动盘已隐藏）"));
         // 第三步右侧：备份模式 = 静默模式 + 「格式：」+ 下拉；引导按钮两模式共用
-        // 同一位置（XML 定）。整窗收窄到 745 后，右侧一组整体左移：
-        //   静默 248..340 / 格式：348..396 / 下拉 402..524 / 清除 530..612 / 菜单 618..706
+        // 同一位置（XML 定）。整窗收窄到 745 后，右侧一组：
+        //   静默 248..340 / 格式：350..388 / 格式下拉 388..510 / CPU 下拉 530..612 /
+        //   清除 530..612 / 菜单 618..706 —— 下拉与两个按钮同高 296..329（对齐「安装菜单」）
         Pos(_T("Silent"),        248, 302, 340, 326);
         Pos(_T("FormatLabel"),   350, 302, 388, 326);
-        Pos(_T("FormatBox"),     388, 294, 510, 332);
+        Pos(_T("FormatBox"),     388, 296, 510, 329);
         // 注：状态栏在空闲时显示**当前模式说明**（见本函数末尾），任务执行中
         // 显示进度文字；进度条只在跑进度时出现（ShowProgress）。
     } else {
-        Text(_T("BrowseBtn"),   Tr(L"浏览系统镜像文件"));
-        Text(_T("MainAction"),  Tr(L"开始恢复系统"));
+        Text(_T("BrowseBtn"),   Tr(L"浏览系统镜像"));
+        Text(_T("MainAction"),  Tr(L"开始恢复"));
         Text(_T("NoteLabel"),   Tr(L"镜像说明："));
         Vis(_T("ImageIndexBox"), true);
         Vis(_T("NoteText"),     true);
         Vis(_T("NoteInput"),    false);
         Vis(_T("FormatLabel"),  false);
         Vis(_T("FormatBox"),    false);
+        Vis(_T("CpuCapBox"),    false);
         Vis(_T("RepairBootBtn"),true);
         Vis(_T("BootMenuBtn"),  true);
         Text(_T("PartTitle"),   Tr(L"系统安装位置"));
@@ -1166,7 +1238,7 @@ void CMainForm::ApplyModeUi() {
         // 还原模式几何（切回时必须复位第三步右侧那三个；与 XML 默认一致）
         Pos(_T("Silent"),        420, 302, 520, 326);
         Pos(_T("FormatLabel"),   350, 302, 388, 326);
-        Pos(_T("FormatBox"),     388, 294, 510, 332);
+        Pos(_T("FormatBox"),     388, 296, 510, 329);
     }
     UpdateMainAction();
     // 空闲时状态栏 = **当前模式说明**（用户 2026-09-27 规格）：
@@ -1237,6 +1309,7 @@ void CMainForm::SyncImagePathFromUi() {
         m_lastLoadedWim = m_wimPath;
         LoadWimImages(m_wimPath);
     }
+    SyncFormatFromPath();  // 备份：路径带 .wim/.esd → 自动定格式
     UpdateMainAction();
 }
 

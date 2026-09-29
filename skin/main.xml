@@ -37,7 +37,7 @@
         <!-- ══════ 第一步卡片（白卡，y64..140） ══════ -->
         <VerticalLayout name="Card1" float="true" pos="16,64,725,140" bkcolor="#FFFFFFFF" bordersize="1" bordercolor="#FFF4F6F9" borderround="20,20" />
         <SkinLabel name="Step1Badge" float="true" pos="30,88,92,111" text="第一步" bkcolor="#FFE08A2E" borderround="8,8" color="#FFFFFFFF" fontsize="13" align="center" />
-        <SkinButton name="BrowseBtn" float="true" pos="100,77,240,115" text="浏览系统镜像文件" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFEEF1F6" borderround="14,14" textcolor="#FF1B2432" />
+        <SkinButton name="BrowseBtn" float="true" pos="100,77,240,115" text="浏览系统镜像" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFEEF1F6" borderround="14,14" textcolor="#FF1B2432" />
         <SkinEdit   name="ImagePath" float="true" pos="249,77,710,115" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFC9D6F2" borderround="16,16" textcolor="#FF1B2432" nativebkcolor="#FFFFFFFF" textpadding="10,9,10,9" />
         <SkinLabel name="NoteLabel" float="true" pos="112,118,232,132" text="镜像说明：" color="#FF5F6C80" fontsize="13" align="right" />
 
@@ -59,19 +59,28 @@
 
         <!-- ══════ 第三步行（无卡片，y293..332） ══════ -->
         <SkinLabel name="Step3Badge" float="true" pos="30,301,92,324" text="第三步" bkcolor="#FFE08A2E" borderround="8,8" color="#FFFFFFFF" fontsize="13" align="center" />
-        <SkinButton name="MainAction" float="true" pos="117,293,237,332" text="开始恢复系统" fontsize="16" bold="true" bkcolor="#FFE2E6EE" bordercolor="#FFE4E8EF" borderround="12,12" textcolor="#FF9AA3B2" enabled="false" />
+        <SkinButton name="MainAction" float="true" pos="117,293,237,332" text="开始恢复" fontsize="16" bold="true" bkcolor="#FFE2E6EE" bordercolor="#FFE4E8EF" borderround="12,12" textcolor="#FF9AA3B2" enabled="false" />
         <!-- tooltip：鼠标悬停解释（Win32 Tooltip，300px 自动换行；LoadSkinXml 会翻属性值） -->
     <GlyphCheck name="Silent" float="true" pos="420,302,520,326" text="静默模式"
                 tooltip="不弹任何确认框，直接暂存任务并重启（无人值守/批量部署用）" />
         <SkinLabel name="FormatLabel" float="true" pos="350,302,388,326" text="格式：" color="#FF1B2432" fontsize="13" align="right" visible="false" />
-        <Combo name="FormatBox" float="true" pos="388,294,510,332" bkcolor="#FFFFFFFF" bordersize="1" bordercolor="#FFC9D6F2" borderround="16,16" textpadding="0,0,0,0" visible="false">
+        <Combo name="FormatBox" float="true" pos="388,296,510,329" bkcolor="#FFFFFFFF" bordersize="1" bordercolor="#FFC9D6F2" borderround="16,16" textpadding="0,0,0,0" visible="false">
           <TextItem text=".esd(慢速小体积)" height="30" />
           <TextItem text=".wim(正常大小)" height="30" />
           <TextItem text=".wim(高速大体积)" height="30" />
         </Combo>
-        <SkinButton name="RepairBootBtn" float="true" pos="530,296,612,329" text="清除引导项" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFE7ECF2" borderround="14,14" textcolor="#FF1B2432"
+        <SkinButton name="RepairBootBtn" float="true" pos="530,296,612,329" text="清除引导" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFE7ECF2" borderround="14,14" textcolor="#FF1B2432"
                 tooltip="删除恢复环境的启动项与 ZJRESTORE 文件；不动系统与数据" />
-        <SkinButton name="BootMenuBtn"   float="true" pos="618,296,706,329" text="安装启动还原" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFE7ECF2" borderround="14,14" textcolor="#FF1B2432" />
+        <SkinButton name="BootMenuBtn"   float="true" pos="618,296,706,329" text="安装菜单" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFE7ECF2" borderround="14,14" textcolor="#FF1B2432" />
+        <!-- 备份模式专用：占用「清除引导」空出来的位置（还原模式下不显示）。
+             选中即把本进程 CPU 硬上限设成所选值（Windows Job 对象，见 cpucap.cpp）。 -->
+        <Combo name="CpuCapBox" float="true" pos="530,296,612,329" bkcolor="#FFFFFFFF" bordersize="1" bordercolor="#FFC9D6F2" borderround="14,14" textpadding="0,0,0,0" visible="false"
+                tooltip="备份时把程序 CPU 占用率限制在所选值以内（随时可改）">
+          <TextItem text="不限CPU" height="30" />
+          <TextItem text="CPU 25%" height="30" />
+          <TextItem text="CPU 50%" height="30" />
+          <TextItem text="CPU 75%" height="30" />
+        </Combo>
 
         <!-- ══════ 状态栏（分隔线 1px + #FAFBFE，y370..405） ══════ -->
         <Control float="true" pos="0,370,741,371" bkcolor="#FFEEF1F6" />
