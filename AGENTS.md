@@ -575,6 +575,12 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **边界（有意不改）**：还原完成后目标 BCD 是 bootfix 的单条目 + timeout 0 → 菜单自动消失、开机不停留，无需回写；**删除菜单也不回写 timeout**（单条目不显示菜单、无感知；双系统用户自己的停留时间不被动）。已手动调到 30 的机器按"只升不降"继续 30，想改回 1 秒手跑 `bcdedit /set {bootmgr} timeout 1` 即可。
   · **回归**：单测 `bcd_parse_bootmgr_timeout`（英文输出/本地化标签/CR/无行尾/非数字/超限值跳过）→ `make check` **31 用例 / 204 断言**、`check-i18n` **328 keys**、`check-widths` OK（新 EN 状态文案曾超 638px 宽度门禁，已缩短）；`make package` 双架构。**待复测**：新构建在真机装菜单应自动把 0 → 1（日志 `bootmgr timeout: 0 -> 1s`），开机能用上下键选。✅ 2026-09-29
 
+- PIT-095 **VMware EFI 下按 F12 后"黑屏 + 光标数分钟"不是死机：菜单逻辑已就绪、仅画面渲染极慢**（2026-09-29 VM 实测 + 用户定位，`0.5.0` 结案）：测试机 `初心Win10x64`（Workstation 17.6.1，UEFI+SecureBoot+NVMe）按 F12 后停在黑屏左上一个光标（截图 `1111.png`），**什么都不按要几分钟后才画出 Boot Manager 菜单**（`2222.png`：`Boot normally / Windows Boot Manager / EFI NVME / EFI SATA / EFI Network / SysRecover / Enter setup / …`，**无倒计时行**），极易误判死机（本会话最初即如此误判，自动化探测绕了很久）。
+  · **真相（用户破案）**：黑屏光标阶段菜单**输入已在线** —— `回车` = 默认 `Boot normally` = 秒进原系统；**盲按 ↓ 导航到 `SysRecover` 回车 = 秒进还原**（用户实测光标态 6 次↓；完全画出的菜单里 `SysRecover` 是第 5 次↓ —— 光标态起点/项数与画出后略有出入，以实测为准）。慢的只有**渲染**，构建与输入都不慢。
+  · **日志铁证**：`vmware.log` `2026-09-29T14:49:40 About to do EFI boot: SysRecover` → 固件成功加载条目 → 恢复全流程正常跑完（`mkntfs` + apply + 重启进新系统，用户确认"可以正常恢复"）。即恢复链路（F12 菜单列出条目 / 固件加载 / 救援层执行）全部验证 ✓。
+  · **定性**：VMware Workstation EFI 固件的**菜单绘制延迟**（固件侧；UEFI 变量没有"菜单默认项/菜单超时"开关，我们改不了），**与产品无关** —— 真机（PIT-093/094）无此现象；理论上菜单构建只读 NVRAM 变量（毫秒级）。**可选未做**：摘 `Boot0003` 的 A/B 对照定量定责（需关机离线改 NVRAM + 人工按 F12）。
+  · **规避（记录在案，日后排查不再当死机）**：F12 后不要等画面 —— 直接 ↓×N + 回车选 `SysRecover`；正常恢复走暂存 `BootNext` 主流程，根本不按 F12。✅ 2026-09-29
+
 ---
 
 ## 14. License 合规（SBOM，随版本更新）
