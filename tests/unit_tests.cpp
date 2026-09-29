@@ -7,11 +7,15 @@
 // 这些都是把纯逻辑从 Windows 调用里抽出来后才可测的（见各头文件注释）。
 #include <cstring>
 
+#include <windows.h>
+
 #include "tiny_test.h"
 
 #include "app/advice.h"
+#include "boot/bcd_parse.h"
 #include "boot/task.h"
 #include "common/i18n.h"
+#include "common/pathutil.h"
 #include "common/sysinfo.h"
 #include "common/version.h"
 #include "common/zip.h"
@@ -320,4 +324,120 @@ TEST(i18n_skin_xml_missing_file) {
     CHECK(LoadSkinXml(L"__definitely_missing__.xml").empty());
     CHECK(LoadSkinXml(nullptr).empty());
     InitI18n("zh");  // 复位
+}
+
+// ── pathutil：盘符根归一 + 目标目录（2026-09-28 用户 CLI `--source C:` rc=47）──
+// Win32 里 `C:` 的语义是“该盘的**当前目录**”≠根，且没有 wimlib 要的尾斜杠：
+// 判成非盘符根 → 不走 VSS 热备 → 扫活动系统撞上被占用的文件 → rc=47。
+
+TEST(pathutil_volume_root_normalization) {
+    CHECK(IsVolumeRoot(L"C:"));
+    CHECK(IsVolumeRoot(L"c:\\"));
+    CHECK(IsVolumeRoot(L" C:/ "));  // 允许空白
+    CHECK(!IsVolumeRoot(L"C:\\Windows"));
+    CHECK(!IsVolumeRoot(L"D:\\backup\\a.wim"));
+    CHECK(!IsVolumeRoot(L""));
+    CHECK(!IsVolumeRoot(L"backup"));
+    // 三种写法统一成 `C:/`（大写盘符 + 尾斜杠）
+    CHECK_EQ(NormalizeVolumeRoot(L"c:"), std::wstring(L"C:/"));
+    CHECK_EQ(NormalizeVolumeRoot(L"c:\\"), std::wstring(L"C:/"));
+    CHECK_EQ(NormalizeVolumeRoot(L"C:/"), std::wstring(L"C:/"));
+    CHECK_EQ(NormalizeVolumeRoot(L" c: "), std::wstring(L"C:/"));
+    // 非盘符根不改用户的路径
+    CHECK_EQ(NormalizeVolumeRoot(L"D:\\backup\\a.wim"),
+             std::wstring(L"D:\\backup\\a.wim"));
+}
+
+TEST(pathutil_parent_dir) {
+    CHECK_EQ(ParentDir(L"D:\\backup\\a.wim"), std::wstring(L"D:\\backup"));
+    CHECK_EQ(ParentDir(L"D:\\a.wim"), std::wstring(L"D:\\"));  // 盘符根带分隔符
+    CHECK_EQ(ParentDir(L"a.wim"), std::wstring());
+    CHECK_EQ(ParentDir(L""), std::wstring());
+}
+
+TEST(pathutil_make_dir_tree) {
+    wchar_t tmp[MAX_PATH] = {};
+    GetTempPathW(MAX_PATH, tmp);
+    std::wstring base = std::wstring(tmp) + L"sr-pathutil-test";
+    std::wstring leaf = base + L"\\a\\b\\c";
+    CHECK(MakeDirTree(leaf));           // 递归建到三层
+    CHECK(MakeDirTree(leaf));           // 已存在 → 幂等
+    // 同名**文件**（不是目录）→ 必须失败，不能被当成“目录已就绪”
+    std::wstring f = base + L"\\a\\file.bin";
+    HANDLE h = CreateFileW(f.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    CHECK(h != INVALID_HANDLE_VALUE);
+    CloseHandle(h);
+    CHECK(!MakeDirTree(f));
+    // 收尾清理（删不掉就留着，%TEMP% 下无害）
+    DeleteFileW(f.c_str());
+    RemoveDirectoryW((base + L"\\a\\b\\c").c_str());
+    RemoveDirectoryW((base + L"\\a\\b").c_str());
+    RemoveDirectoryW((base + L"\\a").c_str());
+    RemoveDirectoryW(base.c_str());
+}
+
+// ── bcd_parse：`bcdedit /enum` 输出断言（docs/15 · P3）────────────
+// 用途：bcdboot 会静默失败，所以"写没写成"只能靠 BCD 产物断言。这些用例用的是
+// 真实 bcdedit 输出的形状（含本轮实验室里造出来的各种坏状态）。
+TEST(bcd_enum_shows_os_entry) {
+    std::string why;
+    // ① 健康：displayorder 有 {default}，且有 winload 条目
+    CHECK(BcdEnumShowsOsEntry(
+        "\xef\xbb\xbf"  // BOM 也不能绊倒解析
+        "Windows Boot Manager\n--------------------\n"
+        "identifier              {bootmgr}\n"
+        "displayorder            {default}\n"
+        "                        {18c8dcd6-bbd4-11f1-9f3c-54ee759ba870}\n"
+        "timeout                 30\n\n"
+        "Windows Boot Loader\n-------------------\n"
+        "identifier              {default}\n"
+        "path                    \\Windows\\system32\\winload.efi\n",
+        &why));
+    // ② 空 displayorder（实验室：删掉 displayorder 后 bootmgr 直接引导默认项）
+    why.clear();
+    CHECK(!BcdEnumShowsOsEntry(
+        "identifier              {bootmgr}\n"
+        "timeout                 30\n"
+        "Windows Boot Loader\n"
+        "path                    \\Windows\\system32\\winload.efi\n",
+        &why));
+    CHECK(!why.empty());
+    // ③ 有 displayorder 但条目不存在（只剩 memdiag）→ 没有 winload
+    why.clear();
+    CHECK(!BcdEnumShowsOsEntry(
+        "identifier              {bootmgr}\n"
+        "displayorder            {deadbeef-0000-0000-0000-000000000000}\n"
+        "Windows Memory Tester\n"
+        "path                    \\EFI\\Microsoft\\Boot\\memtest.efi\n",
+        &why));
+    // ④ 模板态：连 displayorder 都没有
+    why.clear();
+    CHECK(!BcdEnumShowsOsEntry(
+        "Windows Boot Manager\n"
+        "identifier              {bootmgr}\n"
+        "default                 {default}\n"
+        "Windows Setup\n"
+        "identifier              {default}\n",
+        &why));
+    // ⑤ 空输出 / 只有噪声
+    CHECK(!BcdEnumShowsOsEntry("", nullptr));
+    why.clear();
+    CHECK(!BcdEnumShowsOsEntry("The boot configuration data store could not be opened.\n",
+                               &why));
+    CHECK(!why.empty());
+    // ⑥ 字段名被本地化（中文标签）也要认出来
+    CHECK(BcdEnumShowsOsEntry(
+        "Windows \xe5\x90\xaf\xe5\x8a\xa8\xe7\xae\xa1\xe7\x90\x86\xe5\x99\xa8\n"
+        "\xe6\x98\xbe\xe7\xa4\xba\xe9\xa1\xba\xe5\xba\x8f            {default}\n"
+        "Windows Boot Loader\n"
+        "path                    \\Windows\\system32\\winload.efi\n",
+        nullptr));
+    // ⑦ 行中出现同名子串（不是字段名）不能误判
+    why.clear();
+    CHECK(!BcdEnumShowsOsEntry(
+        "description             my displayorder {fake} note\n"
+        "Windows Boot Loader\n"
+        "path                    \\Windows\\system32\\winload.efi\n",
+        &why));
 }

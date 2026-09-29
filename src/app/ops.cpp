@@ -14,6 +14,8 @@
 #include "../boot/task.h"
 #include "../boot/uefi.h"
 #include "../common/logger.h"
+#include "../common/pathutil.h"
+#include "../common/cpucap.h"
 #include "../common/process.h"
 #include "../common/progress.h"
 #include "../common/singleton.h"
@@ -92,6 +94,36 @@ bool SameDrive(wchar_t a, wchar_t b) {
     return towupper(a) == towupper(b);
 }
 
+// 取一个**可用的 ESP 根**（形如 "X:\\"）。顺序（docs/15 · P4）：
+//   ① `mountvol <空闲盘符>: /s` —— 固件**真正启动**的那个分区。关键点：它按固件
+//      启动项找，**不依赖分区类型 GUID**，所以 DiskGenius 把 ESP 标成 Basic Data
+//      时它照样挂得上；
+//   ② 类型 GUID 匹配到的分区若**已有盘符**，直接用（mountvol 失败时的兜底）；
+//   ③ 回退：FAT 分区且根下有 \EFI\Microsoft\Boot\bootmgfw.efi（故障 B 的正解）。
+// guidMatched=true 表示"GPT 类型 GUID 也认对了"（正常机器；false 时调用方只记警告）。
+bool AcquireEspRoot(std::wstring& espRoot, bool& guidMatched, std::string& log) {
+    PartitionInfo esp;
+    guidMatched = FindEspPartition(esp);
+    espRoot = MountEsp(log);
+    if (!espRoot.empty())
+        return true;
+    if (guidMatched && !esp.letter.empty()) {
+        std::wstring root = esp.letter + L":\\";
+        if (GetFileAttributesW(root.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            espRoot = root;
+            log += "ESP via existing drive letter\n";
+            return true;
+        }
+    }
+    PartitionInfo fb;
+    if (FindEspPartitionFallback(fb) && !fb.letter.empty()) {
+        espRoot = fb.letter + L":\\";
+        log += "ESP via fallback (FAT partition with \\EFI boot files)\n";
+        return true;
+    }
+    return false;
+}
+
 // 就地还原：快速格式化 → wimlib 目录模式应用（PIT-008）→ 系统镜像才 bcdboot
 // 修引导。**全程不重启**。
 int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
@@ -142,27 +174,66 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
             INVALID_FILE_ATTRIBUTES) {
             std::string out;
             if (IsUefiFirmware()) {
-                PartitionInfo esp;
+                // 找 ESP（含回退）+ 先预检目标模板（docs/15 · P2/P4）
+                std::wstring espRoot;
+                bool guidMatched = false;
                 std::string blog;
-                if (FindEspPartition(esp)) {
-                    std::wstring espRoot = MountEsp(blog);
-                    if (!espRoot.empty()) {
-                        int brc = RunProcess(
-                            SysToolPath(L"bcdboot.exe"),
-                            winDir + L" /s " + std::wstring(1, espRoot[0]) +
-                                L": /f UEFI",
-                            out);
-                        LogInfo("bcdboot (UEFI) rc=" + std::to_string(brc) +
-                                " / " + out);
-                        UnmountEsp(espRoot, blog);
-                    }
+                std::string detail;
+                if (!AcquireEspRoot(espRoot, guidMatched, blog)) {
+                    err = Tr("就地还原已完成，但找不到可用的 ESP 引导分区，无法修复引导：\n") +
+                          W2U(DescribePartitions());
+                    LogError(err);
+                    ProgressDone("restore", "failed");
+                    return 1;
                 }
+                if (!guidMatched)
+                    LogWarn("ESP partition type is not EFI System; used fallback");
+                if (!TargetBcdTemplateOk(letter[0], detail)) {
+                    err = Tr("就地还原已完成，但目标系统缺少引导模板（") + detail +
+                          Tr("），无法生成引导。请换用完整系统镜像。");
+                    UnmountEsp(espRoot, blog);
+                    LogError(err);
+                    ProgressDone("restore", "failed");
+                    return 1;
+                }
+                int brc = RunProcess(
+                    SysToolPath(L"bcdboot.exe"),
+                    winDir + L" /s " + std::wstring(1, espRoot[0]) + L": /f UEFI",
+                    out);
+                LogInfo("bcdboot (UEFI) rc=" + std::to_string(brc) + " / " + out);
+                if (brc != 0) {
+                    // 目标分区**已经格式化并写好系统**了 → 只能明确报错 + 指路
+                    //（`repair-boot` 可在 PE/正常系统里再修，不必重装）
+                    err = Tr("就地还原已完成，但写入 ESP 引导失败（bcdboot rc=") +
+                          std::to_string(brc) + Tr("）：") + out +
+                          Tr("\n可进入 PE 用 `SysRecover.exe repair-boot` 重试修复引导。");
+                    UnmountEsp(espRoot, blog);
+                    LogError(err);
+                    ProgressDone("restore", "failed");
+                    return 1;
+                }
+                if (!VerifyEspBcd(espRoot, detail)) {
+                    err = Tr("就地还原已完成，但 ESP 引导校验未通过：") + detail +
+                          Tr("\n可进入 PE 用 `SysRecover.exe repair-boot` 重试修复引导。");
+                    UnmountEsp(espRoot, blog);
+                    LogError(err);
+                    ProgressDone("restore", "failed");
+                    return 1;
+                }
+                UnmountEsp(espRoot, blog);
             } else {
                 int brc = RunProcess(SysToolPath(L"bcdboot.exe"),
                                      winDir + L" /s " + letter + L": /f BIOS",
                                      out);
                 LogInfo("bcdboot (BIOS) rc=" + std::to_string(brc) + " / " +
                         out);
+                if (brc != 0) {
+                    err = Tr("就地还原已完成，但写入引导失败（bcdboot rc=") +
+                          std::to_string(brc) + Tr("）：") + out;
+                    LogError(err);
+                    ProgressDone("restore", "failed");
+                    return 1;
+                }
             }
         } else {
             LogInfo("in-place: no winload.exe -> not a system image, skip "
@@ -348,19 +419,54 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
         err = Tr("缺少目标镜像路径");
         return 1;
     }
+    // 源路径归一（2026-09-28 用户 CLI 复现：`--source C:` 备份报 rc=47）：
+    //   · Win32 里 `C:` 是“该盘的**当前目录**”，不是根，也不带 wimlib 要求的
+    //     尾斜杠 → 盘符根判定落空 → 没走 VSS 热备，直接扫活动系统；
+    //   · 扫活动系统会在某个正被占用的文件上失败，wimlib 只回
+    //     `rc=47 Failed to open a file`，看不出是谁的锅。
+    // 统一成 `C:/` 后，`C:` / `C:\` / `C:/` 三条写法等价（GUI 本来就传 `X:/`）。
+    const std::wstring source = NormalizeVolumeRoot(req.source);
+    const bool volumeRoot = IsVolumeRoot(source);
+    // 目标目录不存在也要建出来：`D:\backup\x.esd` 里 D:\backup 没建时，
+    // wimlib 建不出输出文件，同样只报 rc=47（2026-09-28 实测 3 秒即失败）。
+    {
+        std::wstring dir = ParentDir(req.dest);
+        if (!dir.empty() && !MakeDirTree(dir)) {
+            err = std::string(Tr("无法创建备份目录：")) + W2U(dir);
+            LogError(err);
+            return 1;
+        }
+    }
     if (!AcquireOpLock()) {
         err = Tr("已有备份/还原实例在运行");
         return 1;
     }
     ProgressUpdate("backup", 0, "start");
-    LogInfo("backup source=" + W2U(req.source) + " dest=" + W2U(req.dest) +
-            " compress=" + req.compress);
+    LogInfo("backup source=" + W2U(source) + " dest=" + W2U(req.dest) +
+            " compress=" + req.compress +
+            (volumeRoot ? " (volume root -> VSS hot backup)" : ""));
     const ULONGLONG t0 = GetTickCount64();  // P7：历史记录用
     // 盘符根（C:/ 或 C:\）→ 热备：VSS 快照 + 排除配置（PIT-008/009）；
     // 也可用 req.snapshot 显式强制（例如备份正在使用的数据库目录）。
-    bool snapshot = req.snapshot ||
-                    (req.source.size() == 3 && req.source[1] == L':' &&
-                     (req.source[2] == L'/' || req.source[2] == L'\\'));
+    bool snapshot = req.snapshot || volumeRoot;
+    // CPU 硬上限（BackupRequest::cpuCap，GUI 的「限制CPU」下拉）：在动数据之前
+    // 设好，所有成功/失败退出路径都由 guard 复位回“不限”。
+    struct CpuCapGuard {
+        int pct;
+        explicit CpuCapGuard(int p) : pct(p) {
+            if (pct <= 0) return;
+            std::string why;
+            if (!SetCpuCap(pct, &why))
+                LogWarn("cpu cap not applied: " + why);
+            else
+                LogInfo("cpu cap = " + std::to_string(pct) + "%");
+        }
+        ~CpuCapGuard() {
+            if (pct <= 0) return;
+            std::string why;
+            SetCpuCap(0, &why);
+        }
+    } cpuGuard(req.cpuCap);
     std::wstring errw;  // VSS 检查的多行提示（成功路径不会用到）
     // VSS 前置检查（用户 2026-09-26 规格）：服务停着就帮用户启动、起不来就给
     // 明确的处理指引（别等 wimlib 报 rc=89 让人干猜）；guard 析构把我们启动的
@@ -390,17 +496,17 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
         err = Tr("wimlib 初始化失败");
         return 1;
     }
-    std::wstring cfg = EnsureExclusionConfig(req.source);
+    std::wstring cfg = EnsureExclusionConfig(source);
     if (cfg.empty())
         LogError("排除配置生成失败，热备可能因易失文件报 rc=88（PIT-009）");
     else
         LogInfo("exclusion config: " + W2U(cfg));
     int rc;
     if (req.append)
-        rc = engine.Append(req.source, req.dest, req.compress, req.name,
+        rc = engine.Append(source, req.dest, req.compress, req.name,
                            snapshot, cfg, progress);
     else
-        rc = engine.Capture(req.source, req.dest, req.compress, req.name,
+        rc = engine.Capture(source, req.dest, req.compress, req.name,
                             snapshot, cfg, progress);
     if (rc != 0) {
         ReleaseOpLock();
@@ -445,7 +551,7 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
     ReleaseOpLock();
     ProgressDone("backup", "done");
     LogInfo("backup done");
-    AppendHistory("backup", req.dest, req.source, GetTickCount64() - t0, "ok");
+    AppendHistory("backup", req.dest, source, GetTickCount64() - t0, "ok");
     return 0;
 }
 
@@ -716,29 +822,51 @@ int StageRestore(const RestoreRequest& req, std::string& err,
                 // （走 bootapp 链不需要注册，见 PIT-063。）
                 ReleaseOpLock();
                 ProgressDone("restore", "failed");
-                err = Tr("本机开启了 Secure Boot，但还没注册启动密钥：请先点" "「安装启动还原」，重启一次，在蓝底界面选 " "Enroll key -> 选 zj-mok.cer -> 注册，之后回来再还原");
+                err = Tr("本机开启了 Secure Boot，但还没注册启动密钥：请先点" "「安装菜单」，重启一次，在蓝底界面选 " "Enroll key -> 选 zj-mok.cer -> 注册，之后回来再还原");
                 LogError(err);
                 return 1;
             }
-            PartitionInfo esp;
-            if (!FindEspPartition(esp)) {
+            std::wstring espRoot;
+            bool guidMatched = false;
+            std::string detail;
+            if (!AcquireEspRoot(espRoot, guidMatched, blog)) {
                 ReleaseOpLock();
                 ProgressDone("restore", "failed");
-                err = Tr("UEFI 机器未找到 ESP 分区，无法部署引导层");
+                err = Tr("UEFI 机器未找到可用的 ESP 引导分区，无法部署引导层。\n"
+                         "常见原因：DiskGenius 重建分区时漏建 ESP，或把 ESP 标成了"
+                         " Basic Data（应改为 EFI System 类型）。\n当前分区表：\n") +
+                      W2U(DescribePartitions());
                 LogError(err);
                 return 1;
             }
-            std::wstring espRoot = MountEsp(blog);
-            if (espRoot.empty()) {
+            if (!guidMatched)
+                LogWarn("ESP partition type is not EFI System; used fallback "
+                        "(mountvol/\\EFI files)");
+            // ① 目标系统盘得有 bcdboot 要的模板（docs/15 · P2c）
+            if (!TargetBcdTemplateOk(target.letter[0], detail)) {
+                UnmountEsp(espRoot, blog);
                 ReleaseOpLock();
                 ProgressDone("restore", "failed");
-                err = Tr("无法给 ESP 分配盘符（mountvol X: /s 失败）");
-                LogError(err + " / " + blog);
+                err = Tr("目标系统缺少引导模板（") + detail +
+                      Tr("）：bcdboot 无法生成引导。多见于第三方精简/万能镜像，"
+                         "请换用完整系统镜像。");
+                LogError(err);
                 return 1;
             }
-            bool ok = InstallUefiBootEntry(espRoot, exeDir, blog);
-            // 修 UEFI 引导：用微软官方 bcdboot 重新生成 ESP 上的 bootmgfw.efi + BCD
-            // （指向系统盘）。等价于"万能镜像还原后修 ESP 引导"，让还原后的系统能进。
+            // ② ESP 还得放得下 bcdboot 要写的 ~9MB（docs/15 · P2a）
+            if (!EspHasRoomForBcdboot(espRoot, detail)) {
+                UnmountEsp(espRoot, blog);
+                ReleaseOpLock();
+                ProgressDone("restore", "failed");
+                err = Tr("ESP 空间不足，无法修复引导（") + detail +
+                      Tr("）：请先在 Windows 里点「删除启动还原」清掉 "
+                         "\\EFI\\ZJRESTORE\\ 旧版残留，或用 diskpart 扩大 ESP。");
+                LogError(err);
+                return 1;
+            }
+            // ③ **先跑 bcdboot**（此刻 ESP 空间最富裕），再放我们 33MB 的救援载荷
+            //    —— 顺序反了就会被自己的载荷挤掉空间（docs/15 · P2b）。
+            bool ok = true;
             {
                 // 用**目标分区**的 Windows 目录（暂存时它还是旧系统，但引导文件一样）
                 std::wstring winDir =
@@ -748,7 +876,29 @@ int StageRestore(const RestoreRequest& req, std::string& err,
                                     std::wstring(1, espRoot[0]) + L": /f UEFI";
                 int brc = RunProcess(SysToolPath(L"bcdboot.exe"), args, out);
                 LogInfo("bcdboot (UEFI) rc=" + std::to_string(brc) + " / " + out);
+                if (brc != 0) {
+                    // 返回码曾经被丢弃（静默失败）→ 现在 fail-closed（docs/15 · P1）
+                    UnmountEsp(espRoot, blog);
+                    ReleaseOpLock();
+                    ProgressDone("restore", "failed");
+                    err = Tr("写入 ESP 引导失败（bcdboot rc=") +
+                          std::to_string(brc) + Tr("）：") + out;
+                    LogError(err);
+                    return 1;
+                }
+                // ④ 产物断言：displayorder 非空 + 有 winload 条目 + 关键文件齐全
+                if (!VerifyEspBcd(espRoot, detail)) {
+                    UnmountEsp(espRoot, blog);
+                    ReleaseOpLock();
+                    ProgressDone("restore", "failed");
+                    err = Tr("ESP 引导校验未通过（未真正修好，已中止，未动目标分区）：") +
+                          detail;
+                    LogError(err);
+                    return 1;
+                }
             }
+            // ⑤ 救援载荷（内核 + initramfs ≈ 33MB；它自带空间检查）
+            ok = InstallUefiBootEntry(espRoot, exeDir, blog);
             UnmountEsp(espRoot, blog);
             LogInfo(std::string("uefi boot entry: ") + (ok ? "ok" : "FAIL") +
                     " / " + blog);
@@ -805,6 +955,127 @@ int StageRestore(const RestoreRequest& req, std::string& err,
     ReleaseOpLock();
     ProgressDone("restore", "staged");
     LogInfo("restore staged, reboot to execute");
+    return 0;
+}
+
+// ── 修复引导（docs/15 · P5）──────────────────────────────────────
+// 定位系统盘 → 找 ESP（GUID → mountvol → FAT 回退）→ bcdboot → 产物断言。
+// 用于：还原后引导坏了、或从 PE 里救一台起不来的机器（不必重装）。
+int RepairBoot(int disk, int part, std::string& msg) {
+    // ① 目标系统盘
+    PartitionInfo target;
+    bool found = false;
+    auto disks = EnumerateDisks();
+    for (const auto& d : disks) {
+        for (const auto& p : d.parts) {
+            if (p.letter.empty())
+                continue;
+            if (disk > 0 || part > 0) {
+                if ((int)d.index != disk || (int)p.partNumber != part)
+                    continue;
+            }
+            std::wstring win = p.letter + L":\\Windows\\System32\\winload.exe";
+            if (GetFileAttributesW(win.c_str()) == INVALID_FILE_ATTRIBUTES)
+                continue;
+            target = p;
+            found = true;
+            if (p.isSystem)
+                break;  // 优先正在运行的系统盘
+        }
+        if (found && target.isSystem)
+            break;
+        if (found && (disk > 0 || part > 0))
+            break;
+    }
+    if (!found) {
+        msg = Tr("未找到系统盘（没有分区含 \\Windows\\System32\\winload.exe）。\n"
+                 "若指定了 --disk/--part，请确认分区号正确且有盘符。\n当前分区表：\n") +
+              W2U(DescribePartitions());
+        LogError("repair-boot: target system partition not found");
+        return 1;
+    }
+    std::wstring winDir = target.letter + L":\\Windows";
+    LogInfo("repair-boot: target=" + W2U(target.letter) + ": disk=" +
+            std::to_string(target.diskIndex) + " part=" +
+            std::to_string(target.partNumber));
+    std::string out;
+    std::string blog;
+    if (!IsUefiFirmware()) {
+        // BIOS/MBR：bcdboot 把 bootmgr/BCD 写到系统分区自身
+        int rc = RunProcess(SysToolPath(L"bcdboot.exe"),
+                            winDir + L" /s " + target.letter + L": /f BIOS", out);
+        LogInfo("repair-boot bcdboot (BIOS) rc=" + std::to_string(rc) + " / " + out);
+        if (rc != 0) {
+            msg = Tr("修复引导失败（bcdboot rc=") + std::to_string(rc) +
+                  Tr("）：") + out;
+            LogError(msg);
+            return 1;
+        }
+        msg = Tr("引导已修复（BIOS）。");
+        return 0;
+    }
+    // UEFI：找 ESP（含回退）
+    std::wstring espRoot;
+    bool guidMatched = false;
+    std::string detail;
+    if (!AcquireEspRoot(espRoot, guidMatched, blog)) {
+        msg = Tr("未找到可用的 ESP 引导分区，无法修复引导。\n"
+                 "常见原因：DiskGenius 重建分区时漏建 ESP，或把 ESP 标成了 Basic "
+                 "Data（应改为 EFI System 类型）。\n当前分区表：\n") +
+              W2U(DescribePartitions());
+        LogError(msg);
+        return 1;
+    }
+    if (!guidMatched)
+        LogWarn("repair-boot: ESP partition type is not EFI System; used fallback");
+    if (!TargetBcdTemplateOk(target.letter[0], detail)) {
+        UnmountEsp(espRoot, blog);
+        msg = Tr("系统盘缺少引导模板（") + detail +
+              Tr("），无法生成引导。请换用完整系统镜像或修复该文件。");
+        LogError(msg);
+        return 1;
+    }
+    if (!EspHasRoomForBcdboot(espRoot, detail)) {
+        UnmountEsp(espRoot, blog);
+        msg = Tr("ESP 空间不足（") + detail +
+              Tr("）：请先清理 \\EFI\\ZJRESTORE\\ 旧版残留，或扩大 ESP。");
+        LogError(msg);
+        return 1;
+    }
+    int rc = RunProcess(
+        SysToolPath(L"bcdboot.exe"),
+        winDir + L" /s " + std::wstring(1, espRoot[0]) + L": /f UEFI", out);
+    LogInfo("repair-boot bcdboot (UEFI) rc=" + std::to_string(rc) + " / " + out);
+    if (rc != 0) {
+        UnmountEsp(espRoot, blog);
+        msg = Tr("修复引导失败（bcdboot rc=") + std::to_string(rc) + Tr("）：") + out;
+        LogError(msg);
+        return 1;
+    }
+    if (!VerifyEspBcd(espRoot, detail)) {
+        UnmountEsp(espRoot, blog);
+        msg = Tr("引导仍不完整（校验未通过）：") + detail;
+        LogError(msg);
+        return 1;
+    }
+    // 打印 ESP BCD 的关键行，便于用户/我们确认（displayorder 是不是有值）
+    {
+        std::string enumOut;
+        RunProcess(SysToolPath(L"bcdedit.exe"),
+                   L"/store \"" + espRoot + L"EFI\\Microsoft\\Boot\\BCD\" /enum {bootmgr}",
+                   enumOut);
+        for (size_t pos = 0; pos < enumOut.size();) {
+            size_t e = enumOut.find('\n', pos);
+            std::string line = enumOut.substr(pos, e == std::string::npos ? e : e - pos);
+            if (line.find("displayorder") != std::string::npos)
+                LogInfo("repair-boot: " + line);
+            if (e == std::string::npos)
+                break;
+            pos = e + 1;
+        }
+    }
+    UnmountEsp(espRoot, blog);
+    msg = Tr("引导已修复并校验通过（UEFI）。");
     return 0;
 }
 

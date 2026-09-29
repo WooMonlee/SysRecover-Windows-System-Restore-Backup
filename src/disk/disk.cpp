@@ -338,6 +338,64 @@ bool FindEspPartition(PartitionInfo& out) {
     return false;
 }
 
+// 回退：FAT 分区 + 根下有 \EFI 引导文件（不看分区类型 GUID）。
+// 依据（docs/15）：固件与 `mountvol /s` 只按**文件路径**找引导程序，分区类型
+// GUID 只在 bcdedit/BCD 语义里重要；DiskGenius 重建分区后常把 ESP 标成 Basic
+// Data，此时按 GUID 找不到，但机器其实**能**从它启动。
+bool FindEspPartitionFallback(PartitionInfo& out) {
+    for (const auto& d : EnumerateDisks()) {
+        for (const auto& p : d.parts) {
+            if (p.letter.empty())
+                continue;  // 没盘符就没法探路径（那类交给 mountvol X: /s）
+            std::wstring fs = p.fs;
+            for (auto& c : fs)
+                c = (wchar_t)towupper(c);
+            if (fs.rfind(L"FAT", 0) != 0)
+                continue;
+            std::wstring root = p.letter + L":\\EFI\\";
+            if (GetFileAttributesW((root + L"Microsoft\\Boot\\bootmgfw.efi").c_str()) !=
+                    INVALID_FILE_ATTRIBUTES ||
+                GetFileAttributesW((root + L"BOOT\\BOOTX64.EFI").c_str()) !=
+                    INVALID_FILE_ATTRIBUTES) {
+                out = p;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// 分区表摘要（纯 ASCII，供日志/报错）。失败时用户能一眼看出"ESP 到底有没有"。
+std::wstring DescribePartitions() {
+    std::wstring s;
+    for (const auto& d : EnumerateDisks()) {
+        char head[160];
+        char model[96] = {};
+        WideCharToMultiByte(CP_UTF8, 0, d.model.c_str(), -1, model,
+                            sizeof(model), nullptr, nullptr);
+        snprintf(head, sizeof(head), "disk%u %s %s:", d.index,
+                 d.style == PartitionStyle::GPT ? "GPT" : (d.style == PartitionStyle::MBR ? "MBR" : "?"),
+                 model);
+        s += std::wstring(head, head + strlen(head));
+        for (const auto& p : d.parts) {
+            char it[160];
+            char letter[8] = "-";
+            if (!p.letter.empty())
+                snprintf(letter, sizeof(letter), "%ls", p.letter.c_str());
+            char fs[24] = "?";
+            if (!p.fs.empty())
+                WideCharToMultiByte(CP_UTF8, 0, p.fs.c_str(), -1, fs, sizeof(fs),
+                                    nullptr, nullptr);
+            snprintf(it, sizeof(it), " p%u %.1fGB %s %s%s%s", p.partNumber,
+                     p.sizeBytes / 1073741824.0, fs, letter,
+                     p.isEsp ? " [ESP]" : "", p.isSystem ? " [System]" : "");
+            s += std::wstring(it, it + strlen(it));
+        }
+        s += L" ; ";
+    }
+    return s;
+}
+
 // ────────────────── 磁盘健康（SMART，PIT-086） ──────────────────
 // 用 IOCTL_ATA_PASS_THROUGH 发 ATA-8 SMART 命令直接读 SMART（不依赖 WMI，PE 也能用）：
 //   * SMART READ DATA（0xB0 / features 0xD0）→ 512 字节属性表，取 5/197/198；

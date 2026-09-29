@@ -52,6 +52,7 @@ WRAP_FILES = [
     "src/app/safety.cpp",
     "src/app/advice.cpp",
     "src/common/vss.cpp",
+    "src/common/cpucap.cpp",
     "src/common/sysinfo.cpp",
     "src/boot/uefi.cpp",
     "src/boot/grub.cpp",

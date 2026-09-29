@@ -74,4 +74,15 @@ bool IsWinPE();
 // 找 ESP（EFI System Partition）。注意：正常 Windows 下 ESP 无盘符（需临时挂载）。
 bool FindEspPartition(PartitionInfo& out);
 
+// 回退（docs/15 故障 B）：分区类型 GUID **不是** ESP 时（DiskGenius 重建分区常把它
+// 标成 Basic Data / 或压根没建 MSR+ESP），只要它是 FAT 分区且根下有
+//   \EFI\Microsoft\Boot\bootmgfw.efi  或  \EFI\BOOT\BOOTX64.EFI
+// 就**照样能引导**（固件/`mountvol` 只认文件路径，不认分区类型 GUID）。
+// 只在分区**有盘符**时可判定（没盘符就不带盘符找 —— 那种情况交给 mountvol X: /s）。
+bool FindEspPartitionFallback(PartitionInfo& out);
+
+// 分区表摘要（**纯 ASCII**：给日志与报错用，避免编码坑 —— 见 docs/15 §7-P4）。
+// 形如：`disk0 GPT Msft Virtual Disk: p1 100MB FAT32 [ESP] ; p2 50GB NTFS C: ...`
+std::wstring DescribePartitions();
+
 }  // namespace sysrecover

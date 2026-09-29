@@ -416,6 +416,19 @@ int CmdRestore(const std::vector<std::string>& a) {
     return 0;
 }
 
+// repair-boot（docs/15 · P5）：修"引导坏了、起不来"的机器 —— 不用重装。
+// 全流程 = 找系统盘 → 找 ESP（含回退）→ 模板/空间预检 → bcdboot → 产物断言。
+int CmdRepairBoot(const std::vector<std::string>& a) {
+    int disk = std::atoi(Opt(a, "--disk", "-1").c_str());
+    int part = std::atoi(Opt(a, "--part", "-1").c_str());
+    std::printf("%s\n", Tr("正在修复引导（bcdboot + 产物校验）……"));
+    std::string msg;
+    int rc = sysrecover::RepairBoot(disk, part, msg);
+    std::printf("%s\n", msg.c_str());
+    sysrecover::ProgressDone("repair-boot", rc == 0 ? "done" : "failed");
+    return rc;
+}
+
 int CmdVerify(const std::vector<std::string>& a) {
     std::string image = Opt(a, "--image");
     if (image.empty()) {
@@ -490,11 +503,19 @@ int CmdExtract(const std::vector<std::string>& a) {
             Tr("用法: SysRecover.exe extract --file <镜像> [--index N] " "--path <镜像内路径> [--path ...] --dest <输出目录>\n" "  路径用 Windows 风格、以 \\ 开头，支持通配符，例如：\n" "    --path \"\\Windows\\win.ini\"\n" "    --path \"\\Users\\*\\Desktop\\*.txt\"\n"));
         return 2;
     }
-    // 输出目录：不存在就建（父目录需已存在）
-    if (!CreateDirectoryW(ToWide(dest).c_str(), nullptr) &&
-        ::GetLastError() != ERROR_ALREADY_EXISTS) {
-        std::printf(Tr("无法创建输出目录（父目录需已存在）\n"));
-        return 1;
+    // 输出目录：不存在就建（父目录需已存在）。**盘符根（`X:\`）视为已存在** ——
+    // `CreateDirectoryW("X:\\")` 会失败并报"找不到路径"，让 `extract --dest X:\` 用不了
+    //（docs/15 §7-P7a，实测踩到）。
+    {
+        std::wstring wdest = ToWide(dest);
+        DWORD attr = ::GetFileAttributesW(wdest.c_str());
+        bool isDir = attr != INVALID_FILE_ATTRIBUTES &&
+                     (attr & FILE_ATTRIBUTE_DIRECTORY);
+        if (!isDir && !CreateDirectoryW(wdest.c_str(), nullptr) &&
+            ::GetLastError() != ERROR_ALREADY_EXISTS) {
+            std::printf(Tr("无法创建输出目录（父目录需已存在）\n"));
+            return 1;
+        }
     }
     sysrecover::WimEngine engine;
     if (!engine.ok()) {
@@ -678,34 +699,47 @@ struct CmdHelp {
     const char* cmd;
     const char* text;
 };
-const CmdHelp kCmdHelp[] = {
+const CmdHelp* CmdHelpTable(size_t* n) {
+    // ⚠️ 表体必须是**函数内 static**：放命名空间作用域时 `Tr()` 在静态初始化阶段
+    // 就求值，而 InitI18n() 要到 main() 里才跑 → 词典没加载、恒返回源文本，
+    // 表现为 `--lang en help` 总览是英文、`help restore` 却还是中文（实测）。
+    // 函数内 static 首次调用时才初始化，已经在 InitI18n 之后。
+    static const CmdHelp k[] = {
     {"list", Tr("list\n  列出磁盘/分区/文件系统/盘符/ESP 与系统标记。")},
     {"diag",
      Tr("diag [--zip [--out <zip>]]\n" "  自检（管理员/固件/Secure Boot/启动项/wimlib）。\n" "  --zip 导出诊断包（diag 文本 + logs/ + 契约文件），排错时直接发回。")},
     {"images", Tr("images --file <镜像>\n  列出镜像里的子镜像：<index> - <名称>（<大小>）。")},
     {"backup",
-     Tr("backup --dest <文件> [--source <目录/>] [--compress fast|maximum|recovery]\n" "       [--name <名>] [--append] [--verify] [--yes]\n" "  --source 以 `/` 结尾（如 C:/）触发 VSS 热备；--compress 决定体积/速度；\n" "  --verify 写完立即校验；--append 追加为同一 WIM 的新子镜像。")},
+     Tr("backup --dest <文件> [--source <目录>] [--compress fast|maximum|recovery]\n" "       [--name <名>] [--append] [--verify] [--yes]\n" "  --source 写盘符根（`C:` 或 `C:/` 都行）即自动走 VSS 热备；\n" "  --compress 决定体积/速度；--verify 写完立即校验；--append 追加为同一 WIM 的新子镜像。")},
     {"restore",
      Tr("restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--yes]\n" "  目标是正在运行的系统盘 → 暂存并重启进救援层；否则就地还原（不重启）。\n" "  用 `list` 先确认磁盘号/分区号；镜像必须在**本地分区**。")},
     {"verify", Tr("verify --image <文件>\n  校验镜像完整性（成功 0，失败 5）。")},
+    {"repair-boot",
+     Tr("repair-boot [--disk N --part M]\n" "  修复引导（ESP 上的 BCD/bootmgfw）：给**引导坏了的机器**用，不必重装。\n" "  不给 --disk/--part 时自动找系统盘；流程 = bcdboot + 产物校验（docs/15）。")},
     {"extract",
      Tr("extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]\n" "  从镜像里取单个/一组文件（--path 支持通配符、可重复）。")},
     {"history", Tr("history\n  列出操作历史（logs/history.jsonl）。")},
     {"shortcut", Tr("shortcut --target <exe> [--args <...>] [--name <名>]\n  在桌面建快捷方式。")},
     {"version", Tr("version\n  显示版本号。")},
-};
-const size_t kCmdHelpN = sizeof(kCmdHelp) / sizeof(kCmdHelp[0]);
+    };
+    *n = sizeof(k) / sizeof(k[0]);
+    return k;
+}
 
 void PrintAllUsage() {
     std::printf(
-        Tr("SysRecover 九转还原 · 命令行\n" "\n" "用法: SysRecover.exe <命令> [选项]      （`SysRecover.exe help <命令>` 看单项）\n" "\n" "命令:\n" "  list                        列出磁盘/分区/文件系统/盘符/ESP/系统标记\n" "  diag [--zip [--out <zip>]]  自检（固件/Secure Boot/启动项/wimlib）；--zip 导出诊断包\n" "  images --file <镜像>        列出镜像里的子镜像（含大小/描述）\n" "  backup --dest <文件> [--source <目录/>] [--compress fast|maximum|recovery]\n" "         [--name <名>] [--append] [--verify] [--yes]\n" "  restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--yes]\n" "  verify --image <文件>       校验镜像完整性\n" "  extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]\n" "                              从镜像里取单个/一组文件（支持通配符）\n" "  history                     列出操作历史（logs/history.jsonl）\n" "  shortcut --target <exe> [--args <...>] [--name <名>]   建快捷方式\n" "  version                     显示版本\n" "  help [命令]                 本帮助\n" "\n" "退出码: 0 成功 / 1 通用失败 / 2 参数错 / 3 需管理员 / 4 危险目标被拒 / 5 镜像校验失败 / 6 取消\n" "注意: 还原系统盘会重启进救援层，镜像必须放在**本地分区**（救援层访问不到网络）。\n"));
+        Tr("SysRecover 九转还原 · 命令行\n" "\n" "用法: SysRecover.exe <命令> [选项]      （`SysRecover.exe help <命令>` 看单项）\n" "\n" "命令:\n" "  list                        列出磁盘/分区/文件系统/盘符/ESP/系统标记\n" "  diag [--zip [--out <zip>]]  自检（固件/Secure Boot/启动项/wimlib）；--zip 导出诊断包\n" "  images --file <镜像>        列出镜像里的子镜像（含大小/描述）\n" "  backup --dest <文件> [--source <目录>] [--compress fast|maximum|recovery]\n" "         [--name <名>] [--append] [--verify] [--yes]\n" "  restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--yes]\n" "  verify --image <文件>       校验镜像完整性\n"
+        "  repair-boot [--disk N --part M]   修复引导（ESP 的 BCD/bootmgfw；引导坏了不用重装）\n"
+        "  extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]\n" "                              从镜像里取单个/一组文件（支持通配符）\n" "  history                     列出操作历史（logs/history.jsonl）\n" "  shortcut --target <exe> [--args <...>] [--name <名>]   建快捷方式\n" "  version                     显示版本\n" "  help [命令]                 本帮助\n" "\n" "退出码: 0 成功 / 1 通用失败 / 2 参数错 / 3 需管理员 / 4 危险目标被拒 / 5 镜像校验失败 / 6 取消\n" "注意: 还原系统盘会重启进救援层，镜像必须放在**本地分区**（救援层访问不到网络）。\n"));
 }
 
 // 返回 true = 找到了该命令的说明。
 bool PrintCmdUsage(const char* cmd) {
-    for (size_t i = 0; i < kCmdHelpN; ++i)
-        if (std::strcmp(cmd, kCmdHelp[i].cmd) == 0) {
-            std::printf("%s\n", kCmdHelp[i].text);
+    size_t n = 0;
+    const CmdHelp* t = CmdHelpTable(&n);
+    for (size_t i = 0; i < n; ++i)
+        if (std::strcmp(cmd, t[i].cmd) == 0) {
+            std::printf("%s\n", t[i].text);
             return true;
         }
     return false;
@@ -802,6 +836,8 @@ int main() {
         return CmdRestore(args);
     if (args[0] == "verify")
         return CmdVerify(args);
+    if (args[0] == "repair-boot")
+        return CmdRepairBoot(args);
     if (args[0] == "images")
         return CmdImages(args);
     if (args[0] == "extract")

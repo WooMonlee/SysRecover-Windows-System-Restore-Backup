@@ -41,6 +41,18 @@ int FirmwareTrustedUefiCas();
 // 没注册时 shim 会弹 MokManager，用户必须先重启一次并注册，救援才跑得起来。
 bool IsMokEnrolled(const std::wstring& exeDir);
 
+// ── 引导层健康检查（docs/15 · P2/P3）────────────────────────────
+// `bcdboot` 会**静默失败**（返回码曾被丢弃），写残了就是还原后的"选择操作系统"
+// 空菜单 / 0xc00000xx。这三条把"写没写成"变成可判定的事实，让调用方 fail-closed：
+//   * TargetBcdTemplateOk ：目标系统盘有没有 bcdboot 需要的 BCD-Template；
+//   * EspHasRoomForBcdboot：ESP 还剩不剩得下 bcdboot 要写的 ~9MB（要求 ≥24MB）；
+//   * VerifyEspBcd        ：bcdboot **之后**的产物断言（displayorder 非空 + 有
+//                           winload 条目 + bootmgfw/Resources/Fonts/locale 齐全）。
+// detail 是给日志/用户看的 UTF-8 说明（Tr() 过的面向用户部分）。
+bool TargetBcdTemplateOk(wchar_t targetLetter, std::string& detail);
+bool EspHasRoomForBcdboot(const std::wstring& espRoot, std::string& detail);
+bool VerifyEspBcd(const std::wstring& espRoot, std::string& detail);
+
 // ── Secure Boot 下的引导走法（PIT-063/PIT-066 对比）──────────────
 //   Grub    ：固件启动项 → shimx64.efi（微软签名）→ grubx64.efi(= **Canonical
 //             签名的 Ubuntu GRUB**，shim 内嵌的正是同一把证书，**无需 MOK 注册**)

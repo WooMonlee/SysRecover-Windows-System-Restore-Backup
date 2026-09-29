@@ -10,6 +10,7 @@ namespace sysrecover {
 namespace {
 
 std::wstring g_path;
+int g_lastPercent = 0;  // 最后一个已知进度（失败收尾时用它，别再写 100）
 
 std::string JsonEscape(const std::string& s) {
     std::string o;
@@ -38,6 +39,7 @@ void ProgressUpdate(const std::string& phase, int percent,
                     const std::string& status) {
     if (g_path.empty())
         return;
+    g_lastPercent = percent;
     SYSTEMTIME st = {};
     GetLocalTime(&st);
     char buf[512];
@@ -58,7 +60,9 @@ void ProgressUpdate(const std::string& phase, int percent,
 }
 
 void ProgressDone(const std::string& phase, const std::string& status) {
-    ProgressUpdate(phase, 100, status);
+    // 成功收尾 = 100%；失败/中止写"最后一个已知进度"（docs/15 §7-P7b）。
+    const bool ok = (status == "done" || status == "staged");
+    ProgressUpdate(phase, ok ? 100 : g_lastPercent, status);
 }
 
 }  // namespace sysrecover
