@@ -553,6 +553,14 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 
 ---
 
+- PIT-092 **UEFI 固件 + MBR 盘（CSM/Legacy 装的 Windows）被误判成 UEFI 引导 → "未找到 ESP 分区"（0.4.1 起一直存在，2026-09-29 才修）**：用户在 **Win10 x64 + MBR 分区**上还原，直接失败并把截图存成 `C:\2222.png`：**"暂存失败 / UEFI 机器未找到 ESP 分区，无法部署引导层"**。
+  · **根因**：`ops.cpp` 的引导链判据用的是 `disk.cpp::IsUefiFirmware()`（= `GetFirmwareType()`，只看**平台**是不是 UEFI，**不看当前是怎么启动的**）。"UEFI 平台 + legacy 引导的 MBR 系统"很常见（OEM 预装、克隆盘、GPT→MBR 转换、在 Legacy 模式下装的系统），这类机器**根本没有 ESP**，于是：① 暂存：`FindEspPartition` 失败 → abort（0.4.3 后文案变成带分区表摘要的"未找到可用的 ESP 引导分区"，但**依然失败**）；② 就地还原：同样走错链。
+  · **修法**：**按"目标磁盘分区风格"选引导链**，而不是固件类型 —— 新增 `src/boot/bootpath.{h,cpp}`（纯逻辑 `ShouldUseUefiBoot(firmwareIsUefi, diskStyle)`：**GPT→UEFI/ESP、MBR→BIOS/GRUB4DOS**、风格未知→退回固件类型）+ `ops.cpp::UseUefiBootFor(target)`；暂存/就地/`repair-boot` 三处判据、以及"单次启动"（`BootNext` vs `bcdsequence`）全部改用同一判据，并新增日志 `boot path: UEFI/ESP | BIOS/GRUB4DOS (firmware=…, target disk style=…)` 便于现场判断。
+  · **回归**：单测 `boot_path_choice`（UEFI+MBR / BIOS+MBR / GPT×2 / Unknown×2），`make check` **29 用例 / 184 断言**。✅ 2026-09-29
+  · ⚠️ **待做**：真机（UEFI 固件 + MBR 盘）跑一次暂存→重启，确认日志是 `boot path: BIOS/GRUB4DOS` 且能进救援层。
+
+---
+
 ## 14. License 合规（SBOM，随版本更新）
 
 | 组件 | 版本/来源 | License | 链接/分发方式 |

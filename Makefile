@@ -52,7 +52,7 @@ APP_SRC = src/disk/disk.cpp src/wim/wim.cpp src/wim/exclude.cpp \
       src/common/singleton.cpp src/common/sysinfo.cpp src/common/zip.cpp \
       src/common/selfarch.cpp src/common/crash.cpp src/common/vss.cpp src/common/i18n.cpp \
       src/common/pathutil.cpp src/common/cpucap.cpp src/boot/bcd.cpp src/boot/grub.cpp \
-      src/boot/uefi.cpp src/boot/bcd_parse.cpp src/boot/task.cpp src/boot/bootfix.cpp \
+      src/boot/uefi.cpp src/boot/bcd_parse.cpp src/boot/bootpath.cpp src/boot/task.cpp src/boot/bootfix.cpp \
       src/app/safety.cpp src/app/advice.cpp \
       src/app/shortcut.cpp src/app/ops.cpp
 APP_OBJS = $(patsubst src/%.cpp,$(OBJDIR)/app/%.o,$(APP_SRC))
@@ -146,7 +146,7 @@ clean:
 # ---- 单元测试（零依赖，纯逻辑；不链 duilib/wimlib，跑得快） ----
 TEST_SRC   = tests/tiny_test.cpp tests/unit_tests.cpp tests/main.cpp
 TEST_UNITS = src/common/sysinfo.cpp src/wim/exclude.cpp src/boot/task.cpp src/common/zip.cpp src/app/advice.cpp \
-      src/common/i18n.cpp src/common/selfarch.cpp src/common/pathutil.cpp src/boot/bcd_parse.cpp
+      src/common/i18n.cpp src/common/selfarch.cpp src/common/pathutil.cpp src/boot/bcd_parse.cpp src/boot/bootpath.cpp
 TEST_BIN   = $(OBJDIR)/tests.exe
 
 check: $(TEST_BIN)

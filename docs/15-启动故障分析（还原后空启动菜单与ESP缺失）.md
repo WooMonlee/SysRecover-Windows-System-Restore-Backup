@@ -545,10 +545,28 @@ qemu-system-x86_64 -m 1024 -smp 2 \
    `cc1plus` 起不来（缺自身 DLL），**编译"零输出"却报 `Error 1`**，极易误判成源码问题（见 PIT-091）。
 
 ### 12.4 未做（明确记录，避免"以后忘了"）
-
-- 版本号**未 bump**（仍是 `0.4.2`）：本批还没提交、且 `package` 无法在本机完成；发布时再 `python tools/version.py --bump`。
+- ~~版本号未 bump~~ → **已 bump 到 `0.4.3`** 并提交（`371875e`）；`make package` 双架构已可跑（装回 i686 工具链后）。
 - GUI 入口：**只加了 CLI `repair-boot`**；「安装菜单」/状态栏里的 GUI 一键修复留作后续（CLI 已能被批处理/PE 直接调用，稳定性收益已拿到）。
 - 故障 A 的镜像侧真因：按用户 2026-09-29 裁定**停止深挖**（§11.4）。
+
+### 12.5 故障 C：UEFI 固件 + **MBR** 盘被误判成 UEFI 引导（2026-09-29 修）
+
+- **现象**（用户在 Win10 x64 + MBR 分区上实测，旧版 0.4.1；截图 `C:\2222.png`）：
+  `暂存失败 / UEFI 机器未找到 ESP 分区，无法部署引导层` —— 明明目标盘是 **MBR**，
+  却要求 ESP。0.4.2/0.4.3 只改了文案与 ESP 回退，**判据没变，问题依旧**。
+- **根因**：分支判据 `ops.cpp` 的 `IsUefiFirmware()`（`GetFirmwareType()`）只看**平台**是不是
+  UEFI，**不看当前是怎么启动的**。"UEFI 平台 + legacy/CSM 引导的 MBR 系统"很常见
+  （OEM 预装、克隆盘、GPT→MBR 转换、Legacy 模式下装的系统）——这类机器**没有 ESP**，
+  引导链是 legacy `bootmgr` + 实模式 bootsector。
+- **修法**（PIT-092）：**按目标磁盘分区风格选链**，不看固件类型。
+  - 新增 `src/boot/bootpath.{h,cpp}`：纯逻辑 `ShouldUseUefiBoot(firmwareIsUefi, diskStyle)`
+    → **GPT = UEFI/ESP；MBR = BIOS/GRUB4DOS（哪怕固件是 UEFI）；Unknown = 退回固件类型**。
+  - `ops.cpp::UseUefiBootFor(target)` 统一替换 4 处判据：就地还原、暂存引导层、"单次启动"
+    （`BootNext` vs `bcdsequence`）、`repair-boot`；并新增日志
+    `boot path: UEFI/ESP | BIOS/GRUB4DOS (firmware=…, target disk style=…)`。
+  - 单测 `boot_path_choice`（6 组组合，含 **UEFI+MBR → BIOS 链**）。`make check` 29 用例 / 184 断言。
+- **待做**：真机（UEFI 固件 + MBR 盘）跑一次暂存→重启，确认日志为 `boot path: BIOS/GRUB4DOS`。
+
 
 ---
 

@@ -10,6 +10,7 @@
 
 #include "../boot/bcd.h"
 #include "../boot/bootfix.h"
+#include "../boot/bootpath.h"
 #include "../boot/grub.h"
 #include "../boot/task.h"
 #include "../boot/uefi.h"
@@ -94,6 +95,23 @@ bool SameDrive(wchar_t a, wchar_t b) {
     return towupper(a) == towupper(b);
 }
 
+// 目标盘的分区风格（找不到该盘 → Unknown）。
+PartitionStyle DiskStyleOf(uint32_t diskIndex) {
+    for (const auto& d : EnumerateDisks())
+        if (d.index == diskIndex)
+            return d.style;
+    return PartitionStyle::Unknown;
+}
+
+// 目标分区该走 UEFI/ESP 分支吗？**以目标磁盘分区风格为准**（boot/bootpath.h）：
+//   MBR 目标 → BIOS/GRUB4DOS 链（哪怕固件是 UEFI：那台机器本来就是 legacy 启动的）；
+//   GPT 目标 → UEFI/ESP 链。
+// 2026-09-29 修：此前只看 `IsUefiFirmware()`，导致 "UEFI 固件 + MBR 系统盘" 的机器
+// 误走 ESP 分支 → "未找到 ESP 分区" 直接失败（用户实测，旧版 0.4.1 起一直存在）。
+bool UseUefiBootFor(const PartitionInfo& t) {
+    return ShouldUseUefiBoot(IsUefiFirmware(), DiskStyleOf(t.diskIndex));
+}
+
 // 取一个**可用的 ESP 根**（形如 "X:\\"）。顺序（docs/15 · P4）：
 //   ① `mountvol <空闲盘符>: /s` —— 固件**真正启动**的那个分区。关键点：它按固件
 //      启动项找，**不依赖分区类型 GUID**，所以 DiskGenius 把 ESP 标成 Basic Data
@@ -173,7 +191,7 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
         if (GetFileAttributesW((winDir + L"\\System32\\winload.exe").c_str()) !=
             INVALID_FILE_ATTRIBUTES) {
             std::string out;
-            if (IsUefiFirmware()) {
+            if (UseUefiBootFor(target)) {
                 // 找 ESP（含回退）+ 先预检目标模板（docs/15 · P2/P4）
                 std::wstring espRoot;
                 bool guidMatched = false;
@@ -808,9 +826,15 @@ int StageRestore(const RestoreRequest& req, std::string& err,
             LogInfo("restore task written to " + W2U(used));
     }
     // 6) 引导层 + 单次启动（仅正常 Windows，§2 禁令3）
+    // 走哪条链**看目标盘的分区风格**（MBR→BIOS/GRUB4DOS；GPT→UEFI/ESP），不看固件类型：
+    // UEFI 固件 + MBR 盘的机器（CSM/Legacy 装的 Windows）上没有 ESP，必须走 BIOS 链。
+    const bool useUefi = UseUefiBootFor(target);
+    LogInfo(std::string("boot path: ") + (useUefi ? "UEFI/ESP" : "BIOS/GRUB4DOS") +
+            " (firmware=" + (IsUefiFirmware() ? "UEFI" : "BIOS") +
+            ", target disk style=" + StyleName(DiskStyleOf(target.diskIndex)) + ")");
     if (req.repairBoot) {
         std::string blog;
-        if (IsUefiFirmware()) {
+        if (useUefi) {
             // UEFI/GPT：写**固件启动项**（Boot#### + BootOrder），由固件直接加载
             // 内核（EFI stub）并把 OptionalData 当内核命令行 —— 全程不经 bootmgr，
             // 因此没有 bootapp 的 0xc000007b（PIT-060）。ESP 不受还原影响。
@@ -935,8 +959,8 @@ int StageRestore(const RestoreRequest& req, std::string& err,
         // 单次启动（都只生效一次）：
         //   UEFI + shim/direct → 固件 BootNext
         //   UEFI + bootapp     → BCD bootsequence（install 里已设好，不重复设）
-        //   BIOS               → BCD bootsequence
-        if (IsUefiFirmware() && CurrentSbMode() != SbMode::Bootapp) {
+        //   BIOS/MBR           → BCD bootsequence
+        if (useUefi && CurrentSbMode() != SbMode::Bootapp) {
             if (!SetUefiBootNext(blog)) {
                 ReleaseOpLock();
                 ProgressDone("restore", "failed");
@@ -944,7 +968,7 @@ int StageRestore(const RestoreRequest& req, std::string& err,
                 LogError(err);
                 return 1;
             }
-        } else if (!IsUefiFirmware() && !BcdSetBootsequence(RecoveryGuid())) {
+        } else if (!useUefi && !BcdSetBootsequence(RecoveryGuid())) {
             ReleaseOpLock();
             ProgressDone("restore", "failed");
             err = Tr("设置单次启动失败");
@@ -1000,7 +1024,7 @@ int RepairBoot(int disk, int part, std::string& msg) {
             std::to_string(target.partNumber));
     std::string out;
     std::string blog;
-    if (!IsUefiFirmware()) {
+    if (!UseUefiBootFor(target)) {
         // BIOS/MBR：bcdboot 把 bootmgr/BCD 写到系统分区自身
         int rc = RunProcess(SysToolPath(L"bcdboot.exe"),
                             winDir + L" /s " + target.letter + L": /f BIOS", out);
