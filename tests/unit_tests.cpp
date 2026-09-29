@@ -13,6 +13,7 @@
 
 #include "app/advice.h"
 #include "boot/bcd_parse.h"
+#include "boot/bootpath.h"
 #include "boot/task.h"
 #include "common/i18n.h"
 #include "common/pathutil.h"
@@ -375,6 +376,24 @@ TEST(pathutil_make_dir_tree) {
     RemoveDirectoryW((base + L"\\a\\b").c_str());
     RemoveDirectoryW((base + L"\\a").c_str());
     RemoveDirectoryW(base.c_str());
+}
+
+// ── bootpath：引导链选择（2026-09-29 用户实测回归）──────────────
+// 关键用例：**UEFI 固件 + MBR 盘**必须走 BIOS/GRUB4DOS 链 —— 这类机器（CSM/Legacy
+// 装的 Windows）没有 ESP，按固件类型选 UEFI 分支会直接报"未找到 ESP 分区"。
+TEST(boot_path_choice) {
+    using sysrecover::PartitionStyle;
+    using sysrecover::ShouldUseUefiBoot;
+    // UEFI 固件 + MBR 盘 → BIOS 链（本轮修的正是这条）
+    CHECK(!ShouldUseUefiBoot(true, PartitionStyle::MBR));
+    // BIOS 固件 + MBR 盘 → BIOS 链
+    CHECK(!ShouldUseUefiBoot(false, PartitionStyle::MBR));
+    // GPT 盘 → UEFI 链（BIOS 固件 + GPT 由 safety.cpp 预拒，这里只断言判据）
+    CHECK(ShouldUseUefiBoot(true, PartitionStyle::GPT));
+    CHECK(ShouldUseUefiBoot(false, PartitionStyle::GPT));
+    // 风格未知 → 退回固件类型
+    CHECK(ShouldUseUefiBoot(true, PartitionStyle::Unknown));
+    CHECK(!ShouldUseUefiBoot(false, PartitionStyle::Unknown));
 }
 
 // ── bcd_parse：`bcdedit /enum` 输出断言（docs/15 · P3）────────────
