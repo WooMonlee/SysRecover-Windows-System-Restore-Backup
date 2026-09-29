@@ -217,7 +217,10 @@ bool InstallBootLayer(const std::wstring& deployDrive,
     ok &= WriteMenuLst(drive, log);
     std::string bcdLog;
     wchar_t dl = drive[0];
-    if (!BcdCreateBootsector(RecoveryGuid(), Tr(L"一键还原恢复环境"), dl,
+    // 描述用 ASCII（"SysRecover Recovery Environment"）：bootmgr 菜单里中文描述
+    // 在部分机器上显示成方框（PIT-054 实测），且 ASCII 与 UEFI bootapp 条目
+    //（desc "SysRecover"）和 GUI 提示文案一致（PIT-094）。
+    if (!BcdCreateBootsector(RecoveryGuid(), L"SysRecover Recovery Environment", dl,
                              bcdLog))
         ok = false;
     log += bcdLog;

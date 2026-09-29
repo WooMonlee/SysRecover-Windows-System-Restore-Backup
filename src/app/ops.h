@@ -90,6 +90,13 @@ bool ReadMenuBinding(std::wstring* imagePath, int* imageIndex,
                      unsigned long long* targetOffset,
                      unsigned long long* targetSize);
 
+// 本次还原/装菜单该走哪套引导链（PIT-092）：UEFI 固件 **且** 目标盘 GPT →
+// UEFI/ESP；否则（含"UEFI 固件 + MBR 盘"）BIOS/GRUB4DOS。GUI 用它给
+// "安装菜单成功"的提示选对说法（UEFI=开机按 F12 选固件启动项；
+// BIOS=开机菜单里选 SysRecover 条目）—— 与 StageRestoreImpl 内部同一函数，
+// 不会漂移（PIT-072 同款做法）。
+bool UseUefiBootFor(const PartitionInfo& target);
+
 // 修复引导（docs/15 · P5）：给**已经坏的机器**用 —— 不重装即可修好引导。
 //   disk/part <= 0 → 自动找系统盘（含 \Windows\System32\winload.exe 的分区）；
 //   否则用指定的 磁盘号/分区号（分区必须有盘符）。

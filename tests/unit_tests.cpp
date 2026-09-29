@@ -12,6 +12,7 @@
 #include "tiny_test.h"
 
 #include "app/advice.h"
+#include "boot/bcd.h"
 #include "boot/bcd_parse.h"
 #include "boot/bootpath.h"
 #include "boot/task.h"
@@ -399,6 +400,36 @@ TEST(task_conf_get) {
     CHECK_EQ(TaskConfGet(t2, "target"), std::string("GUID"));
     CHECK_EQ(TaskConfGet(t2, "target_size"), std::string("100"));
     CHECK_EQ(TaskConfGet(t2, "target_offset"), std::string("200"));
+}
+
+// ── bcd：{bootmgr} timeout 解析（PIT-094：常驻菜单可被选中的前提）──────
+TEST(bcd_parse_bootmgr_timeout) {
+    // 实机 bcdedit /enum {bootmgr} 输出形态（元素名不依赖语言，值行两 token）
+    std::string s =
+        "Windows Boot Manager\r\n"
+        "--------------------\r\n"
+        "identifier              {bootmgr}\r\n"
+        "device                  partition=C:\r\n"
+        "path                    \\bootmgr\r\n"
+        "description             Windows Boot Manager\r\n"
+        "locale                  zh-CN\r\n"
+        "default                 {current}\r\n"
+        "displayorder            {current}\r\n"
+        "                        {12345678-1234-1234-1234-123456789abc}\r\n"
+        "toolsdisplayorder       {memdiag}\r\n"
+        "timeout                 30\r\n";
+    CHECK_EQ(ParseBootmgrTimeout(s), 30);
+    // 标签本地化/其它写法：只要「两个 token + 第二个纯数字」就认
+    CHECK_EQ(ParseBootmgrTimeout("\xe8\xb6\x85\xe6\x97\xb6\t\t5\n"), 5);
+    CHECK_EQ(ParseBootmgrTimeout("timeout 1"), 1);       // 无行尾换行
+    CHECK_EQ(ParseBootmgrTimeout("timeout  0\r\n"), 0);  // CR + 多空格
+    CHECK_EQ(ParseBootmgrTimeout("locale zh-CN\ntimeout 10\n"), 10);
+    // 认不出来 → -1
+    CHECK_EQ(ParseBootmgrTimeout(""), -1);
+    CHECK_EQ(ParseBootmgrTimeout("identifier {bootmgr}\n"), -1);
+    CHECK_EQ(ParseBootmgrTimeout("timeout abc\n"), -1);
+    // 第二 token 是数字但不是 timeout 量级（>1 天）→ 跳过继续找
+    CHECK_EQ(ParseBootmgrTimeout("foo 9999999\ntimeout 7\n"), 7);
 }
 
 // ── bootpath：引导链选择（2026-09-29 用户实测回归）──────────────

@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：325/326 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：325/328 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n建议：以管理员身份运行（本程序要读写分区与引导）。': '\n\nAdvice: run as administrator (this program reads and writes partitions and boot data).',
@@ -81,7 +81,6 @@ EN = {
     '」（服务不存在），无法创建卷影快照。\r\n（精简/封装版 Windows 可能删除了它；不修复则备份必报 rc=89: Unable to create a filesystem snapshot。）': ') does not exist, so no volume shadow copy can be created.\r\n(Lite/customized Windows builds sometimes remove it; without it the backup always fails with rc=89: Unable to create a filesystem snapshot.)',
     '」（错误 ': ') (error ',
     '一键还原': 'One-Key Restore',
-    '一键还原恢复环境': 'SysRecover Recovery Environment',
     '上次写入未完成，镜像不完整（很可能是上次备份中途退出/中断）': 'The last write was never finished, so the image is incomplete (the previous backup most likely exited or was interrupted halfway)',
     '不弹任何确认框，直接暂存任务并重启（无人值守/批量部署用）': 'No confirmation dialogs: stage the task and reboot straight away (unattended / mass deployment).',
     '不限CPU': 'No limit',
@@ -118,6 +117,7 @@ EN = {
     '只支持拖入 .esd / .wim 镜像文件': 'Only .esd / .wim image files can be dropped here',
     '可用 ': 'Free ',
     '启动服务「': 'Failed to start service "',
+    '启动还原菜单已安装：开机按 F12 启动菜单选「SysRecover」即可还原该镜像': 'Boot restore menu installed: press F12 and pick "SysRecover" to restore this image',
     '启动还原菜单已安装：开机选「SysRecover」即可还原该镜像': 'Boot restore menu installed: pick "SysRecover" at boot to restore this image',
     '在 PE 中运行（目标非运行系统盘）→ 就地还原': 'Running in WinPE (the target is not the running system disk) -> restore in place',
     '处理（任选其一，在管理员窗口操作）：\r\n': 'do one of the following (from an administrator window):\r\n',
@@ -160,6 +160,7 @@ EN = {
     '已取消\n': 'Cancelled\n',
     '已安装 Boot%04X': 'Installed Boot%04X',
     '已安装启动还原（旧版安装，未绑定镜像）。点此删除': 'Boot restore is installed (legacy install, no image bound). Click to remove',
+    '已安装：开机按 F12 启动菜单选「SysRecover」，\n把 %ls（第 %d 个镜像）还原到 %ls。\n点此删除（要换镜像请先删除、再安装）': 'Installed: press F12 at boot and pick "SysRecover" in the boot menu to restore\n%ls (image %d) to %ls.\nClick to remove (to change the image, remove first, then install again)',
     '已安装：开机菜单里选「SysRecover」即可把\n%ls（第 %d 个镜像）还原到 %ls。\n点此删除（要换镜像请先删除、再安装）': 'Installed: pick "SysRecover" in the boot menu to restore\n%ls (image %d) to %ls.\nClick to remove (to change the image, remove first, then install again)',
     '已导出诊断包（%d 个文件）：%ls\n': 'Diagnostics bundle exported (%d files): %ls\n',
     '已提取 %zu 个路径到 %s\n': 'Extracted %zu path(s) to %s\n',
@@ -277,6 +278,7 @@ EN = {
     '警告：目标磁盘（磁盘': 'Warning: the target disk (disk ',
     '讨论': 'Discuss',
     '设置单次启动失败': 'Failed to set the one-time boot entry',
+    '设置启动菜单停留时间失败（菜单将无法被选中）: ': 'Failed to set the boot menu wait time (the menu will not be selectable): ',
     '设置固件单次启动失败: ': 'Failed to set the firmware one-time boot: ',
     '请先选择保存位置': 'Please choose a save location first',
     '请先选择镜像与目标分区，再安装菜单': 'Select an image and a target partition first, then install the menu',
