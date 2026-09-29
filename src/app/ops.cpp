@@ -5,6 +5,7 @@
 #include <windows.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cwctype>
 #include <vector>
 
@@ -54,6 +55,17 @@ std::string W2U(const std::wstring& w) {
         WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, s.data(), n, nullptr,
                             nullptr);
     return s;
+}
+
+// UTF-8 → 宽串（读 restore-task.conf 里的路径用，conf 是 W2U 写出来的）。
+std::wstring U2W(const std::string& s) {
+    if (s.empty())
+        return {};
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    std::wstring w(n > 0 ? n - 1 : 0, 0);
+    if (n > 0)
+        MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n);
+    return w;
 }
 
 std::wstring ExePath() {
@@ -573,8 +585,14 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
     return 0;
 }
 
-int StageRestore(const RestoreRequest& req, std::string& err,
-                 bool* needReboot, ProgressFn progress, ErrAdvice* adv) {
+// 还原的两条"安装"模式（共用同一套检查与契约，只有"是否立即重启"不同）：
+//   menuEntry=false：StageRestore —— 判定就地/暂存，暂存则设**单次启动**（BootNext/
+//                    bootsequence），重启后自动执行；
+//   menuEntry=true ：StageRestoreMenu —— 只写常驻契约 + 常驻启动项，**不设单次启动**，
+//                    留给用户在开机菜单里自行选择（用户 2026-09-29 规格）。
+int StageRestoreImpl(const RestoreRequest& req, std::string& err,
+                     bool* needReboot, ProgressFn progress, ErrAdvice* adv,
+                     bool menuEntry) {
     if (adv) *adv = ADV_NONE;
     if (req.image.empty()) {
         err = Tr("缺少镜像路径");
@@ -691,7 +709,7 @@ int StageRestore(const RestoreRequest& req, std::string& err,
     //      否则维持原设计：暂存任务 + 重启进 Linux 救援层执行（PIT-064）。
     {
         std::string why;
-        if (CanRestoreInPlace(target, why)) {
+        if (!menuEntry && CanRestoreInPlace(target, why)) {
             LogInfo(std::string("restore mode: in-place (") + why + ")");
             const ULONGLONG t1 = GetTickCount64();
             int rc = RunDirectRestore(req, target, imagePath, err, progress);
@@ -702,7 +720,12 @@ int StageRestore(const RestoreRequest& req, std::string& err,
                           GetTickCount64() - t1, rc == 0 ? "ok" : "failed");
             return rc;
         }
-        LogInfo(std::string("restore mode: staged reboot (") + why + ")");
+        if (menuEntry) {
+            LogInfo("restore mode: menu entry (contract + persistent boot entry; "
+                    "no reboot)");
+        } else {
+            LogInfo(std::string("restore mode: staged reboot (") + why + ")");
+        }
         // 网络镜像防呆（问题清单 D1/H1）：暂存+重启后由 **Linux 救援层**读镜像，而救援层
         // 访问不到网络（UNC / 映射网络驱动器）→ 必然 image not found。这里**提前拒绝**
         //（就地还原不在此列 —— 那是 Windows 自己读，网络没问题）。
@@ -716,8 +739,12 @@ int StageRestore(const RestoreRequest& req, std::string& err,
             ProgressDone("restore", "failed");
             return 2;
         }
-        AppendHistory("restore-staged", req.image, imagePath, 0,
-                      "staged; 实际结果见救援层日志");
+        if (menuEntry)
+            AppendHistory("restore-menu", req.image, imagePath, 0,
+                          "menu entry installed (no reboot)");
+        else
+            AppendHistory("restore-staged", req.image, imagePath, 0,
+                          "staged; 实际结果见救援层日志");
     }
 
     std::wstring exeDir = ExeDir();
@@ -960,7 +987,11 @@ int StageRestore(const RestoreRequest& req, std::string& err,
         //   UEFI + shim/direct → 固件 BootNext
         //   UEFI + bootapp     → BCD bootsequence（install 里已设好，不重复设）
         //   BIOS/MBR           → BCD bootsequence
-        if (useUefi && CurrentSbMode() != SbMode::Bootapp) {
+        // 单次启动**只在"暂存+重启"模式设**；菜单项模式保持"用户自己选"（用户规格）。
+        if (menuEntry) {
+            LogInfo("menu entry mode: no BootNext/bootsequence (user picks it in "
+                    "the boot menu)");
+        } else if (useUefi && CurrentSbMode() != SbMode::Bootapp) {
             if (!SetUefiBootNext(blog)) {
                 ReleaseOpLock();
                 ProgressDone("restore", "failed");
@@ -977,9 +1008,63 @@ int StageRestore(const RestoreRequest& req, std::string& err,
         }
     }
     ReleaseOpLock();
+    if (needReboot)
+        *needReboot = false;  // 菜单项模式不重启（暂存路径由调用方按返回值判断）
     ProgressDone("restore", "staged");
-    LogInfo("restore staged, reboot to execute");
+    if (menuEntry) {
+        LogInfo("restore menu entry installed (contract written; boots into the "
+                "rescue layer only if the user picks it)");
+    } else {
+        LogInfo("restore staged, reboot to execute");
+    }
     return 0;
+}
+
+// 公开入口：默认 = 暂存+重启（单次启动）；menuEntry = 只装常驻菜单项。
+int StageRestore(const RestoreRequest& req, std::string& err, bool* needReboot,
+                 ProgressFn progress, ErrAdvice* adv) {
+    return StageRestoreImpl(req, err, needReboot, progress, adv,
+                            /*menuEntry=*/false);
+}
+
+int StageRestoreMenu(const RestoreRequest& req, std::string& err, ErrAdvice* adv) {
+    bool needReboot = false;
+    return StageRestoreImpl(req, err, &needReboot, nullptr, adv,
+                            /*menuEntry=*/true);
+}
+
+// 读"已安装菜单项"绑定的镜像/目标：<exeDir>\restore-task.conf（UTF-8，key=value）。
+bool ReadMenuBinding(std::wstring* imagePath, int* imageIndex,
+                     unsigned long long* targetOffset,
+                     unsigned long long* targetSize) {
+    std::wstring conf = ExeDir() + L"\\restore-task.conf";
+    HANDLE h = CreateFileW(conf.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                           OPEN_EXISTING, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE)
+        return false;
+    std::string text;
+    {
+        char buf[4096];
+        DWORD n = 0;
+        while (ReadFile(h, buf, sizeof(buf), &n, nullptr) && n > 0)
+            text.append(buf, n);
+        CloseHandle(h);
+    }
+    std::string img = TaskConfGet(text, "image_path");
+    std::string idx = TaskConfGet(text, "image_index");
+    std::string off = TaskConfGet(text, "target_offset");
+    std::string sz = TaskConfGet(text, "target_size");
+    if (img.empty())
+        return false;
+    if (imagePath)
+        *imagePath = U2W(img);
+    if (imageIndex)
+        *imageIndex = idx.empty() ? 1 : std::atoi(idx.c_str());
+    if (targetOffset)
+        *targetOffset = off.empty() ? 0 : strtoull(off.c_str(), nullptr, 10);
+    if (targetSize)
+        *targetSize = sz.empty() ? 0 : strtoull(sz.c_str(), nullptr, 10);
+    return true;
 }
 
 // ── 修复引导（docs/15 · P5）──────────────────────────────────────

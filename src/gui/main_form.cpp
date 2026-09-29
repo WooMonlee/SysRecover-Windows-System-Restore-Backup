@@ -625,17 +625,61 @@ static bool BootMenuInstalled(std::string& detail) {
 }
 
 void CMainForm::RefreshBootMenuBtn() {
-    std::string detail;
-    bool on = BootMenuInstalled(detail);
     CControlUI* p = m_PaintManager.FindControl(_T("BootMenuBtn"));
-    if (p) {
-        p->SetText(on ? Tr(L"删除菜单") : Tr(L"安装菜单"));
-        // 按钮只有 88px，英/中都塞不下"这个按钮到底干什么"→ 交给悬停提示。
-        // 文字随安装状态变，提示也得跟着变（否则会指反）。
-        p->SetToolTip(on ? Tr(L"移除上面那条开机启动项，并清掉目标/数据盘上的恢复文件")
-                         : Tr(L"写一条开机启动项：重启后可进恢复环境（UEFI 写固件启动项，BIOS 写 BCD）"));
-        p->Invalidate();
+    if (!p) return;
+    // 文字色在 CButtonUI 上（SkinButton 派生自它；CControlUI 没有 SetTextColor）。
+    CButtonUI* btn = static_cast<CButtonUI*>(p);
+    std::string detail;
+    // "已安装" = 救援环境在（UEFI 启动项 / BIOS 四件套）**或**契约里有绑定
+    //（后者覆盖"把救援层装到非系统盘"的情况，见 StageRestoreMenu）。
+    std::wstring boundImg;
+    int boundIdx = 1;
+    unsigned long long boundOff = 0, boundSz = 0;
+    const bool hasBinding =
+        ReadMenuBinding(&boundImg, &boundIdx, &boundOff, &boundSz);
+    const bool installed = BootMenuInstalled(detail) || hasBinding;
+
+    wchar_t tip[512] = {};
+    if (installed) {
+        // 已安装：按钮 = 「删除菜单」；悬停说清"绑的是哪个镜像 → 哪个分区"。
+        // 用户规格（2026-09-29）：要换镜像请**先删除再安装**。
+        if (hasBinding) {
+            std::wstring tgt;
+            for (const auto& d : EnumerateDisks()) {
+                for (const auto& q : d.parts) {
+                    if (boundOff && q.offsetBytes == boundOff &&
+                        q.sizeBytes == boundSz && !q.letter.empty()) {
+                        tgt = q.letter + Tr(L": 盘");
+                    }
+                }
+            }
+            if (tgt.empty()) tgt = Tr(L"（原目标分区）");
+            swprintf(tip, 512,
+                     Tr(L"已安装：开机菜单里选「SysRecover」即可把\n%ls（第 %d 个镜像）还原到 %ls。\n点此删除（要换镜像请先删除、再安装）"),
+                     boundImg.c_str(), boundIdx, tgt.c_str());
+        } else {
+            wcscpy_s(tip, Tr(L"已安装启动还原（旧版安装，未绑定镜像）。点此删除"));
+        }
+        p->SetText(Tr(L"删除菜单"));
+        p->SetEnabled(!m_busy);
+        p->SetBkColor(0xFFFFFFFF);
+        btn->SetTextColor(ui_skin::C_TEXT);
+    } else {
+        // 未安装：**必须先选到可用镜像 + 目标分区**才可点（用户 2026-09-29 规格：
+        // 没选镜像时按钮应为灰色，否则"装成功却不知道装了什么"）。备份模式不涉及
+        // 镜像绑定 → 一律灰（该按钮只在还原模式有意义）。
+        const bool can = !m_backupMode && !m_wimPath.empty() && m_imageOk &&
+                         m_selPart >= 0 && !m_busy;
+        p->SetText(Tr(L"安装菜单"));
+        p->SetEnabled(can);
+        p->SetBkColor(can ? 0xFFFFFFFF : ui_skin::C_DISABLED);
+        btn->SetTextColor(can ? ui_skin::C_TEXT : ui_skin::C_DIS_TEXT);
+        wcscpy_s(tip, can
+            ? Tr(L"把当前镜像写进开机菜单：重启后选「SysRecover」进恢复环境，\n自动把该镜像还原到第二步选中的目标分区")
+            : Tr(L"请先选择镜像与目标分区，再安装菜单"));
     }
+    p->SetToolTip(tip);
+    p->Invalidate();
 }
 
 void CMainForm::ToggleBootMenu() {
@@ -643,35 +687,63 @@ void CMainForm::ToggleBootMenu() {
     if (BootMenuInstalled(detail)) {
         bool ok = RemoveBootLayer(log);
         SetStatus(ok ? Tr(L"已删除启动还原") : Tr(L"删除启动还原未完全成功"));
-    } else if (IsUefiFirmware()) {
-        if (IsSecureBootEnabled() && !IsMokEnrolled(ExeDir())) {
-            MessageBoxW(m_hWnd,
-                        Tr(L"本机开启了 Secure Boot（安全启动）。\n\n" L"我们的救援内核没有微软签名，需要借开源的 shim 引导链：\n" L"装好后请**重启一次**，会出现蓝底的 MokManager 界面，\n" L"选择 Enroll key（或 Enroll key from disk），\n" L"选中 ZJRESTORE 里的 zj-mok.cer，确认并重启。\n\n" L"这一次性注册完成后，以后每次还原都能正常进救援。"),
-                        Tr(L"九转还原"), MB_OK | MB_ICONINFORMATION);
-        }
-        PartitionInfo esp;
-        if (!FindEspPartition(esp)) {
-            MessageBoxW(m_hWnd, Tr(L"未找到 ESP 分区，无法安装启动还原。"),
-                        Tr(L"九转还原"), MB_OK | MB_ICONWARNING);
-            return;
-        }
-        std::wstring espRoot = MountEsp(log);
-        if (espRoot.empty()) {
-            MessageBoxW(m_hWnd, Tr(L"无法给 ESP 分区分配盘符（mountvol X: /s 失败）。"),
-                        Tr(L"九转还原"), MB_OK | MB_ICONERROR);
-            LogInfo(std::string("GUI install boot menu: ") + log);
-            return;
-        }
-        bool ok = InstallUefiBootEntry(espRoot, ExeDir(), log);
-        UnmountEsp(espRoot, log);
-        SetStatus(ok ? Tr(L"启动还原已安装（开机启动菜单可选）")
-                     : Tr(L"安装启动还原失败"));
-    } else {
-        bool ok = InstallBootLayer(SystemDrive(), ExeDir(), log);
-        SetStatus(ok ? Tr(L"启动还原已安装") : Tr(L"安装启动还原失败"));
+        LogInfo(std::string("GUI boot menu toggle: ") + log);
+        RefreshBootMenuBtn();
+        UpdateMainAction();
+        return;
     }
-    LogInfo(std::string("GUI boot menu toggle: ") + log);
+    // ── 安装（用户 2026-09-29 规格）：把**当前镜像 → 第二步选中的目标分区**写成
+    //    常驻任务契约，并装常驻启动项；开机菜单里选「SysRecover」即执行该还原。
+    if (m_wimPath.empty() || m_selPart < 0 ||
+        m_selPart >= (int)m_parts.size()) {
+        SetStatus(Tr(L"请先选择镜像与目标分区，再安装菜单"));
+        return;
+    }
+    {
+        const PartitionInfo& part = m_parts[m_selPart];
+        // ⚠️ CConfirmDlg 的正文只显示**最多 3 行**、且是**单行标签**（PIT-039），
+        // 超长/超行会被静默裁掉 —— 所以这里刻意压成 3 行短句：只显示文件名
+        //（路径可能很长，裁到 18 字符），并把"会格式化"这句放在第 3 行。
+        std::wstring name = m_wimPath;
+        size_t sl = name.find_last_of(L"\\/");
+        if (sl != std::wstring::npos)
+            name = name.substr(sl + 1);
+        if (name.size() > 18)
+            name = name.substr(0, 18) + L"...";
+        wchar_t msg[512];
+        swprintf(msg, 512,
+                 Tr(L"把当前镜像写进开机启动菜单？\n"
+                    L"镜像：%ls（第 %d 个）\n"
+                    L"目标：%ls: 盘 —— 选该菜单项会格式化该分区"),
+                 name.c_str(), m_selImageIndex,
+                 part.letter.empty() ? L"?" : part.letter.c_str());
+        // 与"确认还原"一致：右按钮（动作）高亮且为回车默认项，ESC 一律取消。
+        if (CConfirmDlg::Ask2(m_hWnd, Tr(L"安装启动还原菜单"), msg, Tr(L"取消"),
+                              Tr(L"安装"), /*defaultIsRight=*/true) != 1)
+            return;
+        RestoreRequest req;
+        req.image = m_wimPath;
+        req.disk = (int)part.diskIndex;
+        req.part = (int)part.partNumber;
+        req.index = m_selImageIndex;
+        req.repairBoot = true;
+        std::string err;
+        m_busy = true;
+        UpdateMainAction();
+        SetStatus(Tr(L"正在安装启动还原菜单（写入契约 + 部署救援环境）..."));
+        int rc = StageRestoreMenu(req, err, &last_adv_);
+        m_busy = false;
+        if (rc == 0)
+            SetStatus(Tr(L"启动还原菜单已安装：开机选「SysRecover」即可还原该镜像"));
+        else if (!err.empty())
+            SetStatus(U2W(err));
+        else
+            SetStatus(Tr(L"安装启动还原菜单失败"));
+        LogInfo(std::string("GUI install boot menu rc=") + std::to_string(rc) +
+                " / " + err);
+    }
     RefreshBootMenuBtn();
+    UpdateMainAction();
 }
 
 // ────────────────── 分区枚举 ──────────────────
@@ -1279,6 +1351,9 @@ void CMainForm::UpdateMainAction() {
         else if (!m_backupMode && !m_imageOk)
             SetStatus(Tr(L"镜像不可用（解析失败或文件不存在）"));
     }
+    // 「安装菜单」按钮的状态随"是否已选镜像/目标分区"变（用户 2026-09-29 规格：
+    // 没选镜像时置灰）；已安装时它显示「删除菜单」并说明绑定关系。
+    RefreshBootMenuBtn();
 }
 
 // ────────────────── UI 辅助 ──────────────────

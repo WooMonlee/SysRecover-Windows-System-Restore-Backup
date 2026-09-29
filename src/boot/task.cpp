@@ -182,4 +182,22 @@ bool WriteRestoreLog(wchar_t letter, const RestoreTask& t, std::string& log) {
     return true;
 }
 
+std::string TaskConfGet(const std::string& confText, const std::string& key) {
+    const std::string want = key + "=";
+    size_t pos = 0;
+    while (pos <= confText.size()) {
+        size_t e = confText.find('\n', pos);
+        std::string line = confText.substr(
+            pos, e == std::string::npos ? std::string::npos : e - pos);
+        pos = (e == std::string::npos) ? confText.size() + 1 : e + 1;
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if (line.empty() || line[0] == '#')
+            continue;
+        if (line.compare(0, want.size(), want) == 0)
+            return line.substr(want.size());
+    }
+    return {};
+}
+
 }  // namespace sysrecover
