@@ -226,7 +226,7 @@ int WimEngine::Append(const std::wstring& source,
                       const std::wstring& imagePath,
                       const std::string& compress, const std::wstring& name,
                       bool snapshot, const std::wstring& configFile,
-                      ProgressFn progress) {
+                      ProgressFn progress, const std::wstring& desc) {
     if (!inited_)
         return -1;
     WimHandle h;
@@ -247,6 +247,14 @@ int WimEngine::Append(const std::wstring& source,
                           flags);
     if (rc != 0)
         return rc;
+    if (!desc.empty()) {
+        // 新子镜像的 index = 追加后的镜像总数（wimlib 1.14 无
+        // wimlib_get_image_count，见下方 Probe/ListImages 的同款注释）。
+        struct wimlib_wim_info wi = {};
+        if (wimlib_get_wim_info(h.w, &wi) == 0 && wi.image_count > 0)
+            wimlib_set_image_descripton(h.w, static_cast<int>(wi.image_count),
+                                        desc.c_str());  // wimlib 拼写如此
+    }
     return wimlib_overwrite(h.w, WIMLIB_WRITE_FLAG_CHECK_INTEGRITY,
                             ThreadCount());
 }

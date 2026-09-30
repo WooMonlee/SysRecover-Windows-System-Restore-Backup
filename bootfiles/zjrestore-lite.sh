@@ -56,6 +56,10 @@ say "contract_version=$_CV (ok)"
 
 IMAGE_INDEX=$(get_task image_index)
 [ -n "$IMAGE_INDEX" ] || IMAGE_INDEX=1
+# 方案 C（用户 2026-09-30 规格）：镜像里 ESP 分区备份子镜像的 index。
+# Windows 暂存时从镜像内容发现后写进契约；0/缺省 = 镜像里没有（绝大多数任务）。
+ESP_INDEX=$(get_task esp_index)
+case "$ESP_INDEX" in ''|0) ESP_INDEX="" ;; esac
 REPAIR_BOOT=$(get_task repair_boot)
 PT_TYPE=$(get_task pt_type)
 TARGET_OFFSET=$(get_task target_offset)
@@ -65,6 +69,7 @@ TARGET_SIZE=$(get_task target_size)
 IMAGE_PATH=$(get_task image_path)
 say "offset=$TARGET_OFFSET size=$TARGET_SIZE pt=$PT_TYPE index=$IMAGE_INDEX repair=$REPAIR_BOOT"
 say "image=$IMAGE_PATH"
+[ -n "$ESP_INDEX" ] && say "esp subimage: index=$ESP_INDEX (restore to ESP after main apply)"
 
 # 设备枚举：优先 sysfs（只取分区），退回 /proc/partitions
 list_parts(){
@@ -258,6 +263,12 @@ for _d in $(list_parts); do
 done
 [ -n "$IMG_FILE" ] || { say "ERROR: image not found: $IMAGE_PATH"; exit 1; }
 persist_log
+
+# ── ESP 子镜像（方案 C，用户 2026-09-30 规格 / 无忧 66 楼）──
+# 主镜像里可能含名为 ESP 的子镜像（备份时勾选 --esp 并入，契约键 esp_index）。
+# apply 完主系统后用 **$IMG_FILE + $ESP_INDEX** 直接从挂载中的镜像分区恢复到
+# ESP 分区（所以镜像分区 umount 要挪到那之后，见下方 apply done 处）。
+# 没有 esp_index 时整段不跑（绝大多数任务不带），完全不受影响。
 
 # ── 准备目标分区（PIT-053 修正了 PIT-052 的结论）──
 # 默认 mkntfs 快速格式化。曾一度以为"Windows 引导代码不认 mkntfs 的布局"而
@@ -505,7 +516,8 @@ say "io first/last: $(head -1 /tmp/apply_io.log 2>/dev/null) | $(tail -1 /tmp/ap
 say "--- dmesg (warn/err/blk) ---"
 dmesg 2>/dev/null | grep -iE 'error|fail|warn|blocked|timeout|reset|I/O|ntfs|nvme|ata[0-9]|scsi' | tail -n 30 \
     | while IFS= read -r line; do say "  $line"; done
-umount "$SRC_M" 2>/dev/null
+# 镜像分区（$SRC_M）**先不卸载**：下面 ESP 子镜像（方案 C）还要直接用 $IMG_FILE
+# apply，统一挪到 ESP 段之后再 umount。
 if [ "$apply_exit" != "0" ]; then
     say "ERROR: apply rc=$apply_exit"
     persist_log
@@ -617,6 +629,67 @@ if [ "$REPAIR_BOOT" = "1" ]; then
         say "ERROR: no built-in boot blobs (/ntfs-boot-code.bin, /ntfs-boot-cont.bin) and no ms-sys"
     fi
 fi
+
+# ── 恢复 ESP 子镜像到 ESP 分区（方案 C，用户 2026-09-30 规格 / 无忧 66 楼）──
+# 只在契约 esp_index 非 0 时才跑；其余任务完全不受影响。
+#   · 找设备：优先 GPT 类型 GUID（EFI System），回退 FAT 且根下有 \EFI 目录
+#     （DiskGenius 重建可能把类型 GUID 标错，但固件只认路径）；
+#   · 离线写（此时 Windows 不在跑）→ 没有 BCD 文件锁问题（对比 PIT-051）；
+#   · wimlib **目录模式** apply = 覆盖同名 + 新增，**不删除**其它文件
+#     → 我们常驻的 \EFI\ZJRESTORE 不受影响（也不会带回旧副本：Windows 侧
+#       捕获时已排除，见 ops.cpp EnsureEspExclusionConfig）；
+#   · 失败只报错**不中断**（bootfix 同款先例）：主系统已还原成功，ESP 没修好
+#     至少系统文件都在，现场还能排错/重试。
+find_esp_dev(){
+    for _d in $(list_parts); do
+        [ -b "$_d" ] || continue
+        case "$_d" in *loop*|*ram*) continue ;; esac
+        [ "$_d" = "$TARGET_DEV" ] && continue
+        _t=$(blkid -s PART_ENTRY_TYPE -o value "$_d" 2>/dev/null | tr 'A-Z' 'a-z')
+        [ "$_t" = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" ] && { echo "$_d"; return 0; }
+    done
+    for _d in $(list_parts); do
+        [ -b "$_d" ] || continue
+        case "$_d" in *loop*|*ram*) continue ;; esac
+        [ "$_d" = "$TARGET_DEV" ] && continue
+        case "$(blkid -s TYPE -o value "$_d" 2>/dev/null)" in vfat|fat|fat32) ;; *) continue ;; esac
+        mkdir -p /tmp/zj_esp_probe
+        if mnt_dev "$_d" /tmp/zj_esp_probe; then
+            if [ -d /tmp/zj_esp_probe/EFI ]; then
+                umount /tmp/zj_esp_probe 2>/dev/null
+                echo "$_d"; return 0
+            fi
+            umount /tmp/zj_esp_probe 2>/dev/null
+        fi
+    done
+    return 1
+}
+if [ -n "$ESP_INDEX" ]; then
+    ESP_DEV=$(find_esp_dev)
+    if [ -n "$ESP_DEV" ]; then
+        ESPM=/tmp/zj_esp_m
+        mkdir -p "$ESPM"
+        if mnt_dev "$ESP_DEV" "$ESPM"; then
+            say "restore esp subimage idx=$ESP_INDEX -> $ESP_DEV"
+            "$WIMLIB" apply "$IMG_FILE" "$ESP_INDEX" "$ESPM" > /tmp/esp.out 2>&1
+            esp_rc=$?
+            sync
+            if [ $esp_rc -eq 0 ]; then
+                say "esp restored (rc=0)"
+            else
+                say "ERROR: esp restore rc=$esp_rc:"
+                head -n 5 /tmp/esp.out 2>/dev/null | while IFS= read -r _l; do say "  |$_l"; done
+            fi
+            umount "$ESPM" 2>/dev/null
+        else
+            say "ERROR: esp mount failed: $(cat /tmp/zjmnt.err 2>/dev/null | tr '\n' ' ')"
+        fi
+    else
+        say "WARN: task has esp subimage (idx $ESP_INDEX) but no ESP partition found (skip)"
+    fi
+fi
+# 镜像分区到此才卸载（ESP 子镜像 apply 直接读 $IMG_FILE，见上面的注释）
+umount "$SRC_M" 2>/dev/null
 
 say "========================================="
 say "RESTORE DONE: $TARGET_DEV (index $IMAGE_INDEX)"

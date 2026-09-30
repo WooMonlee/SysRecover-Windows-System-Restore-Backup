@@ -22,11 +22,19 @@
 using namespace DuiLib;
 
 // 自定义 WM_APP 消息：worker 线程 → 主线程 UI 更新
-#define WM_PROGRESS_UPDATE (WM_APP + 1)   // wParam=pct, lParam=ptr to std::wstring
-#define WM_TASK_COMPLETE   (WM_APP + 2)   // wParam=rc (0=成功)
+// ⚠️ 必须从 WM_APP+10 起，禁止用 WM_APP+1 —— Duilib 的 CPaintManagerUI 内部
+// 用 WM_APP+1 做**异步通知泵**（PostAsyncNotify → PostMessage(WM_APP+1, 0, 0)，
+// 消费点在 WindowImplBase::HandleMessage 更深处的 m_PaintManager.MessageHandler）。
+// 曾与 WM_PROGRESS_UPDATE 撞车：我们先截获并把它的 lParam=0 当 wstring* 解引用
+// → 空指针崩溃（combo 第二次重建触发延迟清理时实测，PIT-096）。
+// 顺带影响：撞车前 Duilog 的异步通知也从未被泵过（标志位卡死）。
+#define WM_PROGRESS_UPDATE (WM_APP + 10)  // wParam=pct, lParam=ptr to std::wstring
+#define WM_TASK_COMPLETE   (WM_APP + 11)  // wParam=rc (0=成功)
 // 跨进程查询：返回 1 = 正在执行备份/还原任务（拒绝被关闭），0 = 空闲。
 // 由新启动的实例发给已有实例（main_win.cpp 的单实例流程），同权限下可通。
-#define WM_SR_QUERY_BUSY   (WM_APP + 3)
+#define WM_SR_QUERY_BUSY   (WM_APP + 12)
+// EN_SETFOCUS 后延迟弹「搜索结果」下拉（见 HandleMessage 同名分支，PIT-097）。
+#define WM_OPEN_PICK_MENU  (WM_APP + 13)
 
 namespace sysrecover { struct PartitionInfo; }
 
@@ -48,6 +56,10 @@ private:
     void PopulatePartitions();
     void BrowseWimFile();
     void BrowseSaveFile();
+    // 「搜索」按钮（还原模式）：扫附近目录的 .esd/.wim（imgsearch.cpp），把最新一个
+    // 填入第一步输入框；结果留在 m_searchHits 供点输入框时下拉选择。
+    void OnSearchImages();
+    void ShowImagePickMenu();   // 输入框获得焦点 → TrackPopupMenu 列 m_searchHits
     void HandleDroppedFiles(WPARAM wParam);  // WM_DROPFILES：拖入的镜像填进第一步
     void LoadWimImages(const std::wstring& path);
     void StartRestore();   // UI 校验 + 确认 → StartRestoreAsync
@@ -74,6 +86,7 @@ private:
     void CancelAndExit();         // 中止 worker → 清理未完成镜像 → 关窗
     void CleanupIncompleteOutput();
     bool IsSilent();   // 「静默模式」勾选态
+    bool IsEspChecked();   // 「ESP」勾选态（备份专属，2026-09-30：ESP 并入主镜像）
     void SetStatus(const std::wstring& text);
     void SetProgress(int pct);
     // 进度条（+百分比）只在任务执行中显示；静止时整行状态栏让给状态文字（见 .cpp）。
@@ -95,6 +108,8 @@ private:
     int m_cpuCap = 0;
     std::vector<int> m_imgIdx;
     std::vector<sysrecover::PartitionInfo> m_parts;
+    std::vector<std::wstring> m_searchHits;  // 最近一次「搜索」结果（修改时间新→旧）
+    bool m_pickGuard = false;   // 下拉选择菜单重入防护（EN_SETFOCUS → TrackPopupMenu）
 
     // worker 线程
     std::thread       m_worker;
@@ -107,6 +122,7 @@ private:
     std::string       m_workerCompress; // StartBackupAsync 用：压缩方式
     std::wstring      m_workerName;     // StartBackupAsync 用：子镜像名
     int               m_workerCpuCap = 0;  // StartBackupAsync 用：CPU 上限（起线程前定格）
+    bool              m_workerEsp = false; // StartBackupAsync 用：是否把 ESP 并入主镜像
     std::string       last_err_;        // worker 错误回传
     sysrecover::ErrAdvice last_adv_ = sysrecover::ADV_NONE;  // worker 建议码回传
     // 进度节流（100ms）

@@ -190,6 +190,9 @@ public:
     void SetAttribute(LPCTSTR pstrName, LPCTSTR pstrValue) override;
     bool DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopControl) override;
     void DrawItemText(HDC hDC, const RECT& rcItem) override;
+private:
+    bool m_center = false;  // align="center"：仅 Combo 收起框（按钮态）文字居中，
+                            // 下拉列表行（DoPaint）仍左对齐，与原生 Combo 一致
 };
 
 // ────────────────────────────────────────────────────────────

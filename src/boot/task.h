@@ -12,6 +12,11 @@ struct RestoreTask {
     std::wstring imagePartGuid;  // 镜像所在分区 GUID（MBR 下可空）
     std::wstring imageRelPath;   // 镜像相对路径（正斜杠，供 Linux 侧）
     int imageIndex = 1;
+    // ESP 子镜像在镜像文件里的 index（方案 C，2026-09-30）：0=镜像里没有。
+    // Windows 暂存时从镜像内容发现（名含 "ESP"），写进 conf + _zjresy 日志；
+    // 救援层 apply 完主系统后把该子镜像恢复到 ESP 分区（纯增量键，不升
+    // contract_version：老任务缺键 → 救援层当 0 跳过，两边互相兼容）。
+    int espIndex = 0;
     std::wstring targetGuid;     // 目标分区 GUID（MBR 下可空）
     uint64_t targetOffset = 0;
     uint64_t targetSize = 0;

@@ -519,6 +519,12 @@ void CTextItemUI::SetAttribute(LPCTSTR pstrName, LPCTSTR pstrValue) {
         SetText(pstrValue);
         return;
     }
+    if (_tcscmp(pstrName, _T("align")) == 0) {
+        // 本类自己拦下 align（不传基类）：只管收起框文字对齐，别让
+        // CLabelUI 的文本样式位影响 DoPaint 里我们自己的画法。
+        m_center = (_tcscmp(pstrValue, _T("center")) == 0);
+        return;
+    }
     CListContainerElementUI::SetAttribute(pstrName, pstrValue);
 }
 
@@ -537,6 +543,10 @@ bool CTextItemUI::DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopControl
 }
 
 void CTextItemUI::DrawItemText(HDC hDC, const RECT& rcItem) {
+    if (m_center) {   // 按钮态（CComboUI::PaintText）：在框内水平居中
+        TextIn(hDC, GetText(), rcItem, 13, C_TEXT, 1);
+        return;
+    }
     TextAt(hDC, GetText(), rcItem.left + kItemPadX,
            BaselineOf((rcItem.top + rcItem.bottom) / 2, 13), 13, C_TEXT);
 }
