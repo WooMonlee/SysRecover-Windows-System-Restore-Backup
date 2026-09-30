@@ -145,11 +145,11 @@ bool AcquireEspRoot(std::wstring& espRoot, bool& guidMatched, std::string& log) 
     return false;
 }
 
-// 就地还原：快速格式化 → wimlib 目录模式应用（PIT-008）→ 系统镜像才 bcdboot
-// 修引导。**全程不重启**。
+// 就地还原：快速格式化 → wimlib 目录模式应用（PIT-008）→ 镜像带 ESP 子镜像
+// 就恢复 ESP → 系统镜像才 bcdboot 修引导。**全程不重启**。
 int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
-                     const std::wstring& imagePath, std::string& err,
-                     ProgressFn progress) {
+                     const std::wstring& imagePath, int espIndex,
+                     std::string& err, ProgressFn progress) {
     std::wstring letter(1, target.letter[0]);
     LogInfo("in-place restore -> " + W2U(letter) + ": (" + W2U(imagePath) +
             ", index=" + std::to_string(req.index) + ")");
@@ -187,6 +187,33 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
         LogError(err);
         ProgressDone("restore", "failed");
         return 1;
+    }
+    // 2.5) ESP 子镜像恢复（方案 C · 就地还原侧；2026-09-30 用户规格：
+    //      "还原时根据其备份的ESP分区自动还原ESP"）。与救援层同款语义：
+    //      镜像里带 ESP 子镜像（备份时勾了 --esp，任务 esp_index>0）且本机
+    //      找得到 ESP → 目录模式 apply（只加不删；BCD 捕获时已排除）。
+    //      · 放在 bcdboot **之前** —— 让 bcdboot 最后写，引导文件/BCD 权威；
+    //      · **非致命**：失败/找不到 ESP 只记日志，主系统已还原不动摇
+    //        （对齐救援层 `say ERROR` 不中断主流程的先例）；
+    //      · 传空进度回调：ESP 很小、瞬间完成，不回卷 GUI 进度条。
+    if (espIndex > 0) {
+        std::wstring espRoot;
+        bool guidMatched = false;
+        std::string blog;
+        if (AcquireEspRoot(espRoot, guidMatched, blog)) {
+            int erc = wim.Apply(imagePath, espIndex, espRoot, ProgressFn{});
+            LogInfo("esp subimage apply (in-place) idx=" +
+                    std::to_string(espIndex) + " -> " + W2U(espRoot) +
+                    " rc=" + std::to_string(erc));
+            if (erc != 0)
+                LogWarn("ESP subimage restore failed rc=" +
+                        std::to_string(erc) +
+                        " (main system restored; ESP not updated)");
+            UnmountEsp(espRoot, blog);
+        } else {
+            LogWarn("task has esp subimage (idx " + std::to_string(espIndex) +
+                    ") but no ESP partition found (skip)");
+        }
     }
     // 3) 只有系统镜像才修引导（看目标里有没有 winload.exe）
     if (req.repairBoot) {
@@ -444,6 +471,52 @@ void AppendHistory(const char* action, const std::wstring& image,
     CloseHandle(h);
 }
 
+// ────────────────── ESP 分区备份（方案 C：并入主镜像，用户 2026-09-30 规格） ──────────────────
+
+// ESP 子镜像的 <DESCRIPTION> 注释（"镜像里直接加注释"的落点；镜像内元数据，
+// 不做 Tr 界面翻译）。还原侧防呆按子镜像 **name 含 "ESP"** 判断（见 StageRestore）。
+static const wchar_t kEspImageDesc[] =
+    L"SysRecover ESP partition backup; restored to the ESP automatically "
+    L"when restoring the system (never restore this image alone)";
+
+// ESP 捕获的排除配置（wimscript 格式，临时文件，同 EnsureExclusionConfig 做法）：
+//   · \EFI\ZJRESTORE —— 我们的常驻救援载荷（约 33MB，还原后 Windows 侧会重新
+//     部署，进镜像纯属浪费，且它不是"原厂 ESP 内容"）；
+//   · \System Volume Information —— 系统卷信息，无备份价值（读得到也排除）；
+//   · \EFI\Microsoft\Boot\BCD(+.LOG*) —— **实测 rc=47 的真凶**：运行中的 Windows
+//     把 ESP 的 BCD 当注册表 hive 挂着（HKLM\BCD00000000）→ 独占锁，wimlib 一读
+//     就 Failed to open a file（PIT-051 同源：那里 CopyFile 也必失败）。BCD 还原
+//     后由 `bcdboot` 重建（PIT-060/090 已在流程里），且 Linux 恢复用目录模式
+//     apply（只新增/覆盖、不删）→ ESP 上现役 BCD 不会被并入的子镜像动到，正合适。
+// ⚠️ 排除目录写法**无尾斜杠**（与 exclude.cpp 系统盘清单一致）：wimlib/DISM 语义
+//    是"匹配目录条目本身即跳过整棵树"，带尾反斜杠的 glob 反而不匹配（实测）。
+static std::wstring EnsureEspExclusionConfig() {
+    static const char kContent[] =
+        "[ExclusionList]\n"
+        "\\EFI\\ZJRESTORE\n"
+        "\\System Volume Information\n"
+        "\\EFI\\Microsoft\\Boot\\BCD\n"
+        "\\EFI\\Microsoft\\Boot\\BCD.LOG\n"
+        "\\EFI\\Microsoft\\Boot\\BCD.LOG1\n"
+        "\\EFI\\Microsoft\\Boot\\BCD.LOG2\n";
+    wchar_t tmpDir[MAX_PATH] = {};
+    if (GetTempPathW(MAX_PATH, tmpDir) == 0)
+        return L"";
+    std::wstring path =
+        std::wstring(tmpDir) + L"zjrestore-esp-exclusion.ini";
+    HANDLE h =
+        CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                    FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE)
+        return L"";
+    DWORD written = 0;
+    BOOL ok = WriteFile(h, kContent, sizeof(kContent) - 1, &written, nullptr);
+    CloseHandle(h);
+    if (!ok || written != sizeof(kContent) - 1)
+        return L"";
+    return path;
+}
+
 int RunBackup(const BackupRequest& req, ProgressFn progress,
               std::string& err, ErrAdvice* adv) {
     if (adv) *adv = ADV_NONE;
@@ -533,12 +606,24 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
         LogError("排除配置生成失败，热备可能因易失文件报 rc=88（PIT-009）");
     else
         LogInfo("exclusion config: " + W2U(cfg));
+    // ── ESP 并入主镜像（方案 C，用户 2026-09-30 规格 / 无忧 66 楼）──
+    // ESP 作为**同一个文件里的子镜像**（name="ESP" + kEspImageDesc 注释），
+    // 还原时由暂存契约 esp_index 定位（StageRestore 从镜像内容发现）、救援层
+    // apply 完主系统后恢复到 ESP 分区；不再产出 .esp 文件。
+    // 原子性：非 append 时主镜像先写 `<dest>.stage`，ESP 并入结束且 stage 确认
+    // 可用后才 rename 成正式文件 —— **ESP 并入失败绝不损坏已写好的主镜像**。
+    const bool stage = req.esp && !req.append;
+    const std::wstring mainDest = stage ? req.dest + L".stage" : req.dest;
+    if (stage) {
+        DeleteFileW(mainDest.c_str());             // 上次异常残留的 stage
+        DeleteFileW((mainDest + L".tmp").c_str());  // 其 Capture 半成品
+    }
     int rc;
     if (req.append)
         rc = engine.Append(source, req.dest, req.compress, req.name,
                            snapshot, cfg, progress);
     else
-        rc = engine.Capture(source, req.dest, req.compress, req.name,
+        rc = engine.Capture(source, mainDest, req.compress, req.name,
                             snapshot, cfg, progress);
     if (rc != 0) {
         ReleaseOpLock();
@@ -550,6 +635,98 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
         LogError(err);
         return 1;
     }
+
+    // ── ESP 并入（主镜像写出之后、rename/verify 之前）──
+    // 没勾 --esp，或本机没有 ESP（BIOS/MBR 等）→ 只记日志跳过（不算失败），
+    // 绝大多数任务不带；stage 流程照样走（多一次无害的 rename）。
+    int erc = 0;
+    if (req.esp) {
+        ProgressUpdate("backup", 100, "esp");
+        std::wstring espRoot;
+        bool guidMatched = false;
+        std::string blog;
+        if (!AcquireEspRoot(espRoot, guidMatched, blog)) {
+            LogWarn("esp merge skipped (no ESP found): " + blog);
+        } else {
+            if (!guidMatched)
+                LogWarn("ESP partition type is not EFI System; used fallback "
+                        "(esp merge)");
+            WimEngine espEng;  // 新会话读 stage 里刚写完的主镜像（见下）
+            std::wstring espSrc = espRoot;
+            espSrc.back() = L'/';  // wimlib 源路径强制盘符根尾斜杠（§6）
+            // snapshot=false：ESP 是 FAT 小分区，没有"易失文件"问题，
+            // 也没必要再开一次 VSS 快照。
+            erc = espEng.Append(espSrc, mainDest, req.compress, L"ESP", false,
+                                EnsureEspExclusionConfig(), progress,
+                                kEspImageDesc);
+            UnmountEsp(espRoot, blog);
+            LogInfo("esp append rc=" + std::to_string(erc) + " dest=" +
+                    W2U(mainDest) + " (" + blog + ")");
+        }
+    }
+
+    // ESP 失败时统一的错误文本（tail 由调用方给）
+    auto espFail = [&](const std::string& tail) {
+        char buf[160];
+        snprintf(buf, sizeof(buf), Tr("ESP 备份失败(rc=%d): "), erc);
+        std::string e = buf;
+        // -1 = 引擎未初始化（wimlib.h 不外泄 → ErrorString(-1) 不可用）
+        e += erc == -1 ? std::string(Tr("wimlib 初始化失败"))
+                       : W2U(WimEngine::ErrorString(erc));
+        e += tail;
+        return e;
+    };
+
+    // stage → 正式文件（主镜像原子落盘）
+    if (stage) {
+        if (erc != 0) {
+            // ESP 并入半途失败可能把 stage 写坏（wimlib_overwrite 原地重写）→
+            // 先 Probe：坏 → 删掉重报；好 → 照常交付（主镜像只是不含 ESP）。
+            WimEngine probe;
+            std::wstring why;
+            if (probe.Probe(mainDest, why) != 0) {
+                DeleteFileW(mainDest.c_str());
+                ReleaseOpLock();
+                ProgressDone("backup", "failed");
+                err = espFail(Tr("（主镜像写入损坏，已删除，请重新备份）"));
+                LogError(err);
+                return 1;
+            }
+        }
+        if (!MoveFileExW(mainDest.c_str(), req.dest.c_str(),
+                         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            DWORD e = GetLastError();
+            DeleteFileW(mainDest.c_str());
+            ReleaseOpLock();
+            ProgressDone("backup", "failed");
+            err = Tr("备份写出失败：无法提交镜像文件(err=") +
+                  std::to_string(e) + ")";
+            LogError(err);
+            return 1;
+        }
+    }
+    if (erc != 0) {
+        // 走到这里主镜像已落盘（stage 已 rename / append 原地写完）→ 报 ESP
+        // 失败但**不回滚**主镜像（A 方案同款语义：主镜像可用，只是不含 ESP）。
+        if (!stage) {
+            // append 模式是原地写：确认既有文件没被半途 overwrite 写坏
+            WimEngine probe;
+            std::wstring why;
+            if (probe.Probe(req.dest, why) != 0) {
+                ReleaseOpLock();
+                ProgressDone("backup", "failed");
+                err = espFail(Tr("（镜像写入损坏，请重新备份）"));
+                LogError(err);
+                return 1;
+            }
+        }
+        ReleaseOpLock();
+        ProgressDone("backup", "failed");
+        err = espFail(Tr("（主镜像已生成，但未包含 ESP 备份）"));
+        LogError(err);
+        return 1;
+    }
+
     if (req.verify) {
         ProgressUpdate("backup", 99, "verify");
         int vrc = engine.Verify(req.dest);
@@ -611,6 +788,41 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             err += W2U(why);
             LogError(err);
             return 5;
+        }
+    }
+    // 0.5) 子镜像检查（方案 C，用户 2026-09-30 规格）：
+    //   ① 名含关键词 "ESP" 的子镜像 = ESP 分区备份，**不能单独当系统还原** →
+    //      拒绝并提示（GUI 弹框 / CLI 打印，退出码 4；在一切写盘动作之前）；
+    //   ② 顺带从镜像**内容**发现 ESP 子镜像 index（esp_index，0=没有）写进契约，
+    //      救援层 apply 完主系统后恢复到 ESP 分区 —— 与备份时是否勾选 --esp
+    //      无关，用老镜像还原也照样能恢复 ESP。
+    int espIndex = 0;
+    {
+        WimEngine eng;
+        std::vector<ImageDesc> imgs;
+        const int eff = req.index < 1 ? 1 : req.index;
+        if (eng.ListImages(req.image, imgs) != 0) {
+            // Probe 刚过 → 这里失败几乎不可能；esp_index 按 0 处理（不恢复 ESP）
+            LogWarn("ListImages failed; esp restore disabled");
+        } else {
+            for (const auto& d : imgs) {
+                if (d.name.find(L"ESP") == std::wstring::npos)
+                    continue;
+                if (espIndex == 0)
+                    espIndex = d.index;
+                if (d.index == eff) {
+                    err = Tr("子镜像「") + W2U(d.name) +
+                          Tr("」是 ESP 分区备份，不能单独还原为系统。恢复系统"
+                             "时会自动把 ESP 一并恢复；请选择系统子镜像。");
+                    LogError(err);
+                    AppendHistory("restore-rejected", req.image, req.image, 0,
+                                  "esp image selected as restore target");
+                    return 4;
+                }
+            }
+            if (espIndex > 0)
+                LogInfo("esp subimage found in image: index=" +
+                        std::to_string(espIndex));
         }
     }
     // 1) 定位目标分区与所在磁盘
@@ -714,7 +926,8 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
         if (!menuEntry && CanRestoreInPlace(target, why)) {
             LogInfo(std::string("restore mode: in-place (") + why + ")");
             const ULONGLONG t1 = GetTickCount64();
-            int rc = RunDirectRestore(req, target, imagePath, err, progress);
+            int rc =
+                RunDirectRestore(req, target, imagePath, espIndex, err, progress);
             if (needReboot)
                 *needReboot = false;
             ReleaseOpLock();
@@ -759,6 +972,7 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
     RestoreTask t;
     t.imagePath = imagePath;
     t.imageIndex = req.index < 1 ? 1 : req.index;
+    t.espIndex = espIndex;  // 方案 C：ESP 子镜像 index（0=镜像里没有）
     t.targetGuid = target.guid;
     t.targetOffset = target.offsetBytes;
     t.targetSize = target.sizeBytes;

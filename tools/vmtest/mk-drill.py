@@ -9,6 +9,7 @@
 
 布局（512B 扇区）：
   sda1 2048..206847     100MB  引导（grldr.mbr 由 MBR 加载；grldr/menu.lst/vmlinuz/initramfs）
+                              + 兼作假 ESP（根下 EFI/ 目录命中 find_esp_dev 的 FAT 回退）
   sda2 206848..1606847  683MB  还原目标（根目录 _zjresy-drill.log = 任务靶子）
   sda3 1606848..4194303 1.2GB  镜像分区（images/test.wim + bootfix/ + restore-task.conf）
 
@@ -53,6 +54,7 @@ target_fs=FAT32
 target_vol_label=ZJSYS
 image_path=D:/images/test.wim
 image_index=1
+esp_index=2
 repair_boot=1
 pt_type=mbr
 """
@@ -64,6 +66,7 @@ target_size=716800000
 target_disk_serial=QEMU-DRILL-0001
 image_path=D:/images/test.wim
 image_index=1
+esp_index=2
 repair_boot=1
 """
 
@@ -128,7 +131,7 @@ def main():
     if not os.path.exists(WIM):
         print('missing %s - create it first:' % WIM)
         print('  dist/SysRecover.exe backup --source tools/vmtest/drill-src/ '
-              '--dest tools/vmtest/drill-images/test.wim --compress fast --yes')
+              '--dest tools/vmtest/drill-images/test.wim --compress fast --esp --yes')
         return 1
     for f in ('grldr', 'grldr.mbr', 'vmlinuz-zjrestore'):
         if not os.path.exists(os.path.join(BOOT, f)):
@@ -143,12 +146,18 @@ def main():
     menu = os.path.join(BASE, 'menu-drill.lst')
     with open(menu, 'w', newline='\n') as f:
         f.write(MENU_TXT)
+    # sda1 兼作"假 ESP"：根下有 EFI/ 目录 → 救援层 find_esp_dev 的 FAT 回退会命中它；
+    # 预置 marker 文件用来验证 ESP 子镜像 apply 是**只加不删**（目录模式）。
+    marker = os.path.join(BASE, 'esp-marker.txt')
+    with open(marker, 'wb') as f:
+        f.write(b'DRILL-ESP-MARKER (must survive ESP subimage apply)\n')
     make_part(0, [
         (os.path.join(BOOT, 'grldr'), 'grldr'),
         (menu, 'menu.lst'),
         (os.path.join(BOOT, 'vmlinuz-zjrestore'), 'vmlinuz-zjrestore'),
         (INITRD, 'initramfs-zjrestore.cpio.gz'),
-    ])
+        (marker, 'EFI/DRILL-MARKER.txt'),
+    ], subdirs=('EFI',))
 
     logf = os.path.join(BASE, '_zjresy-drill.log')
     with open(logf, 'w', newline='\n') as f:

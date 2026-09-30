@@ -156,6 +156,7 @@ RestoreTask SampleTask() {
     t.imagePath = L"D:\\images\\win10.esd";
     t.imageRelPath = L"images/win10.esd";
     t.imageIndex = 2;
+    t.espIndex = 2;  // 方案 C：镜像里含名为 ESP 的子镜像（index 2）
     t.targetOffset = 105906176ull;
     t.targetSize = 716800000ull;
     t.targetDiskSerial = L"QEMU-DRILL-0001";
@@ -181,6 +182,7 @@ TEST(task_conf_has_required_keys) {
     CHECK_CONTAINS(c, "image_path=D:\\images\\win10.esd");
     CHECK_CONTAINS(c, "image_rel_path=images/win10.esd");
     CHECK_CONTAINS(c, "image_index=2");
+    CHECK_CONTAINS(c, "esp_index=2");  // 方案 C：ESP 子镜像 index 进契约
     CHECK_CONTAINS(c, "target_offset=105906176");
     CHECK_CONTAINS(c, "target_size=716800000");
     CHECK_CONTAINS(c, "target_disk_serial=QEMU-DRILL-0001");
@@ -196,6 +198,7 @@ TEST(task_json_escapes_backslashes) {
     CHECK_CONTAINS(j, "\"repair_boot\":false");
     CHECK_CONTAINS(j, "D:\\\\images\\\\win10.esd");  // JSON 里反斜杠要转义
     CHECK_CONTAINS(j, "\"target_disk\":0");
+    CHECK_CONTAINS(j, "\"esp_index\":2");
 }
 
 TEST(task_restore_log_contract) {
@@ -208,6 +211,7 @@ TEST(task_restore_log_contract) {
     CHECK_CONTAINS(l, "target_fs=NTFS");
     CHECK_CONTAINS(l, "target_vol_label=Windows");
     CHECK_CONTAINS(l, "image_index=2");
+    CHECK_CONTAINS(l, "esp_index=2");  // 主发现契约也要有（conf 缺失时的回退）
     CHECK_CONTAINS(l, "repair_boot=0");
     CHECK_CONTAINS(l, "pt_type=gpt");
 }
@@ -384,6 +388,7 @@ TEST(task_conf_get) {
     std::string conf = BuildTaskConf(SampleTask());
     // 契约里写过的键要能取回来（SampleTask 的 imageIndex = 2）
     CHECK_EQ(TaskConfGet(conf, "image_index"), std::string("2"));
+    CHECK_EQ(TaskConfGet(conf, "esp_index"), std::string("2"));
     CHECK_EQ(TaskConfGet(conf, "image_path"),
              std::string("D:\\images\\win10.esd"));
     CHECK(!TaskConfGet(conf, "target_offset").empty());

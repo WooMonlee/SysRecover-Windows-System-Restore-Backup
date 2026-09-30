@@ -18,6 +18,11 @@ struct BackupRequest {
     bool verify = false;           // true=写完后跑 wimlib_verify_wim
     bool snapshot = false;         // true=强制 VSS 快照（非盘符根也可用，如活动数据库目录）
     int  cpuCap = 0;               // CPU 硬上限百分比（0=不限；1..100，见 common/cpucap.h）
+    // true=把 ESP 分区并入主镜像（方案 C，用户 2026-09-30 规格 / 无忧 66 楼）：
+    // ESP 作为同一文件里的子镜像（name="ESP"）一起写出；还原时由暂存契约
+    // esp_index 定位、救援层恢复到 ESP 分区。无 ESP / 失败不致命（见 RunBackup：
+    // 主镜像经 <dest>.stage 原子落盘，ESP 失败不损坏主镜像）。
+    bool esp = false;
 };
 
 struct RestoreRequest {

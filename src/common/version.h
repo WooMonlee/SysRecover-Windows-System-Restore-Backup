@@ -11,7 +11,7 @@
 //   一次发布 = 一个 git tag（vX.Y.Z），三处（version.h / git tag / version.json）同源。
 // 说明：契约版本另计（SYSRECOVER_CONTRACT_VERSION，改跨层字段才动）。
 #define SYSRECOVER_NAME "SysRecover"
-#define SYSRECOVER_VERSION "0.5.0"
+#define SYSRECOVER_VERSION "0.6.1"
 // 宽串形态：把窄串字面量加上 L 前缀（两级宏，避免 ## 阻止展开）。
 #define SYSRECOVER_WIDEN2(x) L##x
 #define SYSRECOVER_WIDEN(x) SYSRECOVER_WIDEN2(x)

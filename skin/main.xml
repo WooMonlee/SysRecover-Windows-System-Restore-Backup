@@ -38,7 +38,17 @@
         <VerticalLayout name="Card1" float="true" pos="16,64,725,140" bkcolor="#FFFFFFFF" bordersize="1" bordercolor="#FFF4F6F9" borderround="20,20" />
         <SkinLabel name="Step1Badge" float="true" pos="30,88,92,111" text="第一步" bkcolor="#FFE08A2E" borderround="8,8" color="#FFFFFFFF" fontsize="13" align="center" />
         <SkinButton name="BrowseBtn" float="true" pos="100,77,240,115" text="浏览系统镜像" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFEEF1F6" borderround="14,14" textcolor="#FF1B2432" />
-        <SkinEdit   name="ImagePath" float="true" pos="249,77,710,115" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFC9D6F2" borderround="16,16" textcolor="#FF1B2432" nativebkcolor="#FFFFFFFF" textpadding="10,9,10,9" />
+        <!-- ImagePath 缩短到 630：右边让位给「搜索」（2026-09-30 用户规格）。
+             搜索规则见 src/gui/imgsearch.h；备份模式隐藏按钮（ApplyModeUi） -->
+        <SkinEdit   name="ImagePath" float="true" pos="249,77,630,115" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFC9D6F2" borderround="16,16" textcolor="#FF1B2432" nativebkcolor="#FFFFFFFF" textpadding="10,9,10,9" />
+        <SkinButton name="SearchBtn" float="true" pos="639,77,710,115" text="搜索" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFEEF1F6" borderround="14,14" textcolor="#FF1B2432"
+                tooltip="扫描附近的 .esd/.wim 镜像并自动填入最新一个；点击输入框可从已找到的结果中选择" />
+        <!-- 「ESP」勾选（备份专属，2026-09-30 用户规格）：与搜索按钮同一位置、
+             按模式互斥显示（ApplyModeUi）。无 group → 独立开关，不与「静默模式」
+             互相取消（COptionUI 只有 m_sGroupName 非空才进组）。
+             默认 visible=false：启动是还原模式。 -->
+        <GlyphCheck name="EspChk" float="true" pos="639,84,710,109" text="ESP" visible="false"
+                tooltip="勾选后，备份时把ESP分区一并写入镜像（子镜像名ESP）；恢复系统时将自动把ESP一并恢复到ESP分区。" />
         <SkinLabel name="NoteLabel" float="true" pos="112,118,232,132" text="镜像说明：" color="#FF5F6C80" fontsize="13" align="right" />
 
         <!-- ══════ 第二步卡片（蓝卡，y149..284） ══════ -->
@@ -76,10 +86,10 @@
              选中即把本进程 CPU 硬上限设成所选值（Windows Job 对象，见 cpucap.cpp）。 -->
         <Combo name="CpuCapBox" float="true" pos="530,296,612,329" bkcolor="#FFFFFFFF" bordersize="1" bordercolor="#FFC9D6F2" borderround="14,14" textpadding="0,0,0,0" visible="false"
                 tooltip="备份时把程序 CPU 占用率限制在所选值以内（随时可改）">
-          <TextItem text="不限CPU" height="30" />
-          <TextItem text="CPU 25%" height="30" />
-          <TextItem text="CPU 50%" height="30" />
-          <TextItem text="CPU 75%" height="30" />
+          <TextItem text="不限速" height="30" align="center" />
+          <TextItem text="CPU 25%" height="30" align="center" />
+          <TextItem text="CPU 50%" height="30" align="center" />
+          <TextItem text="CPU 75%" height="30" align="center" />
         </Combo>
 
         <!-- ══════ 状态栏（分隔线 1px + #FAFBFE，y370..405） ══════ -->

@@ -8,6 +8,7 @@
 
 #include "gui/ui_skin.h"
 #include "gui/confirm_dlg.h"
+#include "gui/imgsearch.h"
 #include "app/ops.h"
 #include "app/safety.h"
 #include "boot/bcd.h"
@@ -106,6 +107,8 @@ std::wstring TimestampDate() {
 // （它先写 `<目标>.tmp`，成功后 MoveFileEx 改名；中途失败自己会删 tmp）。
 // 备份走的是 Capture（req.append=false），所以"半成品"永远是这一个 `.tmp`；
 // 最终路径上的文件要么是旧的有效镜像、要么是刚改名完成的成品，**都不能删**。
+// 方案 C（ESP 并入）另有中转文件 `<目标>.stage` / `.stage.tmp`（见
+// ops.cpp::RunBackup 的 stage 流程），删除白名单见 CleanupIncompleteOutput。
 std::wstring IncompletePath(const std::wstring& dest) {
     return dest.empty() ? std::wstring() : dest + L".tmp";
 }
@@ -217,6 +220,44 @@ LRESULT CMainForm::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         msgStruct.pt = pt;
         ::SendMessage(m_tipHwnd, TTM_RELAYEVENT, 0, (LPARAM)&msgStruct);
     }
+    if (msg == WM_COMMAND && HIWORD(wParam) == EN_SETFOCUS) {
+        // 点击/Tab 进入镜像输入框（还原模式）→ 若上次「搜索」有结果，在输入框
+        // 下方弹下拉列表供选择（用户 2026-09-30 规格：点输入框可下拉选择某一个）。
+        // 只认 ImagePath 的原生 EDIT：NoteInput 等其它 EDIT 也发 EN_SETFOCUS，
+        // 用 GetFocus() 精确比对目标子窗口。
+        // ⚠️ 不能在这里直接开菜单（PIT-097）：EN_SETFOCUS 是在原生 EDIT 的
+        // WM_LBUTTONDOWN 处理链里同步发出的，紧接着 TrackPopupMenu 会捕获鼠标、
+        // 吃掉这次点击的 WM_LBUTTONUP → EDIT 内部卡在"左键按住"状态，表现为
+        // "选完镜像文字跟着鼠标拖选、必须再点一下才恢复"。改为投递延迟消息，
+        // 在编辑框这次点击完整结束（左键抬起）后再开菜单。
+        if (!m_backupMode && !m_busy && !m_pickGuard && !m_searchHits.empty()) {
+            CControlUI* pCtl = m_PaintManager.FindControl(_T("ImagePath"));
+            HWND hNative =
+                pCtl ? static_cast<CSkinEditUI*>(pCtl)->GetNativeEditHWND() : NULL;
+            if (hNative && ::GetFocus() == hNative)
+                ::PostMessage(m_hWnd, WM_OPEN_PICK_MENU, 0, 0);
+        }
+        return 0;
+    }
+    if (msg == WM_OPEN_PICK_MENU) {
+        // 「点输入框弹搜索结果下拉」的延迟执行（PIT-097）：必须等这次点击的
+        // 左键抬起再开菜单，否则模态菜单吃掉 EDIT 的 WM_LBUTTONUP，EDIT 会
+        // 永远停在"按住拖选"状态。等不到就 15ms 后再投一次（菜单打开期间
+        // 用户不会一直按着左键，通常一两次就过）。
+        if (::GetAsyncKeyState(VK_LBUTTON) & 0x8000) {
+            ::Sleep(15);
+            ::PostMessage(m_hWnd, WM_OPEN_PICK_MENU, 0, 0);
+            return 0;
+        }
+        if (!m_backupMode && !m_busy && !m_searchHits.empty()) {
+            CControlUI* pCtl = m_PaintManager.FindControl(_T("ImagePath"));
+            HWND hEdit =
+                pCtl ? static_cast<CSkinEditUI*>(pCtl)->GetNativeEditHWND() : NULL;
+            // 焦点已移走（用户这会儿点了别处）就不再弹了
+            if (hEdit && ::GetFocus() == hEdit) ShowImagePickMenu();
+        }
+        return 0;
+    }
     if (msg == WM_COMMAND && HIWORD(wParam) == EN_CHANGE) {
         // 输入框内容变化 —— 原生 EDIT 的 EN_CHANGE 会送到父窗口（=主窗口，Duilib
         // 控件本身不是窗口）。用户 2026-09-23 反馈：**手动输入**镜像路径时
@@ -267,8 +308,17 @@ LRESULT CMainForm::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         return 0;
     }
     if (msg == WM_PROGRESS_UPDATE) {
-        OnProgressUpdate((int)wParam, *reinterpret_cast<std::wstring*>(lParam));
-        delete reinterpret_cast<std::wstring*>(lParam);
+        // 防御（PIT-096）：lParam 是 worker new 的 std::wstring*，正常永不为 0；
+        // 为 0 = 消息撞车/异常投递，必须丢弃 —— 解引用空指针就是 2026-09-30
+        // 用户实测的崩溃点（read address 0x8）。已另有消息重编号根治撞车。
+        if (lParam) {
+            OnProgressUpdate((int)wParam, *reinterpret_cast<std::wstring*>(lParam));
+            delete reinterpret_cast<std::wstring*>(lParam);
+        } else {
+            LogWarn("progress msg with null lParam ignored (msg=" +
+                    std::to_string((unsigned)msg) + " wParam=" +
+                    std::to_string((unsigned long long)wParam) + ")");
+        }
         return 0;
     }
     if (msg == WM_TASK_COMPLETE) {
@@ -507,7 +557,10 @@ void CMainForm::CancelAndExit() {
         // 兜底：优雅取消没生效（例如卡在不可中断的 IO/驱动阶段）→ 直接杀进程。
         // 此刻临时文件仍被 worker 持有，删不掉 → 登记"下次开机删除"。
         LogInfo("GUI: worker still busy after 10s -> hard kill");
-        RegisterPendingDelete(IncompletePath(m_workerDest));
+        for (const auto& p : {IncompletePath(m_workerDest),
+                              m_workerDest + L".stage",
+                              m_workerDest + L".stage.tmp"})
+            RegisterPendingDelete(p);
         ::TerminateProcess(::GetCurrentProcess(), 0);
         return;
     }
@@ -519,22 +572,26 @@ void CMainForm::CancelAndExit() {
 }
 
 void CMainForm::CleanupIncompleteOutput() {
-    // 只删**本次正在写的临时文件**（`<目标>.tmp`，见 wim.cpp::Capture 的原子写：
-    // 先写 tmp、成功才 MoveFileEx 改名）。**绝不能删最终路径** —— 那里可能是用户
-    // 之前就存在的有效镜像（wimlib 还没改名，它原封不动）。
+    // 只删**本次正在写的半成品**（见 wim.cpp::Capture 的原子写与 ops.cpp::RunBackup
+    // 的 stage 流程）：`<目标>.tmp`（Capture）、`<目标>.stage` + `<目标>.stage.tmp`
+    // （ESP 并入中转）。**绝不能删最终路径** —— 那里可能是用户之前就存在的
+    // 有效镜像，或 ESP 并入失败时已 rename 交付的主镜像。
     if (m_workerDest.empty())
         return;
-    std::wstring tmp = IncompletePath(m_workerDest);
-    DWORD a = ::GetFileAttributesW(tmp.c_str());
-    if (a == INVALID_FILE_ATTRIBUTES)
-        return;  // 正常取消时 Capture 已经删过了，这里是兜底
-    ::SetFileAttributesW(tmp.c_str(), FILE_ATTRIBUTE_NORMAL);
-    if (::DeleteFileW(tmp.c_str())) {
-        LogInfo("cancel: removed incomplete temp " + W2U(tmp));
-    } else {
-        LogError("cancel: cannot remove incomplete temp (err=" +
-                 std::to_string(::GetLastError()) + "), scheduled at reboot");
-        RegisterPendingDelete(tmp);
+    for (const auto& tmp : {IncompletePath(m_workerDest),
+                            m_workerDest + L".stage",
+                            m_workerDest + L".stage.tmp"}) {
+        if (::GetFileAttributesW(tmp.c_str()) == INVALID_FILE_ATTRIBUTES)
+            continue;  // 正常取消时 Capture/RunBackup 已经删过了，这里是兜底
+        ::SetFileAttributesW(tmp.c_str(), FILE_ATTRIBUTE_NORMAL);
+        if (::DeleteFileW(tmp.c_str())) {
+            LogInfo("cancel: removed incomplete temp " + W2U(tmp));
+        } else {
+            LogError("cancel: cannot remove incomplete temp (err=" +
+                     std::to_string(::GetLastError()) +
+                     "), scheduled at reboot");
+            RegisterPendingDelete(tmp);
+        }
     }
 }
 
@@ -565,6 +622,8 @@ void CMainForm::Notify(TNotifyUI& msg) {
         CDuiString name = msg.pSender->GetName();
         if (name == _T("BrowseBtn")) {
             if (m_backupMode) BrowseSaveFile(); else BrowseWimFile();
+        } else if (name == _T("SearchBtn")) {
+            OnSearchImages();  // 还原模式专属（备份模式按钮隐藏）
         } else if (name == _T("MainAction")) {
             if (m_backupMode) StartBackup(); else StartRestore();
         } else if (name == _T("RepairBootBtn")) {
@@ -880,6 +939,65 @@ void CMainForm::BrowseSaveFile() {
     UpdateMainAction();
 }
 
+// 「搜索」（还原模式第一步）：按 imgsearch.h 的三规则扫附近 .esd/.wim，
+// 结果按修改时间新→旧，把最新一个填进输入框并立即解析子镜像。
+void CMainForm::OnSearchImages() {
+    if (m_busy) return;
+    m_searchHits = imgsearch::Search();
+    if (m_searchHits.empty()) {
+        SetStatus(Tr(L"附近未找到 .esd/.wim 镜像文件"));
+        return;
+    }
+    const std::wstring best = m_searchHits[0];
+    m_wimPath = best;
+    CControlUI* pEdit = m_PaintManager.FindControl(_T("ImagePath"));
+    if (pEdit) pEdit->SetText(best.c_str());  // 同步原生 EDIT → EN_CHANGE 闭环
+    wchar_t buf[512];
+    // MinGW %d=int ✓（路径等宽串在 swprintf 外拼接，避 PIT-007 的 %ls 坑）
+    swprintf(buf, 512, Tr(L"找到 %d 个镜像文件，已填入最新："),
+             (int)m_searchHits.size());
+    SetStatus(std::wstring(buf) + best);  // 解析失败时会被 LoadWimImages 的错误覆盖
+    LoadWimImages(best);
+}
+
+// 点输入框 → 在其下方弹「搜索结果」下拉（TrackPopupMenu，选中回填 + 解析）。
+// 由 EN_SETFOCUS 进入（HandleMessage），m_pickGuard 防菜单关闭后 SetFocus 重入。
+void CMainForm::ShowImagePickMenu() {
+    CControlUI* pCtl = m_PaintManager.FindControl(_T("ImagePath"));
+    if (!pCtl) return;
+    HWND hEdit = static_cast<CSkinEditUI*>(pCtl)->GetNativeEditHWND();
+    if (!hEdit) return;
+    HMENU hMenu = ::CreatePopupMenu();
+    if (!hMenu) return;
+    for (size_t i = 0; i < m_searchHits.size(); ++i) {
+        // 列表显示文件名（过长截断）；菜单项 ID = 下标 + 1（0 视为无效）
+        std::wstring name = m_searchHits[i];
+        size_t bs = name.find_last_of(L'\\');
+        if (bs != std::wstring::npos) name = name.substr(bs + 1);
+        if (name.size() > 48) name = name.substr(0, 45) + L"...";  // ASCII 截断符，不做词条
+        UINT flags = MF_STRING;
+        if (_wcsicmp(m_searchHits[i].c_str(), m_wimPath.c_str()) == 0)
+            flags |= MF_CHECKED;  // 当前输入框里的那一个打勾
+        ::AppendMenuW(hMenu, flags, (UINT)(i + 1), name.c_str());
+    }
+    RECT rc{};
+    ::GetWindowRect(hEdit, &rc);
+    m_pickGuard = true;
+    int cmd = ::TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_LEFTALIGN,
+                               rc.left, rc.bottom + 1, 0, m_hWnd, nullptr);
+    ::DestroyMenu(hMenu);
+    if (cmd > 0 && cmd <= (int)m_searchHits.size()) {
+        const std::wstring pick = m_searchHits[(size_t)cmd - 1];
+        m_wimPath = pick;
+        pCtl->SetText(pick.c_str());
+        SetStatus(std::wstring(Tr(L"已选择镜像：")) + pick);
+        LoadWimImages(pick);
+        UpdateMainAction();
+    }
+    if (::IsWindow(hEdit)) ::SetFocus(hEdit);  // 焦点还给输入框（guard 拦下再弹）
+    m_pickGuard = false;
+}
+
 // WM_DROPFILES：把拖进来的 .esd/.wim 填到第一步输入框并立即解析子镜像。
 void CMainForm::HandleDroppedFiles(WPARAM wParam) {
     if (m_busy) return;
@@ -1166,8 +1284,11 @@ void CMainForm::StartBackup() {
                Tr(L"备份") +
                (fmt == 0 ? L".esd" : L".wim");
     }
+    // 「ESP」勾选（备份专属）：只读状态，起线程前定格到 m_workerEsp
+    bool esp = IsEspChecked();
     if (GetFileAttributesW(dest.c_str()) != INVALID_FILE_ATTRIBUTES) {
-        if (MessageBoxW(m_hWnd, Tr(L"目标镜像文件已存在，覆盖？"), Tr(L"确认备份"),
+        std::wstring msg = Tr(L"目标镜像文件已存在，覆盖？");
+        if (MessageBoxW(m_hWnd, msg.c_str(), Tr(L"确认备份"),
                         MB_YESNO | MB_ICONWARNING) != IDYES)
             return;
     }
@@ -1199,6 +1320,7 @@ void CMainForm::StartBackup() {
     m_workerCompress = compress;
     m_workerName    = name;
     m_workerCpuCap  = m_cpuCap;  // 起线程前定格（备份中再改走 SetCpuCap 直接生效）
+    m_workerEsp     = esp;
     m_lastProgressPost = std::chrono::steady_clock::now();
     try {
         m_worker = std::thread(&CMainForm::StartBackupAsync, this);
@@ -1220,6 +1342,7 @@ void CMainForm::StartBackupAsync() {
     req.name    = m_workerName;
     req.append  = false;
     req.cpuCap  = m_workerCpuCap;
+    req.esp     = m_workerEsp;
     auto progressFn = [this](int pct, const std::string& stage) -> bool {
         if (m_cancel) return true;  // 取消信号
         auto now = std::chrono::steady_clock::now();
@@ -1253,6 +1376,9 @@ void CMainForm::ApplyModeUi() {
     };
     if (m_backupMode) {
         Text(_T("BrowseBtn"),   Tr(L"浏览保存位置…"));
+        Vis(_T("SearchBtn"),    false);  // 搜索是还原专属（2026-09-30 用户规格）
+        // 「ESP」勾选占用搜索按钮在第一步卡片里的同一位置（备份专属，2026-09-30）
+        Vis(_T("EspChk"),       true);
         Text(_T("MainAction"),  Tr(L"开始备份"));
         Text(_T("NoteLabel"),   Tr(L"备份备注："));
         Vis(_T("ImageIndexBox"), false);
@@ -1306,6 +1432,8 @@ void CMainForm::ApplyModeUi() {
         // 显示进度文字；进度条只在跑进度时出现（ShowProgress）。
     } else {
         Text(_T("BrowseBtn"),   Tr(L"浏览系统镜像"));
+        Vis(_T("SearchBtn"),    true);
+        Vis(_T("EspChk"),       false);  // 还原模式没有 ESP 勾选（ESP 子镜像由救援层自动处理）
         Text(_T("MainAction"),  Tr(L"开始恢复"));
         Text(_T("NoteLabel"),   Tr(L"镜像说明："));
         Vis(_T("ImageIndexBox"), true);
@@ -1429,6 +1557,12 @@ void CMainForm::RebootNow() {
 bool CMainForm::IsSilent() {
     COptionUI* p =
         static_cast<COptionUI*>(m_PaintManager.FindControl(_T("Silent")));
+    return p && p->IsSelected();
+}
+
+bool CMainForm::IsEspChecked() {
+    COptionUI* p =
+        static_cast<COptionUI*>(m_PaintManager.FindControl(_T("EspChk")));
     return p && p->IsSelected();
 }
 
