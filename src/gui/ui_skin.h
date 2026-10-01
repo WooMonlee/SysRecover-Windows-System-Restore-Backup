@@ -193,6 +193,9 @@ public:
 private:
     bool m_center = false;  // align="center"：仅 Combo 收起框（按钮态）文字居中，
                             // 下拉列表行（DoPaint）仍左对齐，与原生 Combo 一致
+    CDuiString m_collapsed; // collapsedtext="类型"：Combo 收起框固定显示这段文字
+                            // （下拉列表里仍显示本项 text）——用于「类型」这种
+                            //  收起时显示短标签、展开时显示三个长选项的下拉。
 };
 
 // ────────────────────────────────────────────────────────────

@@ -46,7 +46,8 @@ public:
                ProgressFn progress, const std::wstring& desc = L"");
     int Apply(const std::wstring& imagePath, int index,
               const std::wstring& target, ProgressFn progress);
-    int Verify(const std::wstring& imagePath);
+    // progress：校验进度（wimlib VERIFY_STREAMS 有真实字节数；不给回调也行）。
+    int Verify(const std::wstring& imagePath, ProgressFn progress = {});
     // 可用性检查（还原暂存前必做）：打开镜像并检查是否"写入未完成/不完整"。
     // 返回 0=可用；非 0=不可用（why 填原因，UTF-16）。
     int Probe(const std::wstring& imagePath, std::wstring& why);

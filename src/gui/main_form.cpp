@@ -387,6 +387,11 @@ static std::wstring StageCn(const std::wstring& s) {
     if (s.compare(0, 7, L"extract") == 0) return Tr(L"写入");
     if (s.compare(0, 4, L"scan") == 0)
         return s.size() > 5 ? Tr(L"扫描 ") + s.substr(5) : Tr(L"扫描");
+    // 收官阶段（PIT-098）：100% 后的静默期靠这些名字在状态栏"报活"。
+    // 都按前缀匹配 —— 带速度后缀（"  42.3 MB/s  ETA 1:23"）也能命中。
+    if (s.compare(0, 3, L"esp") == 0) return Tr(L"备份ESP");
+    if (s.compare(0, 6, L"verify") == 0) return Tr(L"校验镜像");
+    if (s.compare(0, 5, L"probe") == 0) return Tr(L"完整性检查");
     return s;
 }
 
@@ -655,7 +660,7 @@ void CMainForm::Notify(TNotifyUI& msg) {
                 bool bak = (name == _T("ModeBackup"));
                 if (bak != m_backupMode) { m_backupMode = bak; ApplyModeUi(); }
             }
-        } else if (name == _T("FormatBox")) { /* 默认文件名不重刷 */ }
+        } else if (name == _T("FormatBox")) { /* 见下方 ITEMSELECT 分支（Combo 发的是 ITEMSELECT） */ }
     } else if (msg.sType == DUI_MSGTYPE_ITEMSELECT) {
         CDuiString name = msg.pSender->GetName();
         if (name == _T("PartitionBox")) {
@@ -667,6 +672,11 @@ void CMainForm::Notify(TNotifyUI& msg) {
             int sel = static_cast<CComboUI*>(msg.pSender)->GetCurSel();
             if (sel >= 0 && sel < (int)m_imgIdx.size())
                 m_selImageIndex = m_imgIdx[sel];
+        } else if (name == _T("FormatBox")) {
+            // ★ 2026-09-30 用户规格：换「类型」→ **同步改文件名后缀**。
+            // 坑：Combo 发的是 DUI_MSGTYPE_ITEMSELECT，**不是** SELECTCHANGED ——
+            //   之前这句挂在 SELECTCHANGED 分支上，所以点了「类型」文件名后缀不变。
+            SyncPathExtFromFormat();
         }
     }
     WindowImplBase::Notify(msg);
@@ -903,14 +913,19 @@ void CMainForm::BrowseSaveFile() {
     HRESULT hr = CoCreateInstance(CLSID_FileSaveDialog, nullptr,
                                   CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pDlg));
     if (FAILED(hr) || !pDlg) { SetStatus(Tr(L"文件对话框创建失败")); return; }
+    // ★ 2026-09-30 用户规格：浏览框的「保存类型」必须与界面上的「类型」下拉**一致**
+    //   （同样的三项），且选中后**要生效** —— 以前只有两项、选了既不回写界面下拉、
+    //   也改变不了真正决定格式的东西（文件名后缀/界面下拉），属 bug。
+    //   现在三项一一对应：选完立即回写界面「类型」下拉，并把文件名后缀对齐到所选类型。
     COMDLG_FILTERSPEC filters[] = {
-        {Tr(L"WIM 镜像（标准压比，较快）"), L"*.wim"},
-        {Tr(L"ESD 镜像（高压比省空间）"), L"*.esd"},
+        {Tr(L"esd(慢)"), L"*.esd"},
+        {Tr(L"wim(中)"), L"*.wim"},
+        {Tr(L"wim(快)"), L"*.wim"},
     };
-    pDlg->SetFileTypes(2, filters);
+    pDlg->SetFileTypes(3, filters);
     pDlg->SetTitle(Tr(L"选择备份保存位置"));
-    int fmtIdx = BackupFmt();
-    pDlg->SetFileTypeIndex(fmtIdx == 0 ? 2 : 1);  // COMDLG 1-based
+    int fmtIdx = BackupFmt();                 // 0=.esd 1=.wim正常 2=.wim高速
+    pDlg->SetFileTypeIndex(static_cast<UINT>(fmtIdx + 1));  // COMDLG 1-based
     const wchar_t* ext = fmtIdx == 0 ? L".esd" : L".wim";
     // 默认文件名（用户规格 2026-09-21）：`20260921Win10.19044备份.esd`
     std::wstring defName = TimestampDate() +
@@ -924,13 +939,29 @@ void CMainForm::BrowseSaveFile() {
             LPWSTR psz = nullptr;
             pItem->GetDisplayName(SIGDN_FILESYSPATH, &psz);
             if (psz) {
-                m_wimPath = psz;
+                std::wstring path = psz;
                 CoTaskMemFree(psz);
+                // 对话框里选的「保存类型」→ 生效：回写界面「类型」下拉 + 后缀对齐
+                UINT fti = 0;
+                if (SUCCEEDED(pDlg->GetFileTypeIndex(&fti)) && fti >= 1 && fti <= 3) {
+                    int want = static_cast<int>(fti) - 1;   // 0/1/2
+                    const wchar_t* wantExt = (want == 0) ? L".esd" : L".wim";
+                    size_t slash = path.find_last_of(L"\\/");
+                    size_t base = (slash == std::wstring::npos) ? 0 : slash + 1;
+                    size_t dot = path.find_last_of(L'.');
+                    if (dot != std::wstring::npos && dot > base)
+                        path = path.substr(0, dot) + wantExt;  // 换掉旧后缀
+                    else
+                        path += wantExt;                       // 本来就没后缀
+                    CComboUI* pFmt = static_cast<CComboUI*>(
+                        m_PaintManager.FindControl(_T("FormatBox")));
+                    if (pFmt && pFmt->GetCount() > want) pFmt->SelectItem(want, false, false);
+                }
+                m_wimPath = path;
                 CEditUI* pEdit =
                     static_cast<CEditUI*>(m_PaintManager.FindControl(_T("ImagePath")));
                 if (pEdit) pEdit->SetText(m_wimPath.c_str());
                 SetStatus(Tr(L"备份保存至：") + m_wimPath);
-                SyncFormatFromPath();  // 对话框里选的扩展名 → 定格式（后缀一致时是空操作）
             }
             pItem->Release();
         }
@@ -1109,7 +1140,27 @@ void CMainForm::SyncFormatFromPath() {
     CComboUI* pFmt =
         static_cast<CComboUI*>(m_PaintManager.FindControl(_T("FormatBox")));
     if (pFmt && pFmt->GetCount() > want && pFmt->GetCurSel() != want)
-        pFmt->SelectItem(want);
+        pFmt->SelectItem(want, false, false);  // 程序选择：不触发 SELECTCHANGED（免回环）
+}
+
+// ★ 2026-09-30 用户规格：换「类型」→ **同步改文件名后缀**（只改后缀，文件名其余不动）。
+// 例：`D:\x\20260921Win10备份.esd` 选「wim(中)」→ `...备份.wim`。
+// 与 SyncFormatFromPath 互为反向：那个是「后缀→下拉」，这个是「下拉→后缀」。
+void CMainForm::SyncPathExtFromFormat() {
+    if (!m_backupMode || m_wimPath.empty()) return;
+    const wchar_t* wantExt = (BackupFmt() == 0) ? L".esd" : L".wim";
+    std::wstring p = m_wimPath;
+    size_t slash = p.find_last_of(L"\\/");
+    size_t base = (slash == std::wstring::npos) ? 0 : slash + 1;
+    size_t dot = p.find_last_of(L'.');
+    std::wstring np = (dot != std::wstring::npos && dot > base)
+                          ? p.substr(0, dot) + wantExt   // 换掉旧后缀
+                          : p + wantExt;                 // 本来就没后缀
+    if (np == m_wimPath) return;
+    m_wimPath = np;
+    CEditUI* pEdit =
+        static_cast<CEditUI*>(m_PaintManager.FindControl(_T("ImagePath")));
+    if (pEdit) pEdit->SetText(m_wimPath.c_str());  // 同步原生 EDIT（EN_CHANGE 闭环）
 }
 
 // 「限制CPU」下拉 → 上限百分比（下标 0/1/2/3 = 不限/25/50/75，见 skin/main.xml）。
@@ -1251,13 +1302,18 @@ void CMainForm::StartRestoreAsync() {
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                       now - m_lastProgressPost)
                       .count();
-        if (ms < kProgressThrottleMs && pct < 100) return false;  // 100ms 节流
+        // 阶段名一变就发（不受 100ms 节流）：收官标记（esp/verify/probe）与
+        // 上一次上报常在 100ms 内，会被吞掉 → 状态栏永远停在旧阶段（PIT-098）。
+        bool stageChanged = stage != m_lastStageRaw;
+        if (ms < kProgressThrottleMs && pct < 100 && !stageChanged) return false;
         m_lastProgressPost = now;
+        m_lastStageRaw = stage;
         PostMessage(WM_PROGRESS_UPDATE, (WPARAM)pct,
                     (LPARAM)new std::wstring(U2W(stage)));
         return false;
     };
     m_lastProgressPost = std::chrono::steady_clock::now();
+    m_lastStageRaw.clear();
     int rc = StageRestore(req, err, &needReboot, progressFn, &last_adv_);
     last_err_ = err;
     m_needReboot = needReboot;
@@ -1322,6 +1378,7 @@ void CMainForm::StartBackup() {
     m_workerCpuCap  = m_cpuCap;  // 起线程前定格（备份中再改走 SetCpuCap 直接生效）
     m_workerEsp     = esp;
     m_lastProgressPost = std::chrono::steady_clock::now();
+    m_lastStageRaw.clear();
     try {
         m_worker = std::thread(&CMainForm::StartBackupAsync, this);
     } catch (...) {
@@ -1347,8 +1404,11 @@ void CMainForm::StartBackupAsync() {
         if (m_cancel) return true;  // 取消信号
         auto now = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_lastProgressPost).count();
-        if (elapsed < kProgressThrottleMs && pct < 100) return false;  // 节流：100ms 内不重复发（完成时 100% 必发）
+        // 阶段名一变就发（不受 100ms 节流），理由见还原侧同款注释（PIT-098）。
+        bool stageChanged = stage != m_lastStageRaw;
+        if (elapsed < kProgressThrottleMs && pct < 100 && !stageChanged) return false;
         m_lastProgressPost = now;
+        m_lastStageRaw = stage;
         std::wstring* pStage = new std::wstring(U2W(stage));
         PostMessage(WM_PROGRESS_UPDATE, (WPARAM)pct, (LPARAM)pStage);
         return false;
@@ -1384,7 +1444,8 @@ void CMainForm::ApplyModeUi() {
         Vis(_T("ImageIndexBox"), false);
         Vis(_T("NoteText"),     false);
         Vis(_T("NoteInput"),    true);
-        Vis(_T("FormatLabel"),  true);
+        // 「格式：」文字标签已由「类型」下拉自身显示（collapsedtext），不再需要
+        Vis(_T("FormatLabel"),  false);
         Vis(_T("FormatBox"),    true);
         // CPU 下拉同理：**必须先显示再选默认项** —— CComboUI::SelectItem 在
         // 条目 IsVisible()==false 时直接返回 false（容器隐藏会把子控件的
@@ -1397,7 +1458,7 @@ void CMainForm::ApplyModeUi() {
             CComboUI* pFmt = static_cast<CComboUI*>(
                 m_PaintManager.FindControl(_T("FormatBox")));
             if (pFmt && pFmt->GetCurSel() < 0 && pFmt->GetCount() > 0)
-                pFmt->SelectItem(0);
+                pFmt->SelectItem(0, false, false);  // 程序选择：不触发 SELECTCHANGED/ITEMSELECT
             CComboUI* pCpu = static_cast<CComboUI*>(
                 m_PaintManager.FindControl(_T("CpuCapBox")));
             if (pCpu && pCpu->GetCurSel() < 0 && pCpu->GetCount() > 0)
@@ -1421,13 +1482,14 @@ void CMainForm::ApplyModeUi() {
         Vis(_T("BootMenuBtn"),  true);
         Text(_T("PartTitle"),   Tr(L"备份源分区"));
         Text(_T("PartHint"),    Tr(L"选择要备份为镜像的源分区（移动盘已隐藏）"));
-        // 第三步右侧：备份模式 = 静默模式 + 「格式：」+ 下拉；引导按钮两模式共用
-        // 同一位置（XML 定）。整窗收窄到 745 后，右侧一组：
-        //   静默 248..340 / 格式：350..388 / 格式下拉 388..510 / CPU 下拉 530..612 /
-        //   清除 530..612 / 菜单 618..706 —— 下拉与两个按钮同高 296..329（对齐「安装菜单」）
+        // 第三步右侧：备份模式 = 静默模式 + CPU 下拉；引导按钮两模式共用同一位置（XML 定）。
+        // ★ 2026-09-30 二次调整（用户规格）：「类型」下拉移到**第一步「浏览」右侧**
+        //   （与「搜索」按钮同位置同尺寸 639,77,710,115），ESP 勾选换到第三步原
+        //   「格式：」处（388,296,510,329）。第三步右侧一组：
+        //   静默 248..340 / ESP 388..510 / CPU 下拉 530..612 / 菜单 618..706
         Pos(_T("Silent"),        248, 302, 340, 326);
-        Pos(_T("FormatLabel"),   350, 302, 388, 326);
-        Pos(_T("FormatBox"),     388, 296, 510, 329);
+        Pos(_T("FormatBox"),     639, 77, 710, 115);   // 第一步：类型下拉
+        Pos(_T("EspChk"),        388, 296, 510, 329);  // 第三步：ESP 勾选
         // 注：状态栏在空闲时显示**当前模式说明**（见本函数末尾），任务执行中
         // 显示进度文字；进度条只在跑进度时出现（ShowProgress）。
     } else {
