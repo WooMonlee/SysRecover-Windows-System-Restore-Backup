@@ -55,6 +55,9 @@
 - [ ] `libwim` 只动态链接，**不抄** `wimlib-imagex` 源码；GRUB4DOS 只分发 `grldr/grldr.mbr` 二进制，不并入源码。
 - [ ] GUI 只用 BSD/MIT 库（Duilib / SOUI / nim_duilib），不引入 GPL 界面库。
 - [ ] 不抄 Dism++ 主程序、不抄来路不明的博客代码。
+- [ ] **每次修改都 `python tools/version.py --bump`**（★ **改完立即，不等提交**；纯文档/纯重构除外）——
+      保证**每次交付/编译的版本号都不同、可区分**；**改完代码、编译打包前必须执行**，并核对
+      `src/common/version.h` 与 `dist/version.json` 已同步（详见 `PLAN.md`「版本号规则」）。
 
 ---
 
@@ -75,7 +78,8 @@
 版本号：SemVer `主.次.修订` —— **唯一来源 `src/common/version.h`**（`SYSRECOVER_VERSION`），
 `version` 命令、`_zjresy*.log` 的 `software_version`、GUI 标题栏副标题、`dist/version.json` 全部由它派生。
 **规则见 `PLAN.md`「版本号规则」**：主/次版本**由用户指定**（`python tools/version.py --set X.Y.Z`），
-**修订号每解决一个问题 +1**（提交前跑 `python tools/version.py --bump`）。发布时与 git tag `vX.Y.Z` 对齐。
+**修订号每次修改都 +1** —— ★ **改完立即跑 `python tools/version.py --bump`，不等提交**，
+保证每次交付/编译的版本号都不同、可区分；**AI 改完代码、编译打包前必须执行**。发布时与 git tag `vX.Y.Z` 对齐。
 
 > **架构（2026-09-24 方案 D）：Windows 侧位数跟随系统**（32 位系统跑 x86、64 位系统跑 x64，主要为备份压缩速度）。
 > 发布形态 = **根目录 x86 整套（入口）+ `x64/` x64 整套 + 根目录共享资源**；**无独立启动器** ——
@@ -602,6 +606,8 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **⚠️ 坑（实测）**：① **`esp capture rc=47 Failed to open a file` 的真凶是 `\EFI\Microsoft\Boot\BCD`（+`.LOG*`）被运行中的 Windows 当 hive 挂着（`HKLM\BCD00000000`）独占锁**（PIT-051 同源）——**不是** `System Volume Information`（它读得到，A 方案时归因错过一次）；BCD 必须进排除清单（还原后由流程内 `bcdboot` 重建，PIT-090；且 apply 不删 → 现役 BCD 安全）。② wimscript 排除目录**不能带尾斜杠**：`\System Volume Information\` 的 glob 不匹配任何东西（wimlib/DISM 语义 = 匹配目录条目本身即跳过整棵），必须照 `exclude.cpp:26` 写 `\System Volume Information`。③ 排除配置走临时 `zjrestore-esp-exclusion.ini`（同 `EnsureExclusionConfig` 做法）；`wim.h` 不外泄 `wimlib.h` → 未初始化错误用 `-1` 特判。④ **wimlib 1.14 没有 `wimlib_get_image_count`** → 新子镜像 index 用 `wimlib_get_wim_info().image_count`；description API 拼写是 **`wimlib_set_image_descripton`**（少一个 i）。⑤ GUI 取消清理 `CleanupIncompleteOutput` 的候选路径要含 `<dest>.stage` / `<dest>.stage.tmp`（**绝不能删最终路径**：stage 已 rename 交付的主镜像是有效产物）。
   · **验证（全过）**：`make check` **31 用例/208 断言** + 341 i18n keys + check-docs PASS；`make package` 双架构；**Windows 真机冒烟**：`backup --esp` → rc=0、单文件 12.4MB、**无 `.esp`、无 `.stage/.stage.tmp` 残留**、`images` = `1 | Backup` + `2 | ESP`（英文 description 正确）；`--append --esp` → 4 子镜像（Backup/ESP/Backup(2)/ESP(2)）；`restore --index 2` → **rc=4 + 拒绝提示**、零契约写入（无 restore-task.conf）、history 有 `restore-rejected`；**QEMU 端到端演练**（`mk-drill.py` 改造：conf+log 带 `esp_index=2`、sda1 兼作假 ESP——根下 `EFI/` 命中 find_esp_dev 的 FAT 回退 + 预置 `EFI/DRILL-MARKER.txt` 验证只加不删、`test.wim` 用 `--esp` 重建）：`restore esp subimage idx=2 -> /dev/sda1` → `esp restored (rc=0)` → `RESTORE DONE: /dev/sda2 (index 1)` → `reboot: Restarting system`；盘上复核：**marker 幸存**（只加不删 ✓）、`EFI/Microsoft/Boot/bootmgfw.efi` 3,087,872B 落进假 ESP、`BCD` 不在（排除生效 ✓）。🚧 GUI 勾选框外观/文案待用户实测；UEFI 真机全链（暂存→重启→恢复 ESP 子镜像）待回归；**就地还原侧 ESP 恢复（PE/非系统盘）待实测**（就地还原本身此前就标"待实测"，见 PIT-064）。✅ 2026-09-30
 
+- PIT-098 **备份 100% 后到完成弹窗之间是「静默期」：收官阶段只写 progress.json、不回调用户可见进度，GUI 状态栏冻在上一阶段**（2026-10-01 用户实测反馈）：非静默模式的完成弹窗本来就存在（`OnTaskComplete`），但用户在 100% 后等「很久」才弹出、状态栏一直停在「写入 100%」（只有"已用"时钟在走），怀疑是勾选了 ESP 备份。核实：① 主镜像 capture 到 100% 后**永远**还要跑 `Probe`（`wimlib_open_wim(CHECK_INTEGRITY)` = 全文件哈希扫描，**无回调**，大镜像几十秒），`--verify` 时另有 `engine.Verify`（同样无回调）—— 这才是静默期大头；② ESP 并入本身**有**进度（`Append` 传了 `progress`），但阶段名是 wimlib 的 `write`，看不出在做 ESP；③ `ProgressUpdate()` 只写 `progress.json`（外部工具看得到、用户看不到）；④ GUI 进度节流 `elapsed<100ms && pct<100` 会把 100% 后 100ms 内刚发出的阶段标记也吞掉。**修复**：① `ops.cpp::RunBackup` 收官各阶段补 `progress()` 回调（esp / verify / probe，含两处失败路径的 Probe）；② `WimEngine::Verify` 增加 `ProgressFn` 参数并注册回调，`ProgressThunk` 接 `WIMLIB_PROGRESS_MSG_VERIFY_STREAMS`（真实字节进度 + 速度/ETA）—— CLI `--verify` 与 `verify` 命令不再全程静默（`CmdVerify` 先手动 `ConsoleProgress(0,"verify")` 亮阶段名：open 扫描期注册不了回调）；③ `StageCn` 新增 esp/verify/probe → 中文（备份ESP / 校验镜像 / 完整性检查，前缀匹配兼容速度后缀）；④ 节流放行"阶段名变了"的首次上报（新成员 `m_lastStageRaw`，备份/还原两 worker 同款）。**顺手修**：`CmdBackup` 没设 `g_phase` → capture 期间 `ConsoleProgress` 把 `progress.json` 的 Phase 覆盖成 `idle`（补 `g_phase="backup"`）。✅ 2026-10-01（`make check` 31 用例/208 断言 + check-i18n **344 keys** + `make package` 双架构；`0.6.4`；GUI 100% 后状态栏依次显示 备份ESP→（校验镜像）→完整性检查 **待用户实测**）
+
 ---
 
 ## 14. License 合规（SBOM，随版本更新）
@@ -800,4 +806,4 @@ python tools/check-i18n.py                 # 单独跑门禁
 SysRecover.exe --lang en help              # CLI 指定语言
 set SYSRECOVER_LANG=en && SysRecover.exe   # 环境变量指定语言（机房批量）
 `
-- 当前词条：**277**（en.lang 约 28.6 KB）。每增一语种 ≈ +28 KB。
+- 当前词条：**344**（en.lang 约 37 KB）。每增一语种 ≈ +37 KB。

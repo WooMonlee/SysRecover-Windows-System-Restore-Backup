@@ -283,6 +283,7 @@ int CmdBackup(const std::vector<std::string>& a) {
     }
     std::string err;
     sysrecover::ErrAdvice adv = sysrecover::ADV_NONE;
+    g_phase = "backup";  // ConsoleProgress 按 g_phase 写 progress.json（否则是 idle）
     g_start = std::chrono::steady_clock::now();
     int rc = sysrecover::RunBackup(req, ConsoleProgress, err, &adv);
     std::printf("\n");
@@ -441,7 +442,13 @@ int CmdVerify(const std::vector<std::string>& a) {
         std::printf(Tr("wimlib 初始化失败\n"));
         return 1;
     }
-    int rc = engine.Verify(ToWide(image));
+    g_phase = "verify";
+    g_start = std::chrono::steady_clock::now();
+    // 打开阶段（CHECK_INTEGRITY 全文件扫描）注册不了回调 → 先手动亮一次阶段名，
+    // 否则大镜像前几十秒毫无输出（PIT-098）。
+    ConsoleProgress(0, "verify");
+    int rc = engine.Verify(ToWide(image), ConsoleProgress);
+    std::printf("\n");
     std::printf(rc == 0 ? Tr("校验通过\n") : Tr("校验失败\n"));
     return rc == 0 ? 0 : 5;
 }

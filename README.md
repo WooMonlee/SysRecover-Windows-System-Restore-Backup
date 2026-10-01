@@ -141,40 +141,58 @@
 > CLI 与 GUI 共用同一套 `app` 层代码，行为一致。
 > CLI 也编入了 `requireAdministrator` 清单：在**管理员命令行 / 计划任务（最高权限）/ PsExec `-s` / SCCM**
 > 这类上下文里本就处于高完整性，**全程静默不弹 UAC**（机房批量部署走的就是这条路）。
+>
+> 全部命令随时可查：`SysRecover.exe help`；单项帮助 `SysRecover.exe help backup`。
+> 另有 `repair-boot`（引导坏了不用重装）、`history`（操作历史）等命令。
+
+**路径写法（`\` 与 `/` 的分工）**：
+
+- Windows 文件/目录参数（`--dest`、`--image`、`--file`、输出目录）用**反斜杠** `\`：`D:\backup\win10.esd`
+- `--source` 盘符根：`C:`、`C:\`、`C:/` **三种写法均可**（程序自动归一化成 `C:/`）
+- `--path` 镜像内路径：Windows 风格、**以 `\` 开头**，支持通配符
 
 先看现场（只读，随时能用）：
 
 ```cmd
-SysRecover.exe list      :: 磁盘/分区/文件系统/盘符/ESP/系统标记
-SysRecover.exe diag      :: 固件类型、Secure Boot 状态、启动项是否已装、wimlib 自检
-                         :: 加 --zip 可导出诊断包（diag 文本 + logs/ + 契约文件），方便反馈问题
+SysRecover.exe list
+SysRecover.exe diag
 ```
+
+- `list`：磁盘 / 分区 / 文件系统 / 盘符 / ESP / 系统标记
+- `diag`：固件类型、Secure Boot 状态、启动项是否已装、wimlib 自检；加 `--zip` 导出诊断包（diag 文本 + `logs/` + 契约文件），方便反馈问题
 
 ### 案例 1 · 把当前系统热备成镜像
 
 ```cmd
-SysRecover.exe backup --dest D:\backup\win10-20260920.esd --source C:/ ^
-                      --compress recovery --verify --name "Win10 出厂态"
+SysRecover.exe backup --dest D:\backup\win10-20260920.esd --source C: --compress recovery --verify --name "Win10 出厂态" --esp
 ```
 
-- `--source C:/`：**盘符根 + 正斜杠** → 触发热备（VSS 快照 + 排除清单）
+- `--source C:`：盘符根 → 自动走 VSS 热备（VSS 快照 + 排除清单）；`C:` 或 `C:/` 均可
 - `--compress`：`recovery`（.esd 最省）/ `maximum` / `fast`
 - `--verify` 写完立即校验；`--name` 指定子镜像名
+- `--esp`：把 ESP 分区并入**同一镜像**（第二个子镜像，名为 ESP），还原系统时**自动恢复回 ESP**；本机没有 ESP 时自动跳过
 - 目标已存在需 `--yes` 覆盖，或用 `--append` 追加为同一 WIM 里的新子镜像
-- 辅助命令：`images --file <镜像>` 列子镜像（含大小与日期）；`verify --image <镜像>` 单独校验
+- 辅助命令：`images --file <镜像>` 列子镜像（含大小与描述）；`verify --image <镜像>` 单独校验
 - **从镜像里取单个文件**（不用整盘还原，先看看里面有什么 / 只捞一个文档出来）：
+
   ```cmd
-  SysRecover.exe extract --file D:\backup\win10.esd --index 1 ^
-                         --path "\Users\*\Desktop\*.docx" --dest D:\out
+  SysRecover.exe extract --file D:\backup\win10.esd --index 1 --path "\Users\*\Desktop\*.docx" --dest D:\out
   ```
+
   `--path` 可重复，支持通配符；文件按镜像里的目录层级落到 `--dest` 下。
 
 ### 案例 2 · 还原一个万能镜像到 C 盘
 
+先确认磁盘号 / 分区号：
+
 ```cmd
-SysRecover.exe list                                     :: 先确认磁盘号/分区号
-SysRecover.exe restore --image D:\backup\wannei-win10.esd ^
-                       --disk 0 --part 3 --index 1 --yes
+SysRecover.exe list
+```
+
+执行还原（`--yes` **必填** = 确认覆盖目标分区）：
+
+```cmd
+SysRecover.exe restore --image D:\backup\wannei-win10.esd --disk 0 --part 3 --index 1 --yes
 ```
 
 执行方式**自动二选一**：
@@ -184,29 +202,32 @@ SysRecover.exe restore --image D:\backup\wannei-win10.esd ^
 | 目标是**正在运行的系统盘** | 暂存任务 → **重启**进内置救援层 → 格式化 + 应用 + 修引导 → 自动重启回新系统 |
 | 目标**未被占用**（在 **PE** 里、或还原到**非系统盘**） | **就地还原**：格式化 + 应用 + `bcdboot` → **完成，不重启** |
 
-- `--no-repair-boot` 不自动修引导；`--index N` 指定子镜像
+- `--index N` 指定子镜像；`--no-repair-boot` 不自动修引导
+- 镜像里若带 **ESP 子镜像**（备份时加了 `--esp`），还原系统时**自动**把 ESP 一并恢复，无需额外参数
+- 镜像必须放在**本地分区**：重启后的救援层访问不到网络（UNC / 映射盘）
 - 退出码：`0` 成功 / `1` 通用失败 / `2` 参数错 / `3` 需管理员 / `4` 危险目标被拒 / `5` 镜像校验失败 / `6` 取消
 
 ### 案例 3 · 做"无人参与的静默还原"入口
 
 思路：把还原任务**暂存**下来（并装好常驻引导模块），之后由**开机菜单**或**单次启动**触发，全自动完成。
 
-```cmd
-:: 1)（推荐）先用 GUI 的「安装启动还原」装一次常驻引导模块
-::    （UEFI：写固件启动项；BIOS：BCD 实模式启动扇区条目）
+1. （推荐）先用 GUI 的「安装启动还原」装一次常驻引导模块（UEFI：写固件启动项；BIOS：BCD 实模式启动扇区条目）。
+2. 暂存一次静默还原：安检 → 镜像可用性校验 → 写契约 → 刷新引导层 → 设单次启动：
 
-:: 2) 暂存一次静默还原：安检 → 镜像可用性校验 → 写契约 → 刷新引导层 → 设单次启动
-SysRecover.exe restore --image D:\backup\wannei-win10.esd --disk 0 --part 3 --index 1 --yes
+   ```cmd
+   SysRecover.exe restore --image D:\backup\wannei-win10.esd --disk 0 --part 3 --index 1 --yes
+   ```
 
-:: 3) 重启（此后无需任何操作）
-shutdown /r /t 0
-```
+3. 重启，此后无需任何操作：
+
+   ```cmd
+   shutdown /r /t 0
+   ```
 
 - **单次语义**：那条"单次启动"用完即消，平时开机照常进 Windows。
 - **常驻语义（UEFI）**：固件启动项挂在 `BootOrder` 末尾，开机启动菜单里随时能选；
   任务契约放在**数据盘**（不被格式化），所以之后再选它还会再还原一次 —— 就是"菜单里常驻的一键还原"。
 - ⚠️ **BIOS 下不常驻**：救援文件随目标分区一起被格式化，那条菜单项**只对当次有效**；要常驻请用 UEFI。
-
 ---
 
 ## 九、构建（给想自己编的人）

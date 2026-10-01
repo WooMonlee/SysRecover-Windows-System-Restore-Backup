@@ -90,6 +90,12 @@ enum wimlib_progress_status ProgressThunk(enum wimlib_progress_msg msg,
     } else if (msg == WIMLIB_PROGRESS_MSG_EXTRACT_STREAMS) {
         pct = Pct(info->extract.completed_bytes, info->extract.total_bytes);
         stage = "extract";
+    } else if (msg == WIMLIB_PROGRESS_MSG_VERIFY_STREAMS) {
+        // wimlib_verify_wim 的按流校验进度（有 completed/total 字节数）。
+        // 没接这条时 CLI `--verify`/`verify` 全程静默（PIT-098）。
+        pct = Pct(info->verify_streams.completed_bytes,
+                  info->verify_streams.total_bytes);
+        stage = "verify";
     } else if (msg == WIMLIB_PROGRESS_MSG_SCAN_BEGIN) {
         pct = 0;
         stage = "scan";
@@ -124,6 +130,9 @@ enum wimlib_progress_status ProgressThunk(enum wimlib_progress_msg msg,
         } else if (msg == WIMLIB_PROGRESS_MSG_EXTRACT_STREAMS) {
             doneBytes = info->extract.completed_bytes;
             totalBytes = info->extract.total_bytes;
+        } else if (msg == WIMLIB_PROGRESS_MSG_VERIFY_STREAMS) {
+            doneBytes = info->verify_streams.completed_bytes;
+            totalBytes = info->verify_streams.total_bytes;
         }
         if (totalBytes > 0) {
             ULONGLONG now = GetTickCount64();
@@ -276,16 +285,20 @@ int WimEngine::Apply(const std::wstring& imagePath, int index,
     return wimlib_extract_image(h.w, index, target.c_str(), 0);
 }
 
-int WimEngine::Verify(const std::wstring& imagePath) {
+int WimEngine::Verify(const std::wstring& imagePath, ProgressFn progress) {
     if (!inited_)
         return -1;
     WimHandle h;
     WIMStruct* raw = nullptr;
+    // CHECK_INTEGRITY：打开阶段先全文件校验一次（此时尚无句柄、注册不了回调，
+    // 调用方在进入前用阶段标记让状态栏先动起来，见 ops.cpp）。
     int rc = wimlib_open_wim(imagePath.c_str(),
                              WIMLIB_OPEN_FLAG_CHECK_INTEGRITY, &raw);
     if (rc != 0)
         return rc;
     h.w = raw;
+    ProgCtx ctx{&progress};
+    wimlib_register_progress_function(h.w, ProgressThunk, &ctx);
     return wimlib_verify_wim(h.w, 0);
 }
 

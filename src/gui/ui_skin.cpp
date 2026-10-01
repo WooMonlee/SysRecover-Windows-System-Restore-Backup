@@ -519,6 +519,11 @@ void CTextItemUI::SetAttribute(LPCTSTR pstrName, LPCTSTR pstrValue) {
         SetText(pstrValue);
         return;
     }
+    if (_tcscmp(pstrName, _T("collapsedtext")) == 0) {
+        // 收起框固定文字（用户规格 2026-09-30）：下拉展开仍显示本项 text
+        m_collapsed = pstrValue;
+        return;
+    }
     if (_tcscmp(pstrName, _T("align")) == 0) {
         // 本类自己拦下 align（不传基类）：只管收起框文字对齐，别让
         // CLabelUI 的文本样式位影响 DoPaint 里我们自己的画法。
@@ -543,6 +548,11 @@ bool CTextItemUI::DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopControl
 }
 
 void CTextItemUI::DrawItemText(HDC hDC, const RECT& rcItem) {
+    // 固定收起文字优先（如「类型」）：收起框居中显示它，下拉列表不受影响
+    if (!m_collapsed.IsEmpty()) {
+        TextIn(hDC, m_collapsed.GetData(), rcItem, 13, C_TEXT, 1);
+        return;
+    }
     if (m_center) {   // 按钮态（CComboUI::PaintText）：在框内水平居中
         TextIn(hDC, GetText(), rcItem, 13, C_TEXT, 1);
         return;

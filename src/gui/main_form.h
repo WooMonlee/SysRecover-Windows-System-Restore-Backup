@@ -73,6 +73,8 @@ private:
     void SyncImagePathFromUi();
     // 备份模式：按第一步的文件后缀挑「格式」下拉（.wim → .wim(正常大小)）。
     void SyncFormatFromPath();
+    // ★ 2026-09-30 用户规格：换「类型」→ 同步改文件名后缀（只改后缀，其余不动）。
+    void SyncPathExtFromFormat();
     // 「限制CPU」下拉 → m_cpuCap；备份中改了会立即作用到正在跑的任务。
     void ApplyCpuCapFromUi();
     void ToggleBootMenu();       // 「安装/删除启动还原」按钮
@@ -127,6 +129,10 @@ private:
     sysrecover::ErrAdvice last_adv_ = sysrecover::ADV_NONE;  // worker 建议码回传
     // 进度节流（100ms）
     std::chrono::steady_clock::time_point m_lastProgressPost;
+    // 最近一次**真正发出**的阶段原串（worker 线程写）：阶段名一变就放行、不再
+    // 被 100ms 节流吞掉 —— 否则 100% 后 100ms 内的收官标记（verify/probe）会丢，
+    // 状态栏冻在上一阶段（PIT-098）。
+    std::string m_lastStageRaw;
     std::chrono::steady_clock::time_point m_start{};
     std::wstring m_lastStage;  // WM_TIMER 刷新「已用」时复用
     std::wstring m_lastStatus; // 最近一条状态文字（进度条显隐后要按新宽度重新收放）

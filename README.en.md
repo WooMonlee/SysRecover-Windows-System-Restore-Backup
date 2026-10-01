@@ -141,41 +141,58 @@ So **the user does not enrol MOK and does not turn Secure Boot off**. The shim i
 > CLI and GUI share the same `app` layer and behave identically.
 > The CLI also embeds a `requireAdministrator` manifest: in an **elevated command prompt / scheduled task (highest privileges) / PsExec `-s` / SCCM**
 > the process is already high-integrity, so it runs **fully silently with no UAC prompt** (that is the path used for lab-style batch deployment).
+>
+> All commands: `SysRecover.exe help`; per-command help: `SysRecover.exe help backup`.
+> There are also `repair-boot` (fix boot without reinstalling) and `history` (operation log), among others.
+
+**Path style (backslash vs forward slash)**:
+
+- Windows file/directory options (`--dest`, `--image`, `--file`, output dir) use **backslashes**: `D:\backup\win10.esd`
+- `--source` drive root: `C:`, `C:\` or `C:/` **all work** (normalized to `C:/` internally)
+- `--path` in-image path: Windows style, **starts with `\`**, wildcards supported
 
 First, inspect the machine (read-only, safe to run any time):
 
 ```cmd
-SysRecover.exe list      :: disks/partitions/file systems/drive letters/ESP/system markers
-SysRecover.exe diag      :: firmware type, Secure Boot state, whether the boot entry is
-                         :: installed, wimlib self-check
-                         :: add --zip to export a diagnostics bundle (diag text + logs/ + contract files)
+SysRecover.exe list
+SysRecover.exe diag
 ```
+
+- `list`: disks / partitions / file systems / drive letters / ESP / system markers
+- `diag`: firmware type, Secure Boot state, whether the boot entry is installed, wimlib self-check; add `--zip` to export a diagnostics bundle (diag text + `logs/` + contract files) for bug reports
 
 ### Case 1 · Hot-back-up the current system into an image
 
 ```cmd
-SysRecover.exe backup --dest D:\backup\win10-20260920.esd --source C:/ ^
-                      --compress recovery --verify --name "Win10 出厂态"
+SysRecover.exe backup --dest D:\backup\win10-20260920.esd --source C: --compress recovery --verify --name "Win10 factory image" --esp
 ```
 
-- `--source C:/`: **drive root with a forward slash** → triggers the hot backup (VSS snapshot + exclusion list)
+- `--source C:`: drive root → automatic VSS hot backup (VSS snapshot + exclusion list); `C:` or `C:/` both fine
 - `--compress`: `recovery` (smallest .esd) / `maximum` / `fast`
 - `--verify` checks the file right after writing; `--name` sets the sub-image name
+- `--esp`: bakes the ESP partition into the **same image** (a second sub-image named ESP) and it is **restored automatically** when you restore the system; skipped automatically if the machine has no ESP
 - An existing destination needs `--yes` to overwrite, or use `--append` to add it as a new sub-image of the same WIM
-- Helpers: `images --file <image>` lists sub-images (size and date); `verify --image <image>` verifies one
+- Helpers: `images --file <image>` lists sub-images (size and description); `verify --image <image>` verifies one
 - **Extract single files from an image** (without a full restore — peek inside, or pull out one document):
+
   ```cmd
-  SysRecover.exe extract --file D:\backup\win10.esd --index 1 ^
-                         --path "\Users\*\Desktop\*.docx" --dest D:\out
+  SysRecover.exe extract --file D:\backup\win10.esd --index 1 --path "\Users\*\Desktop\*.docx" --dest D:\out
   ```
+
   `--path` is repeatable and supports wildcards; files land under `--dest` using their in-image directory tree.
 
 ### Case 2 · Restore a universal image to C:
 
+Confirm the disk/partition numbers first:
+
 ```cmd
-SysRecover.exe list                                     :: confirm disk/partition numbers first
-SysRecover.exe restore --image D:\backup\wannei-win10.esd ^
-                       --disk 0 --part 3 --index 1 --yes
+SysRecover.exe list
+```
+
+Then restore (`--yes` is **mandatory** = confirm overwriting the target partition):
+
+```cmd
+SysRecover.exe restore --image D:\backup\wannei-win10.esd --disk 0 --part 3 --index 1 --yes
 ```
 
 The execution mode is **chosen automatically**:
@@ -185,30 +202,32 @@ The execution mode is **chosen automatically**:
 | Target is the **running system disk** | Stage the task → **reboot** into the built-in rescue layer → format + apply + fix boot → auto-reboot into the new system |
 | Target is **not in use** (in **WinPE**, or restoring to a **non-system disk**) | **In-place restore**: format + apply + `bcdboot` → **done, no reboot** |
 
-- `--no-repair-boot` skips boot repair; `--index N` picks a sub-image
+- `--index N` picks a sub-image; `--no-repair-boot` skips boot repair
+- If the image carries an **ESP sub-image** (made with `--esp`), it is restored **automatically** along with the system — no extra flag needed
+- The image must live on a **local disk**: the rescue layer the machine reboots into cannot reach the network (UNC / mapped drives)
 - Exit codes: `0` success / `1` generic failure / `2` bad arguments / `3` needs admin / `4` dangerous target refused / `5` image verification failed / `6` cancelled
 
 ### Case 3 · An unattended, silent restore entry point
 
 Idea: **stage** the restore task (with the always-present boot module installed), then trigger it from the **boot menu** or a **one-time boot entry**, fully automatically.
 
-```cmd
-:: 1) (recommended) install the always-present boot module once via the GUI's "Install boot restore"
-::    (UEFI: writes a firmware boot entry; BIOS: a real-mode boot sector entry in the BCD)
+1. (Recommended) Install the always-present boot module once via the GUI's "Install boot restore" (UEFI: writes a firmware boot entry; BIOS: a real-mode boot sector entry in the BCD).
+2. Stage a silent restore: safety checks → image usability check → write contract → refresh boot layer → arm the one-time boot:
 
-:: 2) stage a silent restore: safety checks → image usability check → write contract →
-::    refresh boot layer → arm the one-time boot
-SysRecover.exe restore --image D:\backup\wannei-win10.esd --disk 0 --part 3 --index 1 --yes
+   ```cmd
+   SysRecover.exe restore --image D:\backup\wannei-win10.esd --disk 0 --part 3 --index 1 --yes
+   ```
 
-:: 3) reboot (nothing to do from here on)
-shutdown /r /t 0
-```
+3. Reboot — nothing to do from here on:
+
+   ```cmd
+   shutdown /r /t 0
+   ```
 
 - **One-time semantics**: that boot entry is consumed after one use; normal boots go to Windows as usual.
 - **Always-present semantics (UEFI)**: the firmware entry sits at the end of `BootOrder`, selectable from the boot menu at any time;
   the task contract lives on a **data disk** (never formatted), so choosing it again runs the restore once more — an always-present one-click restore in the boot menu.
 - ⚠️ **Not always-present under BIOS**: the rescue files are formatted away together with the target partition, so that menu entry **only works for that one run**; use UEFI if you need it to persist.
-
 ---
 
 ## 9. Building (for people who want to compile it)

@@ -11,7 +11,7 @@
 
 | 谁动 | 什么时候 | 怎么动 |
 |---|---|---|
-| **修订号**（第 3 位）| **每解决一个问题**（一个 bug / 一个明确的缺陷修复）就 +1，多个问题连续修就连续 +1 | `python tools/version.py --bump` |
+| **修订号**（第 3 位）| **每次修改都 +1**（一个 bug / 一处改动 / 一次交付构建；多个改动连续做就连续 +1）。★ **改完立即 `--bump`，不等提交** —— 保证**每次交付/编译出来的版本号都不同**，一眼能区分是哪一版 | `python tools/version.py --bump` |
 | **次版本号**（第 2 位）| 由**用户/负责人**指定：一批功能做完、口径变化 | `python tools/version.py --set 0.2.0` |
 | **主版本号**（第 1 位）| 由**用户/负责人**指定：架构/契约不兼容的大改动（如跨层契约破坏性变更） | `python tools/version.py --set 1.0.0` |
 
@@ -25,7 +25,7 @@
 | `dist/version.json` | `Makefile` 调 `tools/version.py` 生成 |
 | 发布 tag | 打 tag 时手工对齐：`vX.Y.Z` |
 
-**约定**：① 每修完一个问题、**提交前**跑 `--bump`（一次提交 = 一次修订号递增，除非该提交纯属文档/重构）；② `SYSRECOVER_CONTRACT_VERSION`（跨层契约版本）**另计**，仅当 `restore-task.conf` / `progress.json` / `_zjresy*.log` 字段变化时才动，且必须双端同步发版；③ 对外发布时必须三处同源：`version.h`、`dist/version.json`、git tag。
+**约定**：① ★ **每次修改后立即**跑 `--bump`（**不必等提交**；纯文档/纯重构改动除外）——**每次交付/编译的版本号都必须不同**，便于区分与回溯；**AI（编码模式）改完代码、编译打包前必须执行**，并核对 `version.h` / `dist/version.json` 已同步；② `SYSRECOVER_CONTRACT_VERSION`（跨层契约版本）**另计**，仅当 `restore-task.conf` / `progress.json` / `_zjresy*.log` 字段变化时才动，且必须双端同步发版；③ 对外发布时必须三处同源：`version.h`、`dist/version.json`、git tag。
 
 **例**：本次（2026-09-20 换机测试）修掉换机蓝屏（BCD 残留旧设备）、`menu.lst` 第二次部署失败、`bootfix\bootmgr` 第二次覆盖失败 → `0.1.0 → 0.1.3`。
 

@@ -642,6 +642,9 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
     int erc = 0;
     if (req.esp) {
         ProgressUpdate("backup", 100, "esp");
+        // 阶段标记进 GUI 状态栏/CLI 控制台（ProgressUpdate 只写 progress.json，
+        // 外部工具看得到、用户看不到 → 100% 后像卡死，PIT-098）。
+        if (progress) progress(100, "esp");
         std::wstring espRoot;
         bool guidMatched = false;
         std::string blog;
@@ -682,6 +685,7 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
         if (erc != 0) {
             // ESP 并入半途失败可能把 stage 写坏（wimlib_overwrite 原地重写）→
             // 先 Probe：坏 → 删掉重报；好 → 照常交付（主镜像只是不含 ESP）。
+            if (progress) progress(99, "probe");
             WimEngine probe;
             std::wstring why;
             if (probe.Probe(mainDest, why) != 0) {
@@ -710,6 +714,7 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
         // 失败但**不回滚**主镜像（A 方案同款语义：主镜像可用，只是不含 ESP）。
         if (!stage) {
             // append 模式是原地写：确认既有文件没被半途 overwrite 写坏
+            if (progress) progress(99, "probe");
             WimEngine probe;
             std::wstring why;
             if (probe.Probe(req.dest, why) != 0) {
@@ -729,7 +734,10 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
 
     if (req.verify) {
         ProgressUpdate("backup", 99, "verify");
-        int vrc = engine.Verify(req.dest);
+        // 进入校验前先亮阶段名：Verify 里 open(CHECK_INTEGRITY) 是全文件扫描、
+        // 注册不了回调，没这行就又是几十秒静默（PIT-098）。
+        if (progress) progress(99, "verify");
+        int vrc = engine.Verify(req.dest, progress);
         if (vrc != 0) {
             ReleaseOpLock();
             ProgressDone("backup", "verify-failed");
@@ -743,8 +751,11 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
         LogInfo("backup verify passed");
     }
     // 即便没要求 --verify，也检查一下镜像是否"写入完成"（防止中断留下半个文件，
-    // 被当成有效镜像去还原 → rc=84 黑屏，PIT-057）
+    // 被当成有效镜像去还原 → rc=84 黑屏，PIT-057）。
+    // Probe 用 CHECK_INTEGRITY 打开 = 全文件哈希扫描，大镜像几十秒且**没有回调**
+    // —— 必须先亮阶段名，否则 100% 后状态栏冻在上一阶段像卡死（PIT-098）。
     {
+        if (progress) progress(99, "probe");
         WimEngine probe;
         std::wstring why;
         if (probe.Probe(req.dest, why) != 0) {
