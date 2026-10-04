@@ -46,6 +46,9 @@ struct DiskHealth {
     bool smartKnown = false;            // 是否真的取到 SMART / 健康日志
     bool isNvme = false;                // true = 数据来自 NVMe 日志页（否则 ATA SMART）
     bool failing = false;               // ATA：驱动器自报"即将故障"（SMART RETURN STATUS）
+    bool failingKnown = false;          // ATA：上述结论是否可信（回读 CL/CH 为 0x4F/0xC2 或 0xF4/0x2C）
+    unsigned char srCl = 0;             // ATA：SMART RETURN STATUS 回读的 Cylinder Low（排障/取证用）
+    unsigned char srCh = 0;             // ATA：SMART RETURN STATUS 回读的 Cylinder High
     uint64_t reallocatedSectors = 0;    // ATA 属性 5   重映射（已用备用扇区顶替）
     uint64_t pendingSectors = 0;        // ATA 属性 197 待定（读失败，等待重映射）
     uint64_t uncorrectableSectors = 0;  // ATA 属性 198 无法纠正

@@ -186,6 +186,43 @@ bool WriteRestoreLog(wchar_t letter, const RestoreTask& t, std::string& log) {
     return true;
 }
 
+// 清掉所有固定盘/可移动盘**根目录**上的旧契约（用户 2026-10-04 规格：只留唯一
+// 一份）。背景：救援层 init 会挑"第一个发现 _zjresy 的分区"；别处残留（拷日志、
+// 旧测试）可能把目标指错（参照机日志实证 /dev/sda1 与契约矛盾）。不碰
+// <盘>\ZJRESTORE\（部署目录）与软件目录（写新契约会覆盖副契约）。
+int CleanupStrayContracts(std::string& log) {
+    int n = 0;
+    DWORD mask = GetLogicalDrives();
+    for (wchar_t c = L'A'; c <= L'Z'; ++c) {
+        if (!(mask & (1u << (c - L'A'))))
+            continue;
+        wchar_t root[4] = {c, L':', L'\\', 0};
+        DWORD t = GetDriveTypeW(root);
+        if (t != DRIVE_FIXED && t != DRIVE_REMOVABLE)
+            continue;
+        WIN32_FIND_DATAW fd = {};
+        HANDLE h = FindFirstFileW(
+            (std::wstring(root) + L"_zjresy*.log").c_str(), &fd);
+        if (h != INVALID_HANDLE_VALUE) {
+            do {
+                std::wstring p = std::wstring(root) + fd.cFileName;
+                SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_NORMAL);
+                if (DeleteFileW(p.c_str()))
+                    ++n;
+            } while (FindNextFileW(h, &fd));
+            FindClose(h);
+        }
+        for (const wchar_t* nm : {L"restore-task.conf", L"restore-task.json"}) {
+            std::wstring p = std::wstring(root) + nm;
+            SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_NORMAL);
+            if (DeleteFileW(p.c_str()))
+                ++n;
+        }
+    }
+    log += "stray contracts cleaned: " + std::to_string(n) + "\n";
+    return n;
+}
+
 std::string TaskConfGet(const std::string& confText, const std::string& key) {
     const std::string want = key + "=";
     size_t pos = 0;

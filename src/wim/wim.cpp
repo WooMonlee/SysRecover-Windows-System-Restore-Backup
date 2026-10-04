@@ -302,10 +302,13 @@ int WimEngine::Verify(const std::wstring& imagePath, ProgressFn progress) {
     return wimlib_verify_wim(h.w, 0);
 }
 
-// 还原暂存前的可用性检查：拒绝"写入未完成"（WIM_HDR_FLAG_WRITE_IN_PROGRESS，
+// 可用性快检（秒级）：拒绝"写入未完成"（WIM_HDR_FLAG_WRITE_IN_PROGRESS，
 // 上一次备份中途退出/崩溃会留下它）或空镜像，避免把坏镜像暂存进还原任务、
 // 重启后 Linux 侧 apply rc=84（WIM_IS_INCOMPLETE）→ 目标分区被格式化却没装上
 // 系统 → 开机黑屏（PIT-057）。
+// ⚠️ PIT-106（2026-10-03）：**不做全文件校验** —— PIT-101 曾把 wimlib_verify_wim
+// 并进这里，结果还原前的"测试镜像"对大镜像要扫十几分钟，用户无法忍受。
+// 全量校验只保留给显式入口：`--verify` / `verify` 命令（WimEngine::Verify）。
 int WimEngine::Probe(const std::wstring& imagePath, std::wstring& why) {
     why.clear();
     if (!inited_) {
@@ -314,8 +317,7 @@ int WimEngine::Probe(const std::wstring& imagePath, std::wstring& why) {
     }
     WimHandle h;
     WIMStruct* raw = nullptr;
-    int rc = wimlib_open_wim(imagePath.c_str(),
-                             WIMLIB_OPEN_FLAG_CHECK_INTEGRITY, &raw);
+    int rc = wimlib_open_wim(imagePath.c_str(), 0, &raw);
     if (rc != 0) {
         why = ErrorString(rc);
         return rc;

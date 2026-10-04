@@ -11,12 +11,14 @@
 #include "gui/imgsearch.h"
 #include "app/ops.h"
 #include "app/safety.h"
+#include "app/selfdiag.h"
 #include "boot/bcd.h"
 #include "boot/grub.h"
 #include "boot/uefi.h"
 #include "common/cpucap.h"
 #include "common/logger.h"
 #include "common/process.h"
+#include "common/relocate.h"
 #include "common/sysinfo.h"
 #include "common/progress.h"
 #include "disk/disk.h"
@@ -150,11 +152,16 @@ CDuiString CMainForm::GetSkinFile()  {
 LPCTSTR CMainForm::GetWindowClassName() const { return _T("SysRecoverUI"); }
 
 void CMainForm::InitWindow() {
-    std::wstring exeDir = ExeDir();
-    std::wstring logsDir = exeDir + L"\\logs";
+    // 日志根（PIT-104/105）：一般=程序目录；软件在系统盘时=<数据盘>\ZJRESTORE
+    //（还原/重装系统盘后日志仍留存）。
+    std::wstring logsDir = sysrecover::LogBaseDir() + L"\\logs";
     CreateDirectoryW(logsDir.c_str(), nullptr);
     LogInit(logsDir);
     ProgressInit(logsDir);
+    // 自诊断与痕迹收集（用户 2026-10-03 规格）：启动即把 diag.txt/list.txt 写进 logs，
+    // 并收集各盘上我们留下的部署文件 —— 用户排错只需发 logs 文件夹。
+    sysrecover::WriteDiagFiles(logsDir);
+    sysrecover::CollectDeployArtifacts(logsDir + L"\\collected", 0);
     LogInfo("GUI InitWindow");
     // 支持把 .esd/.wim 直接拖进窗口（第一步的输入框）。原生 EDIT 子窗口由
     // CSkinEditUI 转投到这里（见 ui_skin.cpp::EnsureDropTarget），窗口空白处
@@ -188,6 +195,8 @@ void CMainForm::InitWindow() {
         ::SendMessage(m_tipHwnd, TTM_ADDTOOL, 0, (LPARAM)&m_tipInfo);
         ::SendMessage(m_tipHwnd, TTM_SETMAXTIPWIDTH, 0, 300);
     }
+    // 救援层失败回执检查（用户 2026-10-04 规格 2）：异步（等窗口完全建好再弹）
+    ::PostMessage(m_hWnd, WM_CHECK_RESCUE, 0, 0);
 }
 
 // ────────────────── HandleMessage（worker 线程安全回调） ──────────────────
@@ -324,6 +333,12 @@ LRESULT CMainForm::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
     if (msg == WM_TASK_COMPLETE) {
         OnTaskComplete((int)wParam);
         return 0;
+    }
+    if (msg == WM_SUPPORT_DONE) {
+        OnSupportDone(reinterpret_cast<sysrecover::SupportBundle*>(lParam));
+    }
+    if (msg == WM_CHECK_RESCUE) {
+        ShowRescueFailureNotice();
     }
     if (msg == WM_SR_QUERY_BUSY) {
         // 新实例问「你在忙吗」——忙则不让它关掉本进程（见 instance_dlg.cpp）。
@@ -471,11 +486,104 @@ void CMainForm::OnTaskComplete(int rc) {
         // （我们只是没有自动重启而已）。所以明确写"重启后即可进入"。
         SetStatus(Tr(L"还原完成（用时 ") + ElapsedText() + Tr(L"）"));
         if (!IsSilent())
-            MessageBoxW(m_hWnd,
-                        (Tr(L"系统还原已完成，用时 ") + ElapsedText() +
-                         Tr(L"。\n重启后即可进入恢复的系统。"))
-                            .c_str(),
-                        Tr(L"还原成功"), MB_OK | MB_ICONINFORMATION);
+        MessageBoxW(m_hWnd,
+                    (Tr(L"系统还原已完成，用时 ") + ElapsedText() +
+                     Tr(L"。\n重启后即可进入恢复的系统。"))
+                        .c_str(),
+                    Tr(L"还原成功"), MB_OK | MB_ICONINFORMATION);
+    }
+}
+
+// ── 「日志」按钮：一键取证（支持包） ─────────────────────────────────────
+// 用户规格（2026-10-03）：把"让用户做的事"全部自动化 —— 收集各盘日志 + 抓
+// explorer 转储 + 导出事件日志 → 打包到桌面；结果框里再提供"重启进入安全模式"。
+void CMainForm::ExportSupportFlow() {
+    if (m_busy)
+        return;
+    m_busy = true;
+    m_lastStage = Tr(L"正在收集日志与诊断信息…");
+    SetStatus(m_lastStage);
+    UpdateMainAction();
+    if (m_worker.joinable())
+        m_worker.join();
+    m_worker = std::thread([this] {
+        auto* r = new sysrecover::SupportBundle(
+            sysrecover::BuildSupportBundle(std::wstring()));
+        ::PostMessage(m_hWnd, WM_SUPPORT_DONE, 0, (LPARAM)r);
+    });
+}
+
+void CMainForm::OnSupportDone(sysrecover::SupportBundle* rp) {
+    sysrecover::SupportBundle r = rp ? *rp : sysrecover::SupportBundle();
+    delete rp;
+    if (m_worker.joinable())
+        m_worker.join();
+    m_busy = false;
+    UpdateMainAction();
+    if (r.zipPath.empty()) {
+        std::wstring msg = Tr(L"导出诊断包失败：") + r.error;
+        SetStatus(msg);
+        MessageBoxW(m_hWnd, msg.c_str(), Tr(L"日志"), MB_OK | MB_ICONERROR);
+        return;
+    }
+    size_t pos = r.zipPath.find_last_of(L'\\');
+    std::wstring file =
+        pos == std::wstring::npos ? r.zipPath : r.zipPath.substr(pos + 1);
+    SetStatus(Tr(L"诊断包已导出：") + file);
+    LogInfo("support bundle exported: " + W2U(r.zipPath) + " (dumps=" +
+            std::to_string(r.dumps) + ", events=" + std::to_string(r.eventFiles) +
+            ")");
+    // ⚠️ CConfirmDlg 只显示正文**前 3 行**（PIT-093）且单行有宽度上限——
+    // 文案必须压成 3 行短句；文件名靠「完成」后的资源管理器选中来展示。
+    bool safe = ::GetSystemMetrics(SM_CLEANBOOT) != 0;
+    std::wstring msg = std::wstring(Tr(L"诊断包已导出到桌面。\n")) +
+                       Tr(L"请把这个文件发给技术支持；\n");
+    int choice;
+    if (safe) {
+        msg += Tr(L"当前在安全模式，是否退出并重启？");
+        choice = CConfirmDlg::Ask2(m_hWnd, Tr(L"日志"), msg, Tr(L"完成"),
+                                   Tr(L"退出安全模式并重启"),
+                                   /*defaultIsRight=*/false);
+    } else {
+        msg += Tr(L"是否重启进安全模式再测一次？");
+        choice = CConfirmDlg::Ask2(m_hWnd, Tr(L"日志"), msg, Tr(L"完成"),
+                                   Tr(L"重启进安全模式再测"),
+                                   /*defaultIsRight=*/false);
+    }
+    if (choice == 1) {
+        std::string log;
+        bool ok = sysrecover::BcdSetSafeBoot(!safe, log);
+        LogInfo(std::string("safe boot toggle: ") + log);
+        if (!ok) {
+            MessageBoxW(m_hWnd, (Tr(L"安全模式设置失败：") + U2W(log)).c_str(),
+                        Tr(L"日志"), MB_OK | MB_ICONERROR);
+        } else {
+            RebootNow();
+        }
+    } else {
+        // 「完成」：在资源管理器里选中刚导出的包，方便用户直接拖进聊天窗口。
+        std::wstring args = L"/select,\"" + r.zipPath + L"\"";
+        ::ShellExecuteW(nullptr, L"open", L"explorer.exe", args.c_str(), nullptr,
+                        SW_SHOWNORMAL);
+    }
+}
+
+// 启动检查：救援层失败回执（黑匣子，用户 2026-10-04 规格 2）。任何失败都要
+// "开机即报"，而不是让用户回忆/录像。回执由救援层写到每个分区根/ESP，启动
+// 收集时已收进 logs\collected；同一回执只提示一次（去重在 CheckLastRescueFailure）。
+void CMainForm::ShowRescueFailureNotice() {
+    std::wstring notice = sysrecover::CheckLastRescueFailure();
+    if (notice.empty())
+        return;
+    size_t nl = notice.find(L'\n');
+    SetStatus(nl == std::wstring::npos ? notice : notice.substr(0, nl));
+    int choice = CConfirmDlg::Ask2(m_hWnd, Tr(L"还原结果"), notice,
+                                   Tr(L"知道了"), Tr(L"打开日志文件夹"),
+                                   /*defaultIsRight=*/false);
+    if (choice == 1) {
+        std::wstring dir = sysrecover::LogBaseDir() + L"\\logs\\collected";
+        ::ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr, nullptr,
+                        SW_SHOWNORMAL);
     }
 }
 
@@ -640,6 +748,8 @@ void CMainForm::Notify(TNotifyUI& msg) {
             LogInfo(std::string("GUI remove boot layer: ") + log);
         } else if (name == _T("BootMenuBtn")) {
             ToggleBootMenu();
+        } else if (name == _T("LogBtn")) {
+            ExportSupportFlow();
         } else if (name == _T("SiteLink")) {
             // 右下角「讨论」链接 → 用系统默认浏览器打开。
             // （2026-09-23 曾临时改成弹 BitLocker 演示框，用户确认文案后已改回。）
@@ -1480,6 +1590,7 @@ void CMainForm::ApplyModeUi() {
         // 空出来的位置换成「限制CPU」下拉（见上方 Vis(CpuCapBox)）；还原模式反过来。
         Vis(_T("RepairBootBtn"),false);
         Vis(_T("BootMenuBtn"),  true);
+        Vis(_T("LogBtn"),       false);  // 「日志」按钮是还原模式专属（用户 2026-10-03 规格）
         Text(_T("PartTitle"),   Tr(L"备份源分区"));
         Text(_T("PartHint"),    Tr(L"选择要备份为镜像的源分区（移动盘已隐藏）"));
         // 第三步右侧：备份模式 = 静默模式 + CPU 下拉；引导按钮两模式共用同一位置（XML 定）。
@@ -1506,10 +1617,14 @@ void CMainForm::ApplyModeUi() {
         Vis(_T("CpuCapBox"),    false);
         Vis(_T("RepairBootBtn"),true);
         Vis(_T("BootMenuBtn"),  true);
+        Vis(_T("LogBtn"),       true);
         Text(_T("PartTitle"),   Tr(L"系统安装位置"));
         Text(_T("PartHint"),    Tr(L"选择要安装恢复镜像的目标分区（移动盘已隐藏）"));
-        // 还原模式几何（切回时必须复位第三步右侧那三个；与 XML 默认一致）
-        Pos(_T("Silent"),        420, 302, 520, 326);
+        // 还原模式几何（切回时必须复位第三步右侧那几个）。2026-10-03 用户规格：
+        // 「日志」按钮插在 静默模式 与 清除引导 之间 → 整组左移给按钮腾位：
+        //   静默 360..460 / 日志 466..524 / 清除引导 530..612 / 菜单 618..706。
+        Pos(_T("Silent"),        360, 302, 460, 326);
+        Pos(_T("LogBtn"),        466, 296, 524, 329);
         Pos(_T("FormatLabel"),   350, 302, 388, 326);
         Pos(_T("FormatBox"),     388, 296, 510, 329);
     }
@@ -1593,6 +1708,7 @@ void CMainForm::RebootNow() {
     // 不用 shutdown.exe：带 /t 时它会弹「Windows 将在一分钟后关闭」对话框
     // （用户要求关机前不要再有任何提示）。改用 ExitWindowsEx 直接触发重启，
     // 需先启用 SE_SHUTDOWN_NAME 特权（管理员进程本就有）。
+    // R4（用户 2026-10-04）：两条路都**记返回码**——"说重启却没动"必须有账可查。
     HANDLE hToken = nullptr;
     if (::OpenProcessToken(::GetCurrentProcess(),
                            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
@@ -1601,9 +1717,20 @@ void CMainForm::RebootNow() {
         if (::LookupPrivilegeValueW(nullptr, SE_SHUTDOWN_NAME,
                                     &tp.Privileges[0].Luid)) {
             tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-            ::AdjustTokenPrivileges(hToken, FALSE, &tp, 0, nullptr, nullptr);
+            ::SetLastError(0);
+            if (!::AdjustTokenPrivileges(hToken, FALSE, &tp, 0, nullptr,
+                                         nullptr) ||
+                ::GetLastError() == ERROR_NOT_ALL_ASSIGNED)
+                LogWarn("reboot: enable SeShutdownPrivilege failed err=" +
+                        std::to_string(::GetLastError()));
+        } else {
+            LogWarn("reboot: LookupPrivilegeValue(SE_SHUTDOWN_NAME) failed err=" +
+                    std::to_string(::GetLastError()));
         }
         ::CloseHandle(hToken);
+    } else {
+        LogWarn("reboot: OpenProcessToken failed err=" +
+                std::to_string(::GetLastError()));
     }
     if (!::ExitWindowsEx(EWX_REBOOT | EWX_FORCEIFHUNG,
                          SHTDN_REASON_MAJOR_APPLICATION |
@@ -1611,8 +1738,13 @@ void CMainForm::RebootNow() {
                              SHTDN_REASON_FLAG_PLANNED)) {
         // 兜底：ExitWindowsEx 因会话/策略失败时，用 /t 0 立即重启
         // （无延迟则 shutdown.exe 不弹「一分钟后关闭」对话框）
+        DWORD e1 = ::GetLastError();
         std::string out;
-        RunProcess(SysToolPath(L"shutdown.exe"), L"/r /t 0", out);
+        int rc = RunProcess(SysToolPath(L"shutdown.exe"), L"/r /t 0", out);
+        LogWarn("reboot: ExitWindowsEx failed err=" + std::to_string(e1) +
+                "; shutdown.exe rc=" + std::to_string(rc) + " out=" + out);
+    } else {
+        LogInfo("reboot: ExitWindowsEx ok");
     }
 }
 

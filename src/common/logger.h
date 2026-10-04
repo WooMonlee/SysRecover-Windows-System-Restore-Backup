@@ -9,5 +9,8 @@ void LogInit(const std::wstring& logDir);
 void LogInfo(const std::string& msg);
 void LogWarn(const std::string& msg);
 void LogError(const std::string& msg);
+// 只写日志文件、不回显控制台（给"进 LOG 备查"的冗长输出用，如启动盘表；
+// 避免污染 CLI 的 stdout/脚本解析）。
+void LogFileInfo(const std::string& msg);
 
 }  // namespace sysrecover

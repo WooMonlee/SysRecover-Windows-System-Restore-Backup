@@ -178,7 +178,7 @@ bcdedit /bootsequence {GUID}
 
 `NeedsInstall` 四项缺一不可：`ZJRESTORE 目录` + `<系统盘>\grldr.mbr` + `<系统盘>\menu.lst` + `BCD 条目存在`。
 
-**诊断日志与清理（PIT-058/059）**：日志写**软件目录** `<exeDir>\logs\`（conf 的 `software_dir=` 键；软件在目标盘/只读介质上时回退 `<数据盘>\ZJRESTORE`），**成功也保留**供日后排查。
+**诊断日志与清理（PIT-058/059/104）**：日志写**软件目录** `<exeDir>\logs\`（conf 的 `software_dir=` 键；软件在目标盘/只读介质上时回退 `<数据盘>\ZJRESTORE`），**成功也保留**供日后排查。程序在光盘/U盘上时**启动即询问是否整包复制到本地固定分区再运行**（CLI 自动、不询问；目的地=Windows 分区之外的第一顺序可写固定分区；见 PIT-104），搬迁后日志一律在**新程序目录**的 `logs\` 下 —— "所有日志在一个文件夹"。
 **还原成功后**：目标分区被格式化 → 目标盘上的救援文件 + 引导期日志 `zjrestore-boot.log` **自然消失**；Linux 侧只清旧版本遗留在数据盘根目录的引导文件（不碰软件目录日志/镜像）。**失败时**：引导期日志留在目标根（= 引导阶段没走完的信号），软件目录的日志用于排错。
 
 **条目存在性判定（唯一正确做法）**：`bcdedit /enum {GUID}`，看输出是否**回显该 GUID**（存在约 200 字节，不存在约 15 字节"没有匹配的对象"；**两者退出码都是 0**）。GUID 是 ASCII，不受编码影响。
@@ -254,7 +254,7 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 
 ## 10. 日志与错误
 
-级别：INFO/WARN/ERROR。双写判定：程序目录 `logs/` 为主；PE 只读介质才 fallback `%ProgramData%`。原子写入（`.tmp+rename`）。还原/备份日志同时满足：程序目录 `restore-YYYYMMDD.log` + 目标分区 `_zjresy*.log`。
+级别：INFO/WARN/ERROR。**日志根**（PIT-104/105）：一般 = **程序目录**；**软件装在系统盘时 = `<数据盘>\ZJRESTORE\`**（还原/重装系统盘后日志仍留存）。Windows 日志、救援回写、BCD 备份、`history.jsonl`、`crash\` dump、`diag --zip` 全部落在这一个 `logs\` 下（`LogBaseDir()`，`src/common/relocate.cpp`；`diag` 会打印 `log_dir=`）。**启动还会自动生成 `diag.txt`/`list.txt` 并收集部署痕迹到 `logs\collected\`（PIT-107）—— 用户排错只需发 logs 文件夹。**原子写入（`.tmp+rename`）。还原/备份日志同时满足：日志根 `logs\SysRecover-YYYYMMDD.log` + 目标分区 `_zjresy*.log`。
 
 ---
 
@@ -608,6 +608,105 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 
 - PIT-098 **备份 100% 后到完成弹窗之间是「静默期」：收官阶段只写 progress.json、不回调用户可见进度，GUI 状态栏冻在上一阶段**（2026-10-01 用户实测反馈）：非静默模式的完成弹窗本来就存在（`OnTaskComplete`），但用户在 100% 后等「很久」才弹出、状态栏一直停在「写入 100%」（只有"已用"时钟在走），怀疑是勾选了 ESP 备份。核实：① 主镜像 capture 到 100% 后**永远**还要跑 `Probe`（`wimlib_open_wim(CHECK_INTEGRITY)` = 全文件哈希扫描，**无回调**，大镜像几十秒），`--verify` 时另有 `engine.Verify`（同样无回调）—— 这才是静默期大头；② ESP 并入本身**有**进度（`Append` 传了 `progress`），但阶段名是 wimlib 的 `write`，看不出在做 ESP；③ `ProgressUpdate()` 只写 `progress.json`（外部工具看得到、用户看不到）；④ GUI 进度节流 `elapsed<100ms && pct<100` 会把 100% 后 100ms 内刚发出的阶段标记也吞掉。**修复**：① `ops.cpp::RunBackup` 收官各阶段补 `progress()` 回调（esp / verify / probe，含两处失败路径的 Probe）；② `WimEngine::Verify` 增加 `ProgressFn` 参数并注册回调，`ProgressThunk` 接 `WIMLIB_PROGRESS_MSG_VERIFY_STREAMS`（真实字节进度 + 速度/ETA）—— CLI `--verify` 与 `verify` 命令不再全程静默（`CmdVerify` 先手动 `ConsoleProgress(0,"verify")` 亮阶段名：open 扫描期注册不了回调）；③ `StageCn` 新增 esp/verify/probe → 中文（备份ESP / 校验镜像 / 完整性检查，前缀匹配兼容速度后缀）；④ 节流放行"阶段名变了"的首次上报（新成员 `m_lastStageRaw`，备份/还原两 worker 同款）。**顺手修**：`CmdBackup` 没设 `g_phase` → capture 期间 `ConsoleProgress` 把 `progress.json` 的 Phase 覆盖成 `idle`（补 `g_phase="backup"`）。✅ 2026-10-01（`make check` 31 用例/208 断言 + check-i18n **344 keys** + `make package` 双架构；`0.6.4`；GUI 100% 后状态栏依次显示 备份ESP→（校验镜像）→完整性检查 **待用户实测**）
 
+- PIT-099 **救援层日志永远停在第一次快照：`find_soft_dir` 的缓存被命令替换丢进子 shell，后续 `persist_log` 全部失败**（2026-10-02 客户日志取证定位，`0.6.8`）：客户报"Linux 还原后 explorer 卡"，但发回的两份 `zjrestore-debug.log` 都停在 `found image`、没有任何 apply 记录 —— 一度无法判断卡在哪一步。读代码发现：`persist_log` 用 `_m=$(find_soft_dir)` 取挂载点，而命令替换跑在**子 shell**，函数里写的 `SOFT_MNT` 缓存赋值就地丢失；可函数成功时**已经把软件分区挂在 `/tmp/zj_soft` 且不卸载** → 之后每次 `persist_log` 重扫分区，重新挂载同一分区到同一挂载点必然 busy 失败 → 返回 "software dir not found"。于是**只有第一次快照落盘**（正好停在 `found image`），apply/失败/成功全都写不进去。**修复**：`find_soft_dir` 改为在**当前 shell** 直接设置全局 `SOFT_MNT` 并 `return 0`（调用方不再用 `$(...)`），缓存真正生效；并对失效挂载加 `[ -d ... ]` 复核。**同批"诊断底座"**（0.6.8）：① 新增**日志实时镜像** `start/stop_log_mirror`（后台每 2s 把完整 log + `apply.out` + `apply_io.log` 镜像到软件目录，EXIT trap/重启前停掉）；② 目标准备与扫描全阶段 `timeout`（blkid 30s / dd 30s / mkntfs 300s / mount·ntfsfix 60s），超时落 `dmesg`；③ 修 `mode=` 骗人 bug：dir 回退时置 `APPLY_MODE=dir` + `APPLY_FALLBACK=1`，汇总行如实打印 `mode=… fallback=…`，并写 `WARN: DEGRADED RESTORE` + `zjrestore-DEGRADED.txt`；④ 失败路径统一 `say_dmesg`；⑤ apply 失败打印 wimlib 输出**尾部**（`[ERROR]` 在末尾）+ `rc_name` 解码（46=NTFS_3G / 59=SET_SECURITY / 72=WRITE…），回退日志记录实际挂载类型（ntfs3/fuse）；⑥ 新增**内核 cmdline 实验钩子**（`zjapply=block|dir|dirfuse`、`zjfs=ntfs3|fuse|auto`、`zjtarget=format|keep`，见 `bootfiles/alpine/init`）+ `build-debian-rescue.py` 的 `ZJ_RESCUE_APPLY_MODE/ZJ_RESCUE_OUT`（把默认模式注入**打包副本**、输出到不同文件名）——用于"强迫降级"印证实验，**不影响默认流程/产线包**；已产出 `tools/vmtest/base/initramfs-dir-ntfs3.cpio.gz`（一级）与 `initramfs-dir-fuse.cpio.gz`（二级），QEMU 演练两种模式全链 PASS（日志 `mode=dir fs=ntfs3|fuse`、`apply rc=0 fallback=0`、`RESTORE DONE`，软件目录落盘完整）。**回归**：`mk-drill.py` 现在在演练盘 sda3 预置 `ZJRESTORE/` 软件目录，QEMU 演练后可从盘上读出**完整** `ZJRESTORE/logs/zjrestore-debug.log`（含 `log mirror: on`、`apply rc=0 elapsed=… mode=block fallback=0`、`RESTORE DONE`）+ `zjrestore-apply.out`（wimlib 原文）；BIOS 端到端演练全链 PASS。✅ 2026-10-02（`make check` 31 用例/208 断言 + check-docs/i18n/widths 全过；`0.6.8`）
+
+- PIT-100 **SMART「即将故障」误报：`SmartReturnStatus` 读错寄存器（查了 [2]/[3]，应为 [3]/[4]）**（2026-10-02 客户实测反馈，`0.6.9`）：客户笔记本上「换了两块盘（含旧 SSD）都提示 SMART 阈值已超」，但第三方工具正常、只显示盘「清过零」。核实代码：ATA8-ACS 规定 SMART RETURN STATUS 的结果在 **Cylinder Low/High（`CurrentTaskFile[3]/[4]`）** —— 健康 = `0x4F/0xC2`、预测故障 = `0xF4/0x2C`；旧实现查的是 `[2]/[3]`（SectorNumber/CylinderLow）。在「控制器**不回填** CurrentTaskFile」的机器上，`[2]/[3]` 仍是请求时写的 `0x4F/0xC2` → **健康盘被判"阈值已超"**（部分控制器会回填/清零，所以本机 PIT-086 测试一直没暴露；本机现在实测 `st=unk srcl=0x00 srch=0x00`）。**修复**：按 `[3]`/`[4]` 判 OK/over，回读值既非 `0x4F/0xC2` 也非 `0xF4/0x2C` → 不下结论（`failingKnown=false`，fail-open）；`DiskHealth` 增加 `failingKnown/srCl/srCh`，`diag` 输出 `st=ok|over|unk` + 原始寄存器（现场一眼可证）。✅ 2026-10-02
+
+- PIT-101 **备份 100% 后静默十几分钟才弹完成框：`Probe` 用 `open(CHECK_INTEGRITY)` = 全文件扫描且注册不了进度回调**（2026-10-02 客户反馈收拢 + PIT-098 收尾，`0.6.10`）：客户 44G 备份「显示百分百后等 12 分 14 秒才弹出完成」。根因：写出后必做的 `WimEngine::Probe` 走 `wimlib_open_wim(WIMLIB_OPEN_FLAG_CHECK_INTEGRITY)` —— 打开阶段还没拿到 `WIMStruct`、注册不了回调，GUI/CLI 只能停在上一阶段。**修复**：`Probe` 改两步 —— ① 普通 `open`（快）查 `write_in_progress`/`image_count`（保留 PIT-057 的"半截镜像"友好报错）；② `wimlib_verify_wim` 做全文件校验，**带 `VERIFY_STREAMS` 真实字节进度**；`RunBackup` 里 `--verify` 与默认后置检查**合并成一次**（以前两者都跑 = 双倍全扫）。还原暂存前的 Probe 同样受益（「校验镜像」现在有百分比）。CLI 实测：写出后 `verify 0%→35%→100%`。✅ 2026-10-02。⚠️ **2026-10-03 PIT-106 已删除自动全量校验**（用户实测"全测一遍无法忍受"）：`Probe` 只做秒级快检，全量校验仅 `--verify`/`verify` 显式触发。
+
+- PIT-102 **降级（block 失败→目录写）默认关闭：实测会系统性篡改元数据，产出"能开机但语义不对"的系统**（2026-10-02 实验证据 + 用户裁定"做不到就直接报错"，`0.6.11`）：用**复刻客户布局**（GPT：MSR + **1GB ESP** + MSR + 目标分区 1200MB@偏移 1056MiB + 数据盘）在 QEMU 直启救援层，对含隐藏+系统/只读/ADS/显式 ACL/长名/junction 的测试镜像做三组对照：
+  · **block（产线）全保真**：创建时间=备份时刻、Hidden/System/ReadOnly 保留、ADS `myzone` 在、ACL 显式 Administrators+SYSTEM、短名 `LONGFI~1.DAT`、junction tag `0xa0000003`；
+  · **dir(ntfs3) 与 dir(FUSE) 全部丢失/篡改**：创建时间=还原时刻、Hidden/System/ReadOnly 丢失、ADS 丢失、**ACL 变 `Everyone 完全控制`**、8.3 短名丢失、junction 变 symlink（ntfs3）/普通文件（FUSE）。
+  · 同时证明**"非标布局"不是 block 失败的原因**：同一布局 block 全绿（mkntfs + hidden sectors + `apply rc=0 fallback=0` + ESP 子镜像恢复 + RESTORE DONE）。
+  **策略（最终，2026-10-02 调研后定稿）**：**彻底不提供降级方案** —— `block`（wimlib NTFS 卷模式经 libntfs-3g 直写）是唯一对用户开放的还原通道。同行方案对照：wimlib 官方 = `mkntfs` + `wimapply <wim> <idx> /dev/sdX`（NTFS 卷模式；目录模式明确写着"只在元数据不重要时用"）；Clonezilla/Rescuezilla = partclone/ntfsclone **块级**克隆；Windows 侧工具（DISM/WIMGAPI/傲梅/易数）= Win32 或自家驱动 —— **没有任何一家用"挂载目录逐文件写"还原 Windows 系统**（ntfs-3g 本身没问题，是"挂载目录写"这个通道没有 Windows 元数据概念）。故 `block` 失败即 **fail-closed**：报 rc/错误码 + `say_dmesg` + 完整日志落盘，提示改用 PE 就地还原；GUI/CLI **不提供**「允许降级」选项（0.6.12 曾短暂加入、0.6.13 移除）。`zjapply=dir|dirfuse`（内核 cmdline）仅保留为**实验室对照钩子**（复现 PIT-102 对比实验用，用户流程永远不可能走到）。另：`get_task/get_log` 取值统一去掉尾部 `\r`（防 CRLF 契约静默失配）。✅ 2026-10-02（`0.6.13`）
+
+- PIT-103 **版本混淆：客户"换了新版"实际仍在跑旧救援层（日志又被 PIT-099 截断）→ 救援层加"构建版本戳"**（2026-10-03，`0.6.14`）：2026-10-03 用户日志再次停在 `found image`，据此判定为**旧版**（0.6.8 修复 PIT-099 后日志不会截断）。典型原因：只换 exe 不换 `bootfiles/`（救援 initramfs 来自 exe 目录树）、或仍点旧文件夹/旧快捷方式。以往日志头只有内核版本，**无法区分 Windows 侧与救援层各自的版本**。**修复**：`build-debian-rescue.py` 构建时把 `src/common/version.h` 的 `SYSRECOVER_VERSION` 写进 initramfs（`/zjrescue-version`），`bootfiles/alpine/init` 启动即 `say "rescue build <ver>"` —— 以后任何救援日志一眼可判救援层版本；配合 `SysRecover.exe version`（GUI 标题栏同名）即可确认整包一致。✅ 2026-10-03
+
+- PIT-104 **运行目录搬迁：日志统一到「程序目录\logs」（用户 2026-10-03 规格，`0.6.15`）**：此前程序在光盘/写保护介质上时 **Windows 侧日志完全写不出**（logger "写失败静默忽略"），救援侧才回退 `<数据盘>\ZJRESTORE`，日志散落两三处、支持成本高。新规则（用户拍板）：
+  · 正常（固定盘 / PE 的 X:）→ 原地运行；日志/契约/救援回写全部在 `<程序目录>\logs\`（旧回退仅在"程序在还原目标盘"时保留）；
+  · **光盘 / U盘**（可写也弹）→ GUI 启动即询问（默认「复制并运行」、可「留在原处」）；**CLI 一律自动搬、不询问**；
+  · 目的地 = **装了 Windows 的分区之外的第一顺序可写固定分区**（系统在 C: 选 D:、在 D: 选 C:；PE 下用 `\Windows\System32\winload.exe` 探测、同样避开离线 Windows 分区，防止搬进将来会被格式化的还原目标）；只有系统分区时退回它，GUI 文案注明"还原系统盘时程序与日志会被覆盖"；
+  · 整包复制（跳过 `logs\`，目的地日志只增不减；覆盖前归零文件属性，PIT-067/068 教训）；复制完由原进程启动新副本（GUI 不等待、单实例互斥由副本接手；CLI 等待并透传退出码）；"盘符错乱找不到日志"不成立：**救援按分区扫描找 `software_dir`、不依赖盘符**（PIT-035/099）。
+  · 实现：`src/common/relocate.{h,cpp}`（目的地选择为纯逻辑 `SelectRelocateDrive`，单测 `relocate_drive_choice`）；GUI 入口 `main_win.cpp`（复用 `CConfirmDlg::Ask2`，owner=nullptr，启动早期、单实例检查之后）、CLI 入口 `main.cpp`（`InitI18n` 之后、命令分发之前）。✅ 2026-10-03（`make check` 32 用例/214 断言、i18n 360 keys、check-widths OK；**待真实光盘/U盘实测**）
+
+- PIT-105 **软件装在系统盘时日志会随系统盘一起被格式化 → 日志根改到数据盘**（2026-10-03 用户规格，`0.6.16`）：PIT-104 把日志统一到程序目录后暴露一个洞——程序装在 `C:\Program Files` 之类时，Windows 侧日志（`SysRecover-*.log`/`history.jsonl`/BCD 备份/`crash\` dump）全在 C:，而**还原/重装系统盘会格式化 C:** → 日志随程序一起消失（救援日志本来就会落 `D:\ZJRESTORE`，Windows 侧不会）。**修复**：新增 `LogBaseDir()`（`src/common/relocate.{h,cpp}`）——软件在**系统盘**上 → `<数据盘>\ZJRESTORE`（优先**不含 Windows** 的盘：PE 下避开离线 C:；优先 D:，其次第一块非系统固定盘；都不可写才退回程序目录）；其他位置 → 程序目录。GUI/CLI 的 `LogInit`/`ProgressInit`/`InstallCrashHandler`/`AppendHistory`/`diag --zip`/`history` 全部改走它，与救援层 `software_dir` 的既有回退（PIT-059）落在**同一个文件夹**；`diag` 新增 `log_dir=` 行。✅ 2026-10-03（`make check` 32 用例/214 断言；实测：程序放 C: 跑 CLI → 日志确实落 `D:\ZJRESTORE\logs`、C: 不产生 logs；**待"软件装系统盘 + 还原系统盘"实测**）
+
+- PIT-106 **自动"全量校验"太慢 → 只保留秒级快检；全量校验仅显式 `--verify`/`verify` 触发**（2026-10-03 用户实测反馈，`0.6.17`）：PIT-101 把 `wimlib_verify_wim`（**全文件扫描**）并进了 `WimEngine::Probe`，于是**每次还原暂存前**都要先把整个镜像扫一遍（20GB+ 要十几分钟），备份收尾默认也全扫。用户实测 0.6.13 后明确："正式操作之前的测试镜像时间太长……全部测试一遍无法忍受，删除这种长时间测试"。**修复**：`Probe` 回到**秒级快检**（普通打开 + `write_in_progress` + `image_count`）——PIT-057 的"半截镜像"防护保留；备份收尾默认同样只快检（阶段标记改 `probe`）；**全量校验只在用户显式要求时跑**：CLI `backup --verify` 与 `verify` 命令（`WimEngine::Verify`，带 `VERIFY_STREAMS` 进度）。**取舍**：数据级损坏但未置"写入未完成"标记的镜像不再被自动拦住（概率低；有疑虑时显式 `verify` 一次）。还原暂存前的检查从此是毫秒级，不再出现"点开始后干等十几分钟"。✅ 2026-10-03（`make check` 32 用例/214 断言；**待用户实测确认提速**）
+
+- PIT-107 **自诊断/痕迹收集全自动：启动即写 diag.txt/list.txt 到 logs、自动收集部署痕迹到 logs\collected（用户排错只管发 logs 文件夹）**（2026-10-03 用户规格，`0.6.18`）：此前让用户敲 `diag --zip`、`list`，还得满盘找我们留在盘根/`ZJRESTORE\` 的文件（grldr/menu.lst/_zjresy 日志/bootfix…），繁琐且容易漏。**修复**：新增 `src/app/selfdiag.{h,cpp}` ——
+  · `WriteDiagFiles(logsDir)`：GUI/CLI 启动即把 `diag.txt`（固件/Secure Boot/启动项/工具路径/`log_dir=`/SMART 原始值）与 `list.txt`（磁盘/分区整表）写进 logs；`diag`/`list` 命令保留（同源实现，开发用）。
+  · `CollectDeployArtifacts(dst, drive)`：启动扫所有固定盘、暂存完成后立即收目标盘——盘根 `grldr/grldr.mbr/menu.lst/restore-task.*/_zjresy*.log/zjrestore-boot.log` + `<盘>\ZJRESTORE\{bootfix,scripts,logs}` 子树（单文件 >32MB 只进清单）+ `ZJRESTORE-listing.txt` 整树清单 → `logs\collected\<盘>\`；覆盖时归零属性；**跳过等于日志根的那个 ZJRESTORE**（软件在系统盘时 = `<数据盘>\ZJRESTORE`，否则会把 logs 自己吞进去）。
+  · 踩坑：`logs\collected` 顶层必须先 `CreateDirectory`，否则 `CreateDirectoryW(...\collected\D)` 因父目录不存在而失败 → 收集**静默全废**（实测抓出）。
+  · 效果：用户排错只需发 **logs 文件夹**（+ 失败屏摄 / explorer 转储截图），`diag --zip` 不再需要用户敲。✅ 2026-10-03（`make check` 32 用例/214 断言；实测：盘根放 `zjrestore-boot.log`/`_zjresy*.log`/`ZJRESTORE\logs` → 启动自动收进 `logs\collected\D\` + 清单生成 + 日志行 `deploy artifacts collected: 4 file(s)`）
+
+- PIT-108 **客户磁盘结构复刻 + 结构自检 PASS：排除"分区结构"是幽灵卡死的原因**（2026-10-03 排查用；**无产品代码改动**）：客户机（Win10 19044.1319）Linux 块模式还原后 explorer 首启动卡死（"重启 explorer 就好、开机复发"），怀疑点之一是它非常规的 GPT 布局。做法与结论：
+  · 由 `list.txt` + 契约反推**精确到扇区**的布局：Netac 256G = ESP 1GiB **@LBA40** + MSR 16MiB + C: **@LBA2129960**(1090539520B)/497988199 扇区（C: 尾+1 正好 = 备份 GPT 起点 → 整盘 500118192 扇区）；数据盘 HKVSN 2T = D300G/E500G/F550G/G≈557.7G。
+  · 新增工具：`tools/vmtest/mk-customer-layout.py`（diskpart 建动态 VHD → `\\.\PhysicalDriveN` 直写手搓 GPT + mtools 造 ESP 镜像；只写非零块，VHD 不膨胀）、`tools/vmtest/prep-cust-disks.ps1`（C:/数据分区快格 NTFS；drill 盘再放 `_zjresy` 契约到 C: 根）、`tools/vmtest/run-cust-drill.ps1`（OVMF → ESP `startup.nsh` → 救援内核 → 全链断言）。
+  · **结果 6/6 PASS**：`found log (dev=/dev/sda3)` → `target from log location: /dev/sda3` → `mkntfs /dev/sda3 (start_lba=2129960)` → `hidden sectors = 2129960 (OK)` → `mode=block apply rc=0` → `esp restored (rc=0)` → `RESTORE DONE`（TCG 下 26s）→ **"结构导致还原异常"排除**（含 ESP@LBA40、C: 非 1MiB 对齐、C: 顶到备份 GPT 这些非常规点）。
+  · 产物（供 VM 复现第三方场景）：`tools/vmtest/base/custdisk0.vmdk`（系统盘：ESP 空 FAT32 + C: 空 NTFS，结构同客户）+ `custdata.vmdk`（D/E/F/G 四个空 NTFS）+ 对应 `.vhd`；drill 盘 = `custdrill.vhd`。
+  · 备注：同一 drill 有一次卡在内核 1.8s（宿主对刚重写过的 VHD 的瞬时 I/O 抢占），重跑即通过——与产品无关。
+
+- PIT-109 **「日志」按钮 + `support` 命令：一键支持包（各盘日志 + explorer 转储 + 事件日志 + 安全模式引导）**（2026-10-03 用户规格，`0.6.19`）：排错时要发的东西太散，把"让用户做的事"全部自动化：
+  · **GUI**：还原模式第三步新增「日志」按钮（静默模式与清除引导之间；静默模式左移到 x360 腾位），悬停提示"搜集还原日志与诊断信息并打包到桌面（含 explorer 转储、事件日志）"。点击后 worker 线程收集，完成后弹结果框：左「完成」（顺手用资源管理器选中刚导出的包）/ 右「重启进安全模式再测」（当前已在安全模式时右按钮变「退出安全模式并重启」）。⚠️ 结果框文案必须压成**3 行短句**（`CConfirmDlg` 只显示前 3 行，PIT-093；曾把安全模式问题拼在第 6 行导致整段没显示——`0.6.20` 修复）；按钮文字宽度上限：左 126px / 右 156px（GDI 实测「重启进安全模式再测」=126px 放得下，12 字版 168px 会裁）。
+  · **支持包内容**（`src/app/selfdiag.cpp::BuildSupportBundle`）：①当前日志目录递归（含 `collected`）②**所有固定盘** `<X>:\ZJRESTORE\logs`（覆盖"单文件/temp 运行、日志落数据盘"）③**explorer 进程转储**（`common/crash.cpp` 新公开 `WriteProcessMiniDump`，MiniDumpNormal|WithThreadInfo = 含全部线程栈、体积小）④**事件日志**文本（wevtutil：Application Hang/Error、System 存储错误、System 错误级；PE 无 wevtutil 自动跳过）⑤diag.txt/list.txt/version.json/bundle-info.txt → `SysRecover-logs-<时间>.zip`。默认输出到**桌面**（`SHGetFolderPathW` 自动尊重重定向的桌面路径，实测本机落到 `E:\我的下载\DESKTOP.INI\桌面\`）；`--out` 可指定。
+  · **安全模式**（`boot/bcd.cpp::BcdSetSafeBoot`）：`bcdedit /set {current} safeboot minimal` ⇄ `/deletevalue ...`；进入/退出两个方向都在，提示里带 BitLocker 警告（可能要恢复密钥）。注意 safeboot **持续有效**，必须靠按钮的第二方向退出（或用户 msconfig 取消）。
+  · **CLI**：`support [--out <zip>]`（PE/批处理/开发用）与 `help support`。
+  · ⚠️ **i18n 工具坑（本批实测）**：`src/app/selfdiag.cpp` 此前**不在** `tools/i18n-wrap.py` 的 `WRAP_FILES` 里 → `--skeleton` 扫不到它的词条，**还会把它们当死键从译文表删掉**（实测丢了 `ON (需签名引导)`、CA2023 警告两条）。已加入白名单；以后新增含 Tr 的源文件**必须同时加白名单**。
+  · 实测：CLI `support` 产出 1.31MB 包（logs=23 / dumps=2 / events=4）；GUI 点击冒烟全链通过（日志有 `support bundle exported`）。✅ 2026-10-03（`make check` 32 用例/214 断言、i18n 379 keys、check-widths OK；`make package` **0.6.19**）
+
+- PIT-110 **"暂存+重启"还原从不自动重启、还显示"还原完成"（元凶：`needReboot` 被无条件清零；自 ≤0.6.4 起就存在）**（2026-10-04 客户支持包日志定位，`0.6.21`）：客户 0.6.20 日志显示 `restore mode: staged reboot` + `restore staged, reboot to execute`，但 GUI 状态栏却是 **"还原完成（用时 00:01）"**、且**没有自动重启**（用户描述"点了开始后中途停止了"）。根因：`ops.cpp::StageRestoreImpl` 返回前一行 `if (needReboot) *needReboot = false;`（注释写"菜单项模式不重启"，但没有 `menuEntry` 条件）→ 暂存路径也被清成 false → GUI/CLI 走"就地完成"分支（弹"系统还原已完成…重启后即可进入恢复的系统"、**不调 `RebootNow()`**）。**0.6.4（已提交版）里就是同一行**，即所有"暂存+重启"还原实际都要用户**手动重启**；10-03 客户截图"还原完成（用时 01:04）"当时被误判成"就地还原"，实为暂存路径。**修复**：`if (menuEntry && needReboot) *needReboot = false;`（暂存保留 true ⇒ 提示"暂存完成（用时…），正在重启..." + `RebootNow()`，与 PIT-072 规格一致）。⚠️ 排查启示：`bool` 出参"默认由调用方初始化"时，被调方**无条件清零**等于废掉调用方默认值——此类语义建议显式命名（如 `outNeedReboot`）或改为枚举。✅ 2026-10-04（`make check` 32 用例/214 断言；`make package` **0.6.21**；**待真机复测自动重启**）
+
+- PIT-111 **救援层「黑匣子」：任何失败都必须留下文件 + 开机即报 + 收集后清理 + 日志总量上限**（2026-10-04 客户三盘机"脚本快速 rc=1、屏幕外零证据"的教训；用户 5 条规格，`0.6.22`→`0.6.23`）：0.6.20 在那台机上救援脚本 rc=1 退出，console 之外**没有任何文件证据**（软件目录找不到就全丢），只能靠录像逐帧分析。改造（按用户规格 1–5）：
+  · **探测表**（规格 1/2）：Windows 启动把盘/分区表写进主日志（`LogFileInfo("inventory: …")` —— 新增 `LogFileInfo` **只进文件不回显控制台**，避免污染 CLI stdout 与脚本解析）+ `collected\drive-map.txt`（盘符↔diskXpY/偏移/大小/serial 对照表，解决 PE 与正常系统盘符互相打架）；Linux 侧每个分区的 mount/open 结果进 `/tmp/zj-probe.txt` **且镜像进主日志**（`PROBE …` 行，init 与脚本共用）。
+  · **多面落盘**（规格 3）：`zjrestore-lite.sh` 黑匣子把 `ZJRESTORE-last.log`（完整日志）+ `ZJRESTORE-probe.txt` + `ZJRESTORE-status.txt`（回执：result/step/target/image/build）+ mkntfs/apply/esp 输出写到**每个可挂载分区根**（失败全量扫；成功只写软件目录 + ESP，**不碰还原后的目标盘**）；ESP 有 `\EFI\ZJRESTORE` 时写进其 `logs\`。软件目录找不到时**尽早认领兜底日志窝** `ZJRESTORE-logs\`（非目标分区、保持挂载、持续镜像 2s，防中途断电无日志）；`/tmp/zj-bb.done` 记录已写设备，init 在"脚本没来得及写盘"时调 `zjrestore-lite.sh zz-blackbox <reason>` 兜底（逻辑单源）。**修掉误导消息**：原来无条件打印 `no restore task -> shell`；现在按真实结果打印 `RESULT: restore FAILED (rc=…)` + 日志位置（脚本 rc≠0 = 任务找到了但脚本失败）。
+  · **目标校验防劫持**：采信"日志所在分区 = $1"前用契约 `target_part_offset` 校验设备实际偏移；不符（参照机曾出现 `target from log location: /dev/sda1`，被别处旧 `_zjresy` 劫持）→ 拒绝并回退 offset 精确匹配。镜像扫描加第二轮（3s 后重试，防枚举晚/瞬时挂载失败）。
+  · **失败回执 + 开机即报**（规格 2）：`selfdiag::CheckLastRescueFailure()` 扫 `logs\collected` 里 `result=FAILED` 的回执 → GUI 启动弹 3 行提示（失败步骤中文化/时间/版本/日志位置），左「知道了」右「打开日志文件夹」（`WM_APP+15`；GUI/CLI 共用去重标记 `logs\.last-rescue-status`，同一回执只报一次）；CLI 启动在 stderr 打同样提示。
+  · **收集后清理**（规格 4）：`support`/「日志」出包成功后 `CleanupStrayLogs()` 删各盘根黑匣子三件套 + `zjrestore-boot.log` + `ZJRESTORE-logs\` + 非活动 `<盘>\ZJRESTORE\logs\` + ESP `\EFI\ZJRESTORE\logs\*`（契约 `restore-task.*`/`_zjresy*` 与引导文件**不动**）。
+  · **总量上限**（规格 5，二次修订）：`logger.cpp::PruneBySize()` —— logs 目录（含 crash/collected，深度≤3）超 **32MB** 触发：**先删一周以上的旧日志**；仍超 32MB 则最旧优先删到 **8MB 以内**；当前活动日志永不删（文本日志一次运行仅数百 KB，8MB 足够多次运行）。
+  · **回归**：QEMU drill 成功路径（黑匣子进 ESP + 软件目录、`RESTORE DONE`、盘上 `ZJRESTORE-status.txt result=OK`）+ **造坏演练**（conf 改指向不存在的镜像）：`PROBE` 全表、`target … (offset verified)`、两轮扫镜像、`blackbox: log -> /dev/sda1|sda2|sda3`、init 打印 `RESULT: restore FAILED (rc=1)`，三个分区上均有 `ZJRESTORE-status.txt`（`result=FAILED step=image-not-found`）；Windows 侧合成回执冒烟（第一次提示/第二次静默/标记正确）。`make check` 32 用例/214 断言 + i18n **393** keys + check-docs PASS。✅ 2026-10-04（`0.6.22`–`0.6.24`；**待真机失败场景复测**）
+
+- PIT-112 **三盘客户机全真复刻（MA 0902 2T MBR + ST1000 1T MBR(扩展分区) + KIOXIA 250G GPT）：端到端还原 6/6 PASS；复刻过程抓出并修掉两个真问题**（2026-10-04，`0.6.25`）：
+  · **工具**：`tools/vmtest/mk-3disk-layout.py`（diskpart 动态 VHD + 手写 MBR/EBR/GPT + mtools 造 ESP；参数全取自支持包 list.txt/契约，精确到 LBA：目标 @2129960=1090539520B）+ `prep-3disk.ps1`（格式化 + 投放客户**原文契约**与 F: 的 `九转还原/` 软件目录+镜像）+ `run-3disk.ps1`（QEMU q35：ST1000=sda、MA=sdb、KIOXIA=nvme0n1；`ide-hd` 带 model/serial 复刻品牌；6 项断言；检测到"救援 shell"提前收工）。产物 `base/3disk/*.vhd`（动态 VHD，各 ~250MB）。
+  · **验证**：0.6.25 全链 PASS（`found log nvme0n1p3` → `offset verified` → 镜像在 F: 找到 → `apply rc=0` → `esp restored` → `RESTORE DONE`）；0.6.20 的原失败**不可复现**（与"旧版/环境瞬态"一致，但下次任何复发都有黑匣子证据）；扩展分区逻辑盘在 Linux 下是 `sda5/sda6`、扩展容器有 `sda2` 节点——正好解释客户 list.txt 的绿色幽灵 `Part 0` 与屏幕上的 `sda2` 扫描行。
+  · **修复 1（开发期回归，自捕）**：新加的"目标 offset 校验"最初只用 `blkid -s PART_ENTRY_OFFSET` + MBR 兜底 → **GPT 盘返回 0**（blkid 空、保护性 MBR 读出来是 1/0）→ 会把**正确目标**当 stale log 拒掉。改为**首选 sysfs `/sys/class/block/<p>/start`**（GPT/MBR/EBR 逻辑盘全准），blkid/MBR 仅兜底。教训：GPT 上任何"分区偏移"都不能依赖 MBR 结构。
+  · **修复 2（静默卡死）**：`bootfiles/alpine/init` 的 `mnt_dev` 没有 timeout（`zjrestore-lite.sh` 版有）→ 复刻首跑在某个挂载上**静默卡死 400s**（与客户"卡住"同类症状）。已给 init 全部 mount/blkid 加 `timeout 30/60`，bootfix 扫描加逐盘日志与 `bootfix scan done` 标记——挂载挂死从此变成一条 FAIL 记录而不是死机。
+  · ⚠️ 复刻机还实证："**给 Windows 手写 GPT 必须带保护性 MBR 的 `55AA` 签名**"（本脚本初版漏写 → Windows 认成 RAW；QEMU/Linux 不受影响）。
+  · 回归：`make check` 32 用例/214 断言 + check-docs/i18n PASS；BIOS 演练（`mk-drill.py`+`run-drill.ps1`）在新 initramfs 下通过（`RESTORE DONE` + 黑匣子进 ESP）。✅ 2026-10-04（`0.6.25`）
+
+- PIT-113 **真实镜像压测 + 小内存边界（三盘复刻环境，`0.6.25`/`0.6.26`）**（2026-10-04，用户要求"用我的本机备份镜像多测、刻意试小内存"）：
+  · **真镜像全链**：Win10 ESD（7.57GB 未压缩、无 ESP 子镜像）8G 内存**全程通过**（apply 438s）；Win11 WIM（18GB 文件 → **43.35GB 未压缩** + ESP 子镜像）8G 内存**全程通过**（apply **1486s**、`esp restored (rc=0)`、ESP 回执 `result=OK step=done`）。
+  · **小内存**：**512MB 无故障**（大 WIM 正常推进——PE 做不到这点）；**192MB 会 OOM**——wimlib 在 apply **最后阶段**（文件全写完、设安全描述符时）被内核 OOM 杀（rc=137，等于整盘白写）。
+  · **失败留证（实测）**：`apply FAILED rc=137` + OOM dmesg 原文 + **三块盘每个分区**的 `ZJRESTORE-status.txt`（`result=FAILED step=apply-failed`）+ F: 软件目录完整日志（含 mirror）——"小内存故障是否被记录" 的答案是**全面记录**。
+  · 新增**低内存预警**（`zjrestore-lite.sh`，`0.6.26`）：`MemTotal < 400MB` 时开机即打 `WARN: low memory … may be OOM-killed; increase VM RAM`，避免"整盘写完才失败还不知道原因"。
+  · 工具：`mk-3disk-layout.py` 支持 `ZJ_3DISK_IMAGE/ZJ_3DISK_IMGNAME/ZJ_3DISK_ESP_INDEX` 换真实镜像；`run-3disk.ps1 -Mem/-Smp`；新增 `check-3disk.ps1`（挂载三盘打印回执与日志尾部，验收失败路径证据）。✅ 2026-10-04
+
+- PIT-114 **契约清场 + 部署校验 + 控制器清单 + 设备排序（用户 2026-10-04 A2/A5/A6/A9/A1 五条规格，`0.6.27`）**：
+  · **A2 契约清场（杜绝目标劫持）**：Windows 暂存写新契约前，`task.cpp::CleanupStrayContracts()` 清掉**所有固定盘/可移动盘根**上的 `_zjresy*.log` / `restore-task.conf|json`（只留即将写入的唯一一份；不碰 `<盘>\ZJRESTORE\` 与软件目录）；Linux `init::scan_for_log` 改为**优先采用"日志里 target_part_offset == 该分区 sysfs start"的那份**（多份时不再挑错），无匹配才回退第一份并 `WARN`。script 的 offset 校验保留为第二层。
+  · **A6 旧版救援混用杜绝**：BIOS/GRUB4DOS（`grub.cpp::CopyBootFiles`）与 UEFI/ESP（`uefi.cpp::InstallUefiBootEntry`）部署后**逐文件 CRC32 校验**（源 vs 落盘，不一致即部署失败）；两处均落**明文构建戳 `<盘>\ZJRESTORE\rescue-build.txt`**（= `SYSRECOVER_VERSION`；收集器会收进 `logs\collected`，现场一眼核对盘上救援版本）。
+  · **A5 控制器清单**：Linux 救援层开机打印 `storage/usb controllers (pci)`（读 `/sys/bus/pci` 的 vendor:device / class / 已绑定驱动，零新依赖）；Windows `diag` 增加 `pci-ctrl` 行 —— ⚠️ `Enum\PCI` 受 ACL 保护（**管理员也读不到**，实测），改走 `Control\Class\{SCSIAdapter,HDC,USB}` 读 DriverDesc/Service/MatchingDeviceId。以后"是不是缺/错驱动"可直接对照。
+  · **A9 U 盘/光盘可感知**：`list_parts`（init 与脚本）改为 **内置盘分区 → 可移动盘分区 → 无分区的可移动整盘（光盘/未分区 U 盘）** 顺序；probe 行加 `rem=0/1`；`find_esp_dev` 跳过可移动盘（U 盘上的 ESP 类型分区不再被当成目标机 ESP）；`scan_image` 命中时记录设备号+rem。**顺带修了一个真缺口**：此前 `list_parts` 只取"有分区的设备"，`sr0`/未分区 U 盘实际扫不到（"镜像可放光盘"在代码上并不成立）；现在它们排在最后但会被扫描。
+  · **A1 重试分级**：目标按 offset 匹配失败 → 3s 后重试一轮；镜像扫描第二轮 3s，**仅当出现过挂载失败**再第三轮 10s（`/tmp/zj_img.fail` 标记）——覆盖瞬时 I/O 错误恢复/设备晚到，避免空等。
+  · 回归：BIOS 演练（`SR: found log ... offset match 105906176` + PCI 清单 + `rem=0`）✓；三盘客户复刻 6/6 PASS（`offset match 1090539520`、PCI 列出 `nvme`/`ahci`）✓；Windows `diag` 实测输出 `pci-ctrl`（NVMe/SATA/USB）✓；`make check` 32 用例/214 断言 + check-docs/i18n PASS。
+  · **复刻验证"第2盘分区挂不上"假设（2026-10-04 追加）**：`qemu-io` 把 ST1000 的 F: 分区引导扇区清零模拟"分区挂不上" → 0.6.27 完整留证：`mount FAILED /dev/sdb5 ... NTFS signature is missing`（probe 含原文）、`status=FAILED step=image-not-found` 写满所有可挂载分区 + ESP、`fallback log home` 生效、init 打印真实结果——**同一故障在 0.6.20 只会剩看不见的屏幕行**。
+  · **复刻验证 A2 契约选择（2026-10-04 追加）**：目标根同时放 `_zjresy-fake.log`（offset 不符、字母序在前）+ 真契约 → init 仍选中真契约（`offset match 1090539520`、无 fallback 警告），全链 6/6 PASS（若挑错，offset=999999999 会直接 target-not-found，故具备判别力）。
+  · **R4**（`0.6.28`）：GUI `RebootNow` 的 `ExitWindowsEx` 与 `shutdown.exe` 两条路都**记返回码**（含特权启用/`GetLastError`）——"说重启却没动"从此有账可查。✅ 2026-10-04（`0.6.27`/`0.6.28`）
+
+- PIT-115 **证据覆盖审计：补上"暂存成功但救援从未执行"的静默空洞（待执行标记 + 启动比对）**（2026-10-05，`0.6.29`）：审计整个失败面后发现**唯一可操作的洞**——"引导失败/开机断电导致救援层从未跑过"时，磁盘上没有任何 `ZJRESTORE-status.txt`，启动检查自然什么都不报（用户视角："点了开始，重启后什么都没发生"）。修复：① **暂存+重启**路径写 `<日志根>\logs\pending-restore.txt`（time/target/image；**菜单安装不写**，避免常驻菜单误报）；② 启动检查改为"最新回执时间（**含 OK**）vs 标记时间"：标记更新（或压根没回执）→ 提示"上次系统还原任务未执行（可能未进入恢复环境）"+ 删除标记（只报一次）；有更新回执 → 走原有 FAILED/成功逻辑并删标记。合成用例实测：T1（标记最新 → "未执行"提示 + 标记删除）、T2（标记旧 + FAILED 新 → 正确走失败回执）。**单测（`0.6.33`）**：判定逻辑抽到 `src/common/rescue_decision.h`（纯函数 `DecideRescueReport`），`rescue_report_decision` 9 场景断言——**单测当场抓出一处误判**：只填 FAILED 时间、未填 `latestStatusTime` 时会把 FAILED 当"无回执"→ 已改为取两者最大值（对不完整输入稳健）；顺带把该头文件加进 `TEST_BIN` 依赖（此前改 `.h` 不触发重编，测试跑的是旧二进制）。`make check` **33 用例/223 断言** + i18n **396** 键全绿。✅ 2026-10-05（`0.6.33`）
+
+- PIT-116 **"屏幕也是证据面"：无文件可写 / 内核级挂死的表达 + 失败日志尾部重打 + 超时标记（用户 2026-10-05 规格，`0.6.30`/`0.6.31`）**：
+  · `mnt_dev`（init + 脚本）每次尝试前打印 `mnt <dev>` —— 挂死时最后一屏就是"卡在哪个设备"（无文件可写时的唯一线索）。
+  · `timeout 60` 命中（rc=124）时把 `TIMEOUT(60s:ntfs3/ntfs-3g)` 写进 `/tmp/zjmnt.err` → 进 probe 行：区分"挂死超时"与"普通失败"。
+  · 失败时 init 把 `ZJRESTORE-last.log` 的**最后 20 行重打到屏幕**（先快照再打头，避免头部被 tail 自读）；**全盘不可写**时打 `===== PHOTOGRAPH THIS SCREEN =====` 横幅 + 日志尾 25 行 + 内核消息 20 行。
+  · 脚本 `bb_final` 失败分支补 `say_dmesg`：内核 I/O 错误 / ata / nvme reset 进黑匣子日志（"任何失败都要能从记录中评估"）。
+  · 局限（诚实记录）：真正的内核冻结/断电无法"事后打印"（只能靠最后一条 `mnt` 标记定位）；`timeout` 对 **D 状态**（不可中断 I/O）挂载杀不动——同样靠 `mnt` 标记定位，不静默。✅ 2026-10-05（`0.6.30`/`0.6.31`；QEMU 失败演练实测 `---- log tail (last 20 lines) ----` 块与 `RESULT: restore FAILED` 正常、黑匣子回执不变）
+
+- PIT-117 **支持包带屏幕截图 + diag 补整机/BIOS/环境变量 + 救援层控制台文本转储；日志上限提到 64MB/16MB（用户 2026-10-05 规格，`0.6.32`）**：
+  · Windows：`support`/「日志」出包时 GDI `BitBlt` 抓桌面 → `logs\screens\screen-<时间>.bmp`（24bpp BMP，1080p 约 6MB；零依赖、PE 可用；随 logs 递归进包）；`diag` 新增 `bios`（整机/主板厂商型号、BIOS 版本/日期，读注册表）、`env`（PROCESSOR_ARCHITECTURE/SystemRoot/windir/TEMP）与 `locale` 行。
+  · 救援层：开机打 `dmi:`（sys_vendor/product_name/board_name/bios 版本日期）与 `cmdline:`；失败时 `dump_console` 读 `/dev/vcs*`（VT 字符矩阵 → tr 去 NUL + fold 折行）把**屏幕文本**写进黑匣子日志（QEMU 实测抓到 52 行真实内核消息；生产 cmdline 带 `tty0` 必有内容）。
+  · 日志上限（第三次修订）：`>64MB` 触发 → 先删一周前 → 仍超则删到 **16MB** 以内（加截图/更多文本后仍余量充足）。
+  · ⚠️ 构建坑：CLI 链接需补 `-lgdi32`（截屏用到 GDI；GUI 早就链接了）。
+  · 回归：支持包实测含 `logs/screens/screen-*.bmp`（6.0MB）+ diag 的 `bios`/`env` 行；三盘失败演练含 `console text (/dev/vcs)` 且内容非空。✅ 2026-10-05（`0.6.32`）
+
 ---
 
 ## 14. License 合规（SBOM，随版本更新）
@@ -679,18 +778,19 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 
 **两个模式的几何：第一/二步与第三步主按钮完全一致（切换时不跳），差异只在第三步右侧。** 别把两张老图搞混：`界面1.png` 是**备份模式**（"备份源分区"/"开始备份系统"），`old1.png` 才是还原模式。实测老图备份模式的内容整体比还原模式低 7px、第一步卡片高 7px —— 但那会让模式切换时画面明显错位，**按用户要求统一成一套几何**（若日后要 1:1 复刻老图，原始实测值是：卡1 y66..149 / 卡2 y158..292 / 表头带 y201..231 / 分区下拉 y237..280 / 主按钮 y302..339）。
 
-| 第三步右侧（面板坐标，2026-09-17 收窄后实测） | 还原模式 | 备份模式 |
+| 第三步右侧（面板坐标，2026-09-17 收窄后实测；2026-10-03 加「日志」按钮） | 还原模式 | 备份模式 |
 |---|---|---|
-| 静默模式 | 勾选框 x420..433 + 文字 x438..494（面板） | 勾选框 x**250**.. + 文字（面板） |
+| 静默模式 | 勾选框起点 x**360**（文字到 460） | 勾选框 x**250**.. + 文字（面板） |
+| 日志（支持包，还原专属） | x466..524（悬停提示"搜集还原日志与诊断信息并打包到桌面"） | —（隐藏） |
 | 格式： | —（隐藏） | 标签 x350..388（**右对齐**）+ 下拉 x388..510 |
-| 清除引导项 / 生成启动菜单 | x530..612 / x618..706 | **同样显示**，位置相同 |
+| 清除引导项 / 生成安装菜单 | x530..612 / x618..706 | **同样显示**，位置相同 |
 
 - 两模式的「清除引导项 / 生成启动菜单」**都显示**（备份模式不是只剩一个主按钮）。
 - 主按钮初值两模式都是**灰色**：`UpdateMainAction()` 条件统一为 `!m_wimPath.empty() && m_selPart >= 0 && !m_busy`，选完第一、二步才转蓝。
 - `FormatBox` 的条目是 XML 静态写的（`.esd(慢速小体积)` / `.wim(正常大小)` / `.wim(高速大体积)`），首次显示前没有选中项 → 收起框空白，需 `SelectItem(0)` 补默认值。
 - **标签与下拉要贴紧**：`CTextItemUI` 内部文字有固定左缩进 `kItemPadX`（`ui_skin.cpp`，2026-09-17 由 10 调到 6）；`格式：` 用 `align="right"` 让文字右边界顶到下拉左边界（x388），间隔只剩下拉内部的 6px。
 - 窗口按钮（两模式相同）：最小化/最大化/关闭在 x618..658 / 659..699 / 700..740，图标均 y23..32；最大化方框实心 9×9。
-- 第三步右侧三个控件的 `SetPos` 必须在**两个分支里都写**（切回还原模式要复位），见 `CMainForm::ApplyModeUi()`。
+- 第三步右侧控件的 `SetPos` 必须在**两个分支里都写**（切回还原模式要复位），见 `CMainForm::ApplyModeUi()`；「日志」按钮为还原模式专属（备份模式 `Vis=false`）。
 - 第一步备注行的横线（"镜像说明/备份备注"右侧）长度与上方输入框**等宽**：x251..710。
 
 **验收环**：`tools/ui/shot.ps1`（启动 → 抓窗口 → PNG；**2026-09-26 改用 `PrintWindow` 抓窗口本体**——原 `CopyFromScreen` 抓的是屏幕，`SetForegroundWindow` 被前台锁定规则拒绝时抓到的是桌面/控制台；抓空回退屏幕方式；并置 `HWND_TOPMOST`。另：`dist\` 根 exe 是 x86 启动器，x64 上自举后父进程退出[ExitCode=0]，脚本会自动跟进 `dist\x64\` 子进程，手动跑建议直接 `-Exe dist\x64\SysRecoverUI.exe`）+ `tools/ui/diff.ps1`（逐像素比对，`Tol=30`）；交互态（模式切换后）用 `PostMessage(WM_LBUTTONDOWN/WM_LBUTTONUP)` 点击后截图。差异率收敛 8.57% → 6.66%（关闭分区行区域）；剩余集中在文字抗锯齿边缘（GDI vs WPF 渲染后端固有差异）与"老图有分区数据 / 本机非管理员读不到"的分区行。**脚本必须保持纯 ASCII**（PowerShell 5.1 对无 BOM 的 `.ps1` 按 ANSI 解析，中文注释会直接把解析器打挂；同理 `param()` 必须是脚本第一条语句）。**注意：GUI 现已带 `requireAdministrator` 清单（PIT-018），非管理员会话下这两个脚本启动 GUI 会弹 UAC 并阻塞到超时** —— 要么在管理员 PowerShell 里跑，要么先人工点一次；纯外观改动（不碰 `SysRecoverUI.{rc,manifest}` 与链接规则）时可直接用「界面源码未变 ⇒ 界面未变」论证，免掉截图回归。

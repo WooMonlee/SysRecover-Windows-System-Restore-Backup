@@ -6,6 +6,56 @@
 set -u
 LOG=/tmp/zjrestore.log
 say(){ echo "ZJ: $*"; echo "$(date '+%F %T') $*" >> "$LOG"; }
+# 黑匣子探测表（2026-10-04 客户失败的教训）：每个分区的 mount/open 结果都记在
+# 这里（与 init 共用同一文件），失败时随日志写到所有可写面 —— "为什么找不到"
+# 从此有据可查（客户那次只剩屏幕视频、扫描阶段没有任何文件证据）。
+PROBE=/tmp/zj-probe.txt
+[ -f "$PROBE" ] || : > "$PROBE" 2>/dev/null
+probe(){ echo "$(date '+%F %T') $*" >> "$PROBE" 2>/dev/null; say "PROBE $*"; }
+# 结果状态（写进 ZJRESTORE-status.txt 回执）：关键步骤更新；失败退出前 FAILED；
+# 成功置 OK。init 用 /tmp/zj-bb.done 判断"脚本是否已经扫过"，避免重复全扫。
+RESULT=UNKNOWN
+STEP=boot
+# 兜底日志窝（用户 2026-10-04 规格 3）：软件目录找不到时，在非目标分区认领一个
+# ZJRESTORE-logs/ 并**保持挂载**，整个流程持续镜像日志（防中途断电/被杀导致
+# "哪里都没有日志"）。收集（日志按钮）后会连同其它散落日志一起清掉。
+BB_HOME=""
+# zz-blackbox：init 在"脚本没跑/没来得及写盘"时调用的黑匣子模式（见函数区）。
+ZZ_BLACKBOX=0
+[ "${1:-}" = "zz-blackbox" ] && ZZ_BLACKBOX=1
+# 失败排查用：把内核环形缓冲最近 80 行打进日志（坏盘 I/O、驱动报错都在里面）
+say_dmesg(){
+    dmesg 2>/dev/null | tail -n 80 | while IFS= read -r _l; do say "  |$_l"; done
+}
+# 控制台文本转储（/dev/vcs*；用户 2026-10-05 规格）：把"屏幕内容"也存进日志。
+# 内核/救援的输出都在 VT；vcs 是字符矩阵（每格 1 字节），粗折行即可。
+dump_console(){
+    _got=0
+    for _v in /dev/vcs /dev/vcs1 /dev/vcs2; do
+        [ -r "$_v" ] || continue
+        say "---- console text ($_v) ----"
+        head -c 4096 "$_v" 2>/dev/null | tr '\000' ' ' | fold -w 80 | head -n 60 \
+            | while IFS= read -r _l; do say "  #$_l"; done
+        _got=1
+    done
+    [ "$_got" = "1" ] || say "(console text unavailable: no readable /dev/vcs *)"
+}
+# wimlib 错误码 → 人话（排查 apply 失败/回退原因用；常量见 third_party/wimlib/wimlib.h）
+rc_name(){
+    case "$1" in
+        37) echo "MKDIR(create dir failed)" ;;
+        46) echo "NTFS_3G(libntfs-3g open/write failed: dirty volume? write error? lib bug?)" ;;
+        47) echo "OPEN" ;;
+        48) echo "OPENDIR" ;;
+        50) echo "READ" ;;
+        51) echo "READLINK" ;;
+        59) echo "SET_SECURITY(failed to set Windows ACL)" ;;
+        68) echo "UNSUPPORTED(this mode not supported)" ;;
+        69) echo "UNSUPPORTED_FILE" ;;
+        72) echo "WRITE" ;;
+        *) echo "" ;;
+    esac
+}
 # 日志 + apply 采样/输出一起留档（离线分析卡顿用）
 save_diag(){
     cp "$LOG" "$1/zjrestore-debug.log" 2>/dev/null || return 1
@@ -22,20 +72,23 @@ for _f in /tmp/_zjresy*.log; do
     [ -f "$_f" ] && { TARGET_LOG="$_f"; break; }
 done
 TASK_CONF="/tmp/restore-task.conf"
-if [ -z "$TARGET_LOG" ] && [ ! -f "$TASK_CONF" ]; then
+if [ "$ZZ_BLACKBOX" != "1" ] && [ -z "$TARGET_LOG" ] && [ ! -f "$TASK_CONF" ]; then
+    RESULT=FAILED; STEP=no-task
     say "no log and no conf, abort"
     exit 1
 fi
 [ -n "$TARGET_LOG" ] || say "warn: no _zjresy log, using conf only"
 [ -f "$TASK_CONF" ] || say "warn: no conf, using log only"
 
+# 取值为防呆都去掉尾部 \r：契约正常是 LF（task.cpp 用 \n），但若有人用记事本
+# 编辑过/别处生成的 CRLF 版本，路径/数字会带 \r 导致静默失配（如 image not found）。
 get_log(){
     [ -n "$TARGET_LOG" ] || return 0
-    grep "^$1=" "$TARGET_LOG" 2>/dev/null | head -1 | cut -d= -f2-
+    grep "^$1=" "$TARGET_LOG" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r'
 }
 get_task(){
     if [ -f "$TASK_CONF" ]; then
-        _v=$(grep "^$1=" "$TASK_CONF" 2>/dev/null | head -1 | cut -d= -f2-)
+        _v=$(grep "^$1=" "$TASK_CONF" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r')
         [ -n "$_v" ] && { echo "$_v"; return; }
     fi
     get_log "$1"
@@ -47,7 +100,8 @@ get_task(){
 ZJ_CONTRACT=1
 _CV=$(get_task contract_version)
 [ -n "$_CV" ] || _CV=1
-if [ "$_CV" != "$ZJ_CONTRACT" ]; then
+if [ "$ZZ_BLACKBOX" != "1" ] && [ "$_CV" != "$ZJ_CONTRACT" ]; then
+    RESULT=FAILED; STEP=contract-mismatch
     say "ERROR: contract_version mismatch: task=$_CV rescue=$ZJ_CONTRACT"
     say "ERROR: 程序与救援层版本不匹配（契约 v$_CV vs v$ZJ_CONTRACT），请用同一版本重新暂存"
     exit 1
@@ -71,13 +125,32 @@ say "offset=$TARGET_OFFSET size=$TARGET_SIZE pt=$PT_TYPE index=$IMAGE_INDEX repa
 say "image=$IMAGE_PATH"
 [ -n "$ESP_INDEX" ] && say "esp subimage: index=$ESP_INDEX (restore to ESP after main apply)"
 
-# 设备枚举：优先 sysfs（只取分区），退回 /proc/partitions
+# 设备枚举（用户 2026-10-04 规格）：内置盘分区 → 可移动盘分区 → **无分区的可移动
+# 整盘**（光盘/未分区 U 盘）。U 盘/光盘放最后但**不丢**（镜像可能合法放在上面，
+# 这些情况必须被记录）。sysfs 全空时才退回 /proc/partitions。
+is_removable(){
+    _rp=$(readlink -f "/sys/class/block/$1" 2>/dev/null)
+    [ -n "$_rp" ] || return 1
+    if [ -f "$_rp/removable" ]; then _rd="$_rp"; else _rd="$(dirname "$_rp")"; fi
+    [ "$(cat "$_rd/removable" 2>/dev/null)" = "1" ]
+}
 list_parts(){
     _n=0
     for _p in /sys/class/block/*; do
         [ -f "$_p/partition" ] || continue
-        echo "/dev/$(basename "$_p")"
-        _n=$((_n + 1))
+        _b=$(basename "$_p")
+        if ! is_removable "$_b"; then echo "/dev/$_b"; _n=$((_n + 1)); fi
+    done
+    for _p in /sys/class/block/*; do
+        [ -f "$_p/partition" ] || continue
+        _b=$(basename "$_p")
+        if is_removable "$_b"; then echo "/dev/$_b"; _n=$((_n + 1)); fi
+    done
+    for _p in /sys/class/block/*; do
+        [ -f "$_p/partition" ] && continue
+        _b=$(basename "$_p")
+        case "$_b" in loop*|ram*|dm-*) continue ;; esac
+        if is_removable "$_b"; then echo "/dev/$_b"; _n=$((_n + 1)); fi
     done
     if [ "$_n" -eq 0 ] && [ -r /proc/partitions ]; then
         awk 'NR>2 && $4 != "" {print "/dev/" $4}' /proc/partitions
@@ -86,30 +159,36 @@ list_parts(){
 
 mnt_dev(){
     _dev="$1"; _mnt="$2"
+    # 屏幕级"进行中"标记（2026-10-05）：挂死时最后一屏就是卡住的设备
+    say "  mnt $_dev"
     : > /tmp/zjmnt.err
-    _fs=$(blkid -s TYPE -o value "$_dev" 2>/dev/null)
+    _fs=$(timeout 30 blkid -s TYPE -o value "$_dev" 2>/dev/null)
     case "$_fs" in
         ntfs)
             # 内核 ntfs3 优先：吞吐远高于 ntfs-3g(FUSE)，且没有 FUSE 逐文件开销
             # （实测同一台机 rm -rf/sync 走 FUSE 会卡 20s 级）。挂不上再退 ntfs-3g。
-            mount -t ntfs3 "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
-            ntfs-3g -o remove_hiberfile "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
-            ntfs-3g -o force "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
-            mount -t ntfs-3g "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            timeout 60 mount -t ntfs3 "$_dev" "$_mnt" 2>>/tmp/zjmnt.err; _r=$?
+            [ $_r -eq 0 ] && return 0
+            [ $_r -eq 124 ] && echo " TIMEOUT(60s:ntfs3)" >> /tmp/zjmnt.err
+            timeout 60 ntfs-3g -o remove_hiberfile "$_dev" "$_mnt" 2>>/tmp/zjmnt.err; _r=$?
+            [ $_r -eq 0 ] && return 0
+            [ $_r -eq 124 ] && echo " TIMEOUT(60s:ntfs-3g)" >> /tmp/zjmnt.err
+            timeout 60 ntfs-3g -o force "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            timeout 60 mount -t ntfs-3g "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
             ;;
         vfat|fat|fat32)
-            mount -t vfat "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            timeout 60 mount -t vfat "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
             ;;
         exfat)
-            mount -t exfat "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            timeout 60 mount -t exfat "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
             ;;
         # 光盘/ISO/UDF —— 镜像**可能就在光盘上**（用户 2026-09-23 反馈：还原系统
         # 拒绝光盘上的镜像在逻辑上说不通）。内核 sr_mod/isofs/udf 都在包内
         # （实测救援层能列出 sr0），这里显式指定，别只依赖 blkid 的猜测。
         iso9660|udf|cd9660)
-            mount -t iso9660 "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
-            mount -t udf "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
-            mount "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            timeout 60 mount -t iso9660 "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            timeout 60 mount -t udf "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            timeout 60 mount "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
             ;;
         "")
             # blkid 认不出类型（用户 2026-09-23 实测：D: 分区报 fs= 空，内核自动
@@ -117,24 +196,30 @@ mnt_dev(){
             # 常见文件系统**逐个显式试**，尤其 FUSE 的 ntfs-3g —— 它比内核 ntfs3
             # 宽容，能挂某些引导扇区被改过的 NTFS（ntfs3 会报 "Primary boot
             # signature is not NTFS"）。
-            mount -t ntfs3 "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
-            ntfs-3g -o remove_hiberfile "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
-            ntfs-3g -o force "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
-            mount -t ntfs-3g "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
-            mount -t exfat "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
-            mount -t vfat "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
-            mount -t iso9660 "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
-            mount -t udf "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
-            mount "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            timeout 60 mount -t ntfs3 "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            timeout 60 ntfs-3g -o remove_hiberfile "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            timeout 60 ntfs-3g -o force "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            timeout 60 mount -t ntfs-3g "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            timeout 60 mount -t exfat "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            timeout 60 mount -t vfat "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            timeout 60 mount -t iso9660 "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            timeout 60 mount -t udf "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            timeout 60 mount "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
             ;;
         *)
-            mount -t "$_fs" "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            timeout 60 mount -t "$_fs" "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
             # 未知/非标准类型再兜两下（同上理由）
-            ntfs-3g -o force "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
-            mount "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            timeout 60 ntfs-3g -o force "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            timeout 60 mount "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
             ;;
     esac
     return 1
+}
+
+# 设备是否已经挂着（不关心挂载点）：重复 mount 同一设备的行为因文件系统而异
+# （有的允许、有的 EBUSY）——扫描循环统一先查 /proc/mounts 再决定挂不挂。
+is_mounted(){
+    awk -v d="$1" '$1==d{f=1} END{exit f?0:1}' /proc/mounts 2>/dev/null
 }
 
 # ── 诊断日志落点（PIT-059）──
@@ -151,86 +236,324 @@ if [ -z "$SOFTWARE_DIR" ]; then
 fi
 SD_REL=$(echo "$SOFTWARE_DIR" | cut -d: -f2- | tr '\\' '/' | sed 's|^/*||')
 SOFT_MNT=""
+# 找软件目录分区并**记住挂载点**。注意 SOFT_MNT 必须在**当前 shell** 里赋值 →
+# 不能再写成 `_m=$(find_soft_dir)`（命令替换跑在子 shell，缓存赋值会丢；后续
+# 每次重扫时挂载点已被第一次占用 → 挂载失败 → 报 "software dir not found"，
+# 于是软件目录里的日志永远停在第一次快照 —— 客户日志停在 found image 的真凶）。
+# 成功返回 0，调用方直接读全局 $SOFT_MNT。
 find_soft_dir(){
-    [ -n "$SOFT_MNT" ] && { echo "$SOFT_MNT"; return 0; }
+    if [ -n "$SOFT_MNT" ] && [ -d "$SOFT_MNT/$SD_REL" ]; then
+        return 0
+    fi
     [ -n "$SD_REL" ] || return 1
+    SOFT_MNT=""
     for _d in $(list_parts); do
         [ -b "$_d" ] || continue
         case "$_d" in *sr*|*loop*|*cdrom*) continue ;; esac
         [ "$_d" = "${TARGET_DEV:-}" ] && continue
+        is_mounted "$_d" && continue
         mkdir -p /tmp/zj_soft
         if mnt_dev "$_d" /tmp/zj_soft; then
             if [ -d "/tmp/zj_soft/$SD_REL" ]; then
+                probe "softscan dev=$_d mount=ok dir=yes"
                 SOFT_MNT="/tmp/zj_soft"
-                echo "$SOFT_MNT"
                 return 0
             fi
+            probe "softscan dev=$_d mount=ok dir=no"
             umount /tmp/zj_soft 2>/dev/null
+        else
+            probe "softscan dev=$_d mount=FAIL err=$(cat /tmp/zjmnt.err 2>/dev/null | tr '\n' ' ' | head -c 150)"
         fi
     done
     return 1
 }
-# 把日志复制到 <软件目录>/logs/
+# ── 日志实时镜像（2026-10-01 客户实测教训）──
+# /tmp 是 RAM，重启即失；以前只在固定点 persist_log，一旦脚本卡死（坏盘 I/O、
+# mkntfs、apply…），软件目录里只剩"最后一个固定点"的旧快照 —— 客户那两份日志
+# 都停在 found image，卡在哪一步无从得知。这里起后台循环，每 2 秒把完整日志 +
+# apply 输出镜像到软件目录；脚本退出（含失败路径的 EXIT trap）时停掉。
+MIRROR_STARTED=0
+start_log_mirror(){
+    [ "$MIRROR_STARTED" = "1" ] && return 0
+    [ -n "$SOFT_MNT" ] || [ -n "$BB_HOME" ] || return 0
+    : > /tmp/zj_mirror.on
+    (
+        while [ -f /tmp/zj_mirror.on ]; do
+            if [ -n "$SOFT_MNT" ]; then
+                cp "$LOG" "$SOFT_MNT/$SD_REL/logs/zjrestore-debug.log" 2>/dev/null
+                cp /tmp/apply.out "$SOFT_MNT/$SD_REL/logs/zjrestore-apply.out" 2>/dev/null
+                cp /tmp/apply_io.log "$SOFT_MNT/$SD_REL/logs/zjrestore-io.log" 2>/dev/null
+            fi
+            if [ -n "$BB_HOME" ]; then
+                cp "$LOG" "$BB_HOME/zjrestore-debug.log" 2>/dev/null
+                cp /tmp/apply.out "$BB_HOME/zjrestore-apply.out" 2>/dev/null
+                cp /tmp/apply_io.log "$BB_HOME/zjrestore-io.log" 2>/dev/null
+            fi
+            sleep 2
+        done
+    ) &
+    MIRROR_STARTED=1
+    say "log mirror: on (every 2s)"
+}
+stop_log_mirror(){
+    [ "$MIRROR_STARTED" = "1" ] || return 0
+    rm -f /tmp/zj_mirror.on
+    MIRROR_STARTED=0
+}
+# 把日志复制到 <软件目录>/logs/；软件目录找不到时退到兜底日志窝 BB_HOME
+# （用户 2026-10-04 规格 3：先找地方放，保证"最终一定能找到日志"）。
 persist_log(){
     [ -f "$LOG" ] || return 1
-    _m=$(find_soft_dir)
-    if [ -z "$_m" ]; then
-        say "debug log NOT persisted (software dir not found)"
+    if find_soft_dir; then
+        _t="$SOFT_MNT/$SD_REL/logs"
+        mkdir -p "$_t" 2>/dev/null
+        if save_diag "$_t"; then
+            sync
+            say "debug log saved: <software_dir>/logs/"
+            start_log_mirror
+            return 0
+        fi
+        say "debug log NOT persisted (write failed)"
         return 1
     fi
-    _t="$_m/$SD_REL/logs"
-    mkdir -p "$_t" 2>/dev/null
-    if save_diag "$_t"; then
+    if [ -n "$BB_HOME" ] && save_diag "$BB_HOME"; then
         sync
-        say "debug log saved: <software_dir>/logs/"
+        say "debug log saved: fallback ZJRESTORE-logs"
+        start_log_mirror
         return 0
     fi
-    say "debug log NOT persisted (write failed)"
+    say "debug log NOT persisted (software dir not found; see ZJRESTORE-probe.txt)"
     return 1
 }
-trap persist_log EXIT
+# ── 黑匣子（2026-10-04 客户失败的教训）──
+# 原则：**任何失败都必须留下文件，且落在 Windows 侧能找到的地方**（用户不再
+# 需要录像/截图）。证据面（按可达顺序）：
+#   · 软件目录 <software_dir>/logs/（persist_log，原有）
+#   · 每个可挂载分区根：ZJRESTORE-last.log + ZJRESTORE-probe.txt + ZJRESTORE-status.txt
+#   · ESP（FAT 根下有 EFI/ZJRESTORE）→ 写进 \EFI\ZJRESTORE\logs\（常驻、Windows 可读）
+# 失败时全量写（EXIT trap）；成功时只写软件目录 + ESP（**不写还原后的目标盘**）。
+# /tmp/zj-bb.done 记录已写设备：init 用它判断"脚本是否已经扫过"，避免重复全扫。
+BB_DONE=/tmp/zj-bb.done
+: > "$BB_DONE" 2>/dev/null
+bb_status_text(){
+    echo "time=$(date '+%F %T')"
+    echo "build=$(cat /zjrescue-version 2>/dev/null)"
+    echo "result=$RESULT"
+    echo "step=$STEP"
+    echo "target=${TARGET_DEV:-}"
+    echo "image=${IMAGE_PATH:-}"
+}
+bb_drop(){
+    [ -d "$1" ] || return 1
+    _t="$1"
+    # ESP：写进常驻救援目录，别在 ESP 根乱扔文件
+    if [ -d "$1/EFI/ZJRESTORE" ]; then
+        mkdir -p "$1/EFI/ZJRESTORE/logs" 2>/dev/null && _t="$1/EFI/ZJRESTORE/logs"
+    fi
+    cp "$LOG" "$_t/ZJRESTORE-last.log" 2>/dev/null || return 1
+    cp "$PROBE" "$_t/ZJRESTORE-probe.txt" 2>/dev/null
+    bb_status_text > "$_t/ZJRESTORE-status.txt" 2>/dev/null
+    for _f in mkntfs.out:ZJRESTORE-mkntfs.out apply.out:ZJRESTORE-apply.out esp.out:ZJRESTORE-esp.out; do
+        [ -s "/tmp/${_f%%:*}" ] && cp "/tmp/${_f%%:*}" "$_t/${_f#*:}" 2>/dev/null
+    done
+    sync 2>/dev/null
+    return 0
+}
+# 黑匣子专用挂载：短超时、少回退（失败路径上别被坏盘拖死）
+bb_mount(){
+    mkdir -p /tmp/zj_bb
+    umount /tmp/zj_bb 2>/dev/null
+    _fs=$(timeout 20 blkid -s TYPE -o value "$1" 2>/dev/null)
+    case "$_fs" in
+        vfat|fat|fat32) timeout 20 mount -t vfat "$1" /tmp/zj_bb 2>/dev/null && return 0 ;;
+        exfat) timeout 20 mount -t exfat "$1" /tmp/zj_bb 2>/dev/null && return 0 ;;
+        ntfs|"")
+            timeout 30 mount -t ntfs3 "$1" /tmp/zj_bb 2>/dev/null && return 0
+            timeout 30 ntfs-3g -o force "$1" /tmp/zj_bb 2>/dev/null && return 0
+            [ -n "$_fs" ] || { timeout 20 mount -t vfat "$1" /tmp/zj_bb 2>/dev/null && return 0; } ;;
+        *) timeout 20 mount "$1" /tmp/zj_bb 2>/dev/null && return 0 ;;
+    esac
+    return 1
+}
+bb_sweep(){
+    # 黑匣子开扫前，先把"屏幕内容"（控制台文本）也收进日志（只做一次）
+    if [ ! -f /tmp/zj-vcs.done ]; then
+        : > /tmp/zj-vcs.done
+        dump_console
+    fi
+    for _d in $(list_parts); do
+        [ -b "$_d" ] || continue
+        case "$_d" in *loop*|*ram*|*sr*) continue ;; esac
+        grep -qx "$_d" "$BB_DONE" 2>/dev/null && continue
+        # 已经挂着的（镜像/软件/目标分区）直接用现挂载点，别再挂一次
+        _mp=$(awk -v d="$_d" '$1==d{print $2; exit}' /proc/mounts 2>/dev/null)
+        if [ -n "$_mp" ]; then
+            if bb_drop "$_mp"; then
+                echo "$_d" >> "$BB_DONE"
+                say "blackbox: log -> $_mp ($_d, already mounted)"
+            fi
+            continue
+        fi
+        if bb_mount "$_d"; then
+            if bb_drop /tmp/zj_bb; then
+                echo "$_d" >> "$BB_DONE"
+                say "blackbox: log -> $_d"
+            else
+                say "blackbox: write FAILED on $_d"
+            fi
+            umount /tmp/zj_bb 2>/dev/null
+        else
+            say "blackbox: mount FAILED $_d (no place to write log)"
+        fi
+    done
+    return 0
+}
+bb_esp_drop(){
+    _e=$(find_esp_dev 2>/dev/null)
+    [ -n "$_e" ] || return 0
+    _mp=$(awk -v d="$_e" '$1==d{print $2; exit}' /proc/mounts 2>/dev/null)
+    if [ -n "$_mp" ]; then
+        bb_drop "$_mp" && say "blackbox: log -> $_e (ESP)"
+        return 0
+    fi
+    if bb_mount "$_e"; then
+        bb_drop /tmp/zj_bb && say "blackbox: log -> $_e (ESP)"
+        umount /tmp/zj_bb 2>/dev/null
+    fi
+}
+bb_final(){
+    if [ "$RESULT" = "OK" ]; then
+        persist_log
+        bb_esp_drop
+    else
+        # 失败时把内核环形缓冲打进日志（坏盘 I/O、ata/nvme reset、ntfs 报错都在
+        # 这里）——"从记录中评估"（用户 2026-10-05 规格）。
+        say_dmesg
+        persist_log
+        bb_sweep
+    fi
+    stop_log_mirror
+}
+trap 'bb_final' EXIT
+# zz-blackbox 模式：init 调 `zjrestore-lite.sh zz-blackbox <reason>`；只做全盘
+# 日志落盘（逻辑单源，init 不重复实现一套），不碰契约/还原。
+if [ "$ZZ_BLACKBOX" = "1" ]; then
+    RESULT=FAILED
+    STEP="${2:-interrupted}"
+    say "blackbox sweep start (reason=$STEP)"
+    trap - EXIT
+    bb_sweep
+    say "blackbox sweep done ($(wc -l < "$BB_DONE" 2>/dev/null | tr -d ' ') surface(s))"
+    exit 0
+fi
 
-# ── 目标分区：优先用 S99 传入的设备；否则按 offset 匹配 ──
-TARGET_DEV="${1:-}"
-if [ -n "$TARGET_DEV" ] && [ -b "$TARGET_DEV" ]; then
-    say "target from log location: $TARGET_DEV"
-else
+# ── 目标分区：优先用 S99 传入的设备，但**必须过 offset 校验** ──
+# 为什么要校验（2026-10-04）：参照机日志里出现过 `target from log location:
+# /dev/sda1` 而契约目标在别的设备 —— 只要哪个分区根上残留一份 _zjresy*.log
+# （拷日志去别处、旧测试），init 就会把"第一个找到日志的分区"当目标；不校验
+# 的话格式化的是**错误的分区**。校验不过就回退按 offset 精确匹配。
+dev_offset(){
+    # 首选 **sysfs `start`**（单位=512B 扇区）：GPT 分区、MBR 主分区、EBR 逻辑盘
+    # 全都准确，且不依赖 blkid 行为（复刻测试实证：GPT 盘上 blkid 的
+    # PART_ENTRY_OFFSET 可能为空，而 MBR 兜底对 GPT 只能读到保护性 MBR → 0，
+    # 会把**正确的目标**误判成 stale log 拒掉）。
+    _st=$(cat "/sys/class/block/$(basename "$1")/start" 2>/dev/null)
+    if [ -n "$_st" ]; then echo $((_st * 512)); return 0; fi
+    _sec=$(timeout 30 blkid -s PART_ENTRY_OFFSET -o value "$1" 2>/dev/null)
+    if [ -n "$_sec" ]; then echo $((_sec * 512)); return 0; fi
+    # 兜底：blkid 没给出时读 MBR 分区表（先验扇区 0 的 55aa；整盘名用 sysfs 父目录）
+    _name=$(basename "$1")
+    _disk="/dev/$(basename "$(dirname "$(readlink -f "/sys/class/block/$_name")")")"
+    _sig=$(dd if="$_disk" bs=1 skip=510 count=2 2>/dev/null | od -A n -t x1 | tr -d ' \n')
+    _num=$(echo "$_name" | grep -oE '[0-9]+$')
+    [ "$_sig" = "55aa" ] && [ -n "$_num" ] && [ -b "$_disk" ] || return 1
+    _lba=$(dd if="$_disk" bs=1 skip=$((446 + (_num - 1) * 16 + 8)) count=4 2>/dev/null | od -A n -t u4 | tr -d ' ')
+    [ -n "$_lba" ] || return 1
+    echo $((_lba * 512))
+}
+target_by_offset(){
     TARGET_DEV=""
     for _d in $(list_parts); do
         [ -b "$_d" ] || continue
         case "$_d" in *sr*|*loop*|*cdrom*) continue ;; esac
-        _sec=$(blkid -s PART_ENTRY_OFFSET -o value "$_d" 2>/dev/null)
-        if [ -n "$_sec" ]; then
-            _off=$((_sec * 512))
+        _off=$(dev_offset "$_d")
+        if [ -z "$_off" ]; then
+            say "  (skip $_d: no offset)"
         else
-            # 兜底：blkid 没给出 PART_ENTRY_OFFSET 时，读 **MBR** 分区表算偏移。两点加固：
-            #   ① 先确认扇区 0 结尾是 `55aa`（不是 MBR 就别读，免得拿垃圾值当偏移）；
-            #   ② 整盘设备名用 **sysfs 父目录**取（对 `nvme0n1p2`/`mmcblk0p2` 也正确；
-            #      旧的 `sed 's/[0-9]*$//'` 会得出 `nvme0n1p` 这种错名字）。
-            _name=$(basename "$_d")
-            _disk="/dev/$(basename "$(dirname "$(readlink -f "/sys/class/block/$_name")")")"
-            _sig=$(dd if="$_disk" bs=1 skip=510 count=2 2>/dev/null | od -A n -t x1 | tr -d ' \n')
-            _num=$(echo "$_name" | grep -oE '[0-9]+$')
-            _off=0
-            if [ "$_sig" = "55aa" ] && [ -n "$_num" ] && [ -b "$_disk" ]; then
-                _lba=$(dd if="$_disk" bs=1 skip=$((446 + (_num - 1) * 16 + 8)) count=4 2>/dev/null | od -A n -t u4 | tr -d ' ')
-                _off=$(( ${_lba:-0} * 512 ))
-            else
-                say "  (skip $_d: not MBR or bad name, no offset)"
-            fi
+            say "  probe $_d off=$_off (want $TARGET_OFFSET)"
+            [ "$_off" = "$TARGET_OFFSET" ] && { TARGET_DEV="$_d"; return 0; }
         fi
-        say "  probe $_d off=$_off (want $TARGET_OFFSET)"
-        [ "$_off" = "$TARGET_OFFSET" ] && { TARGET_DEV="$_d"; break; }
     done
+    return 1
+}
+TARGET_DEV="${1:-}"
+if [ -n "$TARGET_DEV" ] && [ -b "$TARGET_DEV" ] && [ -n "$TARGET_OFFSET" ]; then
+    _doff=$(dev_offset "$TARGET_DEV")
+    if [ -n "$_doff" ] && [ "$_doff" != "$TARGET_OFFSET" ]; then
+        say "WARN: candidate $TARGET_DEV offset=$_doff != contract $TARGET_OFFSET -> reject (stale log?)"
+        probe "target-reject dev=$TARGET_DEV offset=$_doff want=$TARGET_OFFSET"
+        TARGET_DEV=""
+    fi
 fi
-[ -n "$TARGET_DEV" ] || { say "ERROR: target partition not found (offset=$TARGET_OFFSET)"; exit 1; }
+if [ -n "$TARGET_DEV" ] && [ -b "$TARGET_DEV" ]; then
+    say "target from log location: $TARGET_DEV (offset verified)"
+else
+    say "target from log rejected/absent -> match by offset"
+    target_by_offset
+    if [ -z "$TARGET_DEV" ] && [ -n "$TARGET_OFFSET" ]; then
+        # A1：设备/分区枚举可能晚到（控制器 probe、U 盘/HDD 唤醒）—— 第二轮再给一次机会
+        say "target not found on first pass -> retry after 3s"
+        sleep 3
+        target_by_offset
+    fi
+    [ -n "$TARGET_DEV" ] || { RESULT=FAILED; STEP=target-not-found; say "ERROR: target partition not found (offset=$TARGET_OFFSET)"; exit 1; }
+fi
 say "target dev: $TARGET_DEV"
+STEP=target-found
+
+# 兜底日志窝（用户 2026-10-04 规格 3）：尽早认领一个非目标可写分区并**保持挂载**，
+# 让日志从此刻起持续镜像到那里 —— 就算之后中途断电/被杀，也有可收集的日志。
+# 软件目录能找到时不用它（日志照旧进软件目录）。收集（日志按钮）后会被清掉。
+claim_bb_home(){
+    [ -n "$BB_HOME" ] && return 0
+    if find_soft_dir; then
+        start_log_mirror
+        return 0
+    fi
+    for _d in $(list_parts); do
+        [ -b "$_d" ] || continue
+        case "$_d" in *loop*|*ram*|*sr*|*cdrom*) continue ;; esac
+        [ "$_d" = "$TARGET_DEV" ] && continue
+        is_mounted "$_d" && continue
+        mkdir -p /tmp/zj_home
+        if mnt_dev "$_d" /tmp/zj_home; then
+            # 这个分区也许就是软件目录所在（之前瞬时打不开）→ 直接当软件目录用
+            if [ -n "$SD_REL" ] && [ -d "/tmp/zj_home/$SD_REL" ]; then
+                SOFT_MNT=/tmp/zj_home
+                say "log home: software dir found late on $_d"
+                start_log_mirror
+                return 0
+            fi
+            if mkdir -p /tmp/zj_home/ZJRESTORE-logs 2>/dev/null; then
+                BB_HOME=/tmp/zj_home/ZJRESTORE-logs
+                save_diag "$BB_HOME" 2>/dev/null
+                say "fallback log home: $_d -> ZJRESTORE-logs/ (software dir not found)"
+                start_log_mirror
+                return 0
+            fi
+            umount /tmp/zj_home 2>/dev/null
+        fi
+    done
+    say "WARN: no fallback log home found (all non-target mounts failed)"
+    return 1
+}
+claim_bb_home
 
 # 过了引导阶段：删掉目标分区根目录的引导期日志（/init 跑脚本前写的，PIT-059）。
 # 成功还原会把目标分区格式化，它本来也会消失；如果它还在，说明引导阶段就没走完，
 # 用户可把该文件发回排错。诊断日志此后都写软件目录（persist_log）。
 mkdir -p /tmp/zj_bl
-if mount -t ntfs3 "$TARGET_DEV" /tmp/zj_bl 2>/dev/null || mnt_dev "$TARGET_DEV" /tmp/zj_bl; then
+if timeout 60 mount -t ntfs3 "$TARGET_DEV" /tmp/zj_bl 2>/dev/null || mnt_dev "$TARGET_DEV" /tmp/zj_bl; then
     rm -f /tmp/zj_bl/zjrestore-boot.log 2>/dev/null
     sync
     umount /tmp/zj_bl 2>/dev/null
@@ -238,30 +561,67 @@ if mount -t ntfs3 "$TARGET_DEV" /tmp/zj_bl 2>/dev/null || mnt_dev "$TARGET_DEV" 
 fi
 
 # ── 定位镜像文件（扫描所有分区找 IMAGE_PATH；跳过目标分区）──
+# 拆成函数 + 两轮扫描：模块加载后磁盘/分区可能出现晚、或某个分区瞬时打不开
+# （2026-10-04 客户"image not found"快速退出的最大嫌疑）——第二轮给一次机会。
 IMG_FILE=""
 IMG_REL=$(echo "$IMAGE_PATH" | cut -d: -f2- | tr '\\' '/' | sed 's|^/*||')
 SRC_M="/tmp/zj_img"
 mkdir -p "$SRC_M"
-for _d in $(list_parts); do
-    [ -b "$_d" ] || continue
-    # ⚠️ 这里**不能**跳过光驱（sr*）：镜像可能就在光盘/ISO 上（用户 2026-09-23
-    #    反馈）。只跳过 loop/ram 这类伪设备。目标分区扫描那边才该跳过 sr*。
-    case "$_d" in *loop*|*ram*) continue ;; esac
-    [ "$_d" = "$TARGET_DEV" ] && continue
-    _typ=$(blkid -s TYPE -o value "$_d" 2>/dev/null)
-    if mnt_dev "$_d" "$SRC_M"; then
-        if [ -f "$SRC_M/$IMG_REL" ]; then
-            IMG_FILE="$SRC_M/$IMG_REL"
-            say "found image: $IMG_FILE"
-            break
+: > /tmp/zj_img.fail
+scan_image(){
+    for _d in $(list_parts); do
+        [ -b "$_d" ] || continue
+        # ⚠️ 这里**不能**跳过光驱（sr*）：镜像可能就在光盘/ISO 上（用户 2026-09-23
+        #    反馈）。只跳过 loop/ram 这类伪设备。目标分区扫描那边才该跳过 sr*。
+        case "$_d" in *loop*|*ram*) continue ;; esac
+        [ "$_d" = "$TARGET_DEV" ] && continue
+        _rem=""; is_removable "$(basename "$_d")" && _rem="1"
+        # 已挂着的（软件目录/兜底日志窝）直接查现挂载点，别再挂一次
+        _mp=$(awk -v d="$_d" '$1==d{print $2; exit}' /proc/mounts 2>/dev/null)
+        if [ -n "$_mp" ]; then
+            if [ -f "$_mp/$IMG_REL" ]; then
+                IMG_FILE="$_mp/$IMG_REL"
+                probe "image-scan dev=$_d rem=${_rem:-0} mount=ok(already) found=yes"
+                say "found image: $IMG_FILE (dev=$_d rem=${_rem:-0})"
+                return 0
+            fi
+            probe "image-scan dev=$_d rem=${_rem:-0} mount=ok(already) found=no"
+            say "  no image on $_d (already mounted)"
+            continue
         fi
-        say "  no image on $_d (type=${_typ:-none})"
-        umount "$SRC_M" 2>/dev/null
-    else
-        say "mount FAILED $_d (type=${_typ:-none}; $(cat /tmp/zjmnt.err 2>/dev/null | tr '\n' ' '))"
-    fi
-done
-[ -n "$IMG_FILE" ] || { say "ERROR: image not found: $IMAGE_PATH"; exit 1; }
+        _typ=$(timeout 30 blkid -s TYPE -o value "$_d" 2>/dev/null)
+        if mnt_dev "$_d" "$SRC_M"; then
+            if [ -f "$SRC_M/$IMG_REL" ]; then
+                IMG_FILE="$SRC_M/$IMG_REL"
+                probe "image-scan dev=$_d type=${_typ:-none} rem=${_rem:-0} mount=ok found=yes"
+                say "found image: $IMG_FILE (dev=$_d rem=${_rem:-0})"
+                return 0
+            fi
+            probe "image-scan dev=$_d type=${_typ:-none} rem=${_rem:-0} mount=ok found=no"
+            say "  no image on $_d (type=${_typ:-none})"
+            umount "$SRC_M" 2>/dev/null
+        else
+            echo "$_d" >> /tmp/zj_img.fail
+            probe "image-scan dev=$_d type=${_typ:-none} rem=${_rem:-0} mount=FAIL err=$(cat /tmp/zjmnt.err 2>/dev/null | tr '\n' ' ' | head -c 150)"
+            say "mount FAILED $_d (type=${_typ:-none}; $(cat /tmp/zjmnt.err 2>/dev/null | tr '\n' ' '))"
+        fi
+    done
+    return 1
+}
+scan_image
+if [ -z "$IMG_FILE" ]; then
+    say "image not found on first pass -> retry after 3s"
+    sleep 3
+    scan_image
+fi
+# A1 第三轮：只在"出现过挂载失败"时再等 10s 重试（瞬时 I/O 错误恢复/设备唤醒）
+if [ -z "$IMG_FILE" ] && [ -s /tmp/zj_img.fail ]; then
+    say "image still not found (mount failures seen) -> final retry after 10s"
+    sleep 10
+    scan_image
+fi
+[ -n "$IMG_FILE" ] || { RESULT=FAILED; STEP=image-not-found; say "ERROR: image not found: $IMAGE_PATH"; exit 1; }
+STEP=image-found
 persist_log
 
 # ── ESP 子镜像（方案 C，用户 2026-09-30 规格 / 无忧 66 楼）──
@@ -281,7 +641,7 @@ persist_log
 # 2026-09-18 用 QEMU 直接 chainload 一个「mkntfs + 完整引导区 + 空根目录」的
 # 分区，屏幕正确显示 "BOOTMGR is missing" —— 证明 mkntfs 布局完全可用。
 # 见 tools/vmtest/README 的 PBR 探针测试。
-TARGET_FS=$(blkid -s TYPE -o value "$TARGET_DEV" 2>/dev/null)
+TARGET_FS=$(timeout 30 blkid -s TYPE -o value "$TARGET_DEV" 2>/dev/null)
 say "target fs = ${TARGET_FS:-unknown}"
 # 目标分区准备方式：
 #   format = mkntfs 快速格式化（默认）。2026-09-18 QEMU 实测确认可引导：
@@ -307,7 +667,7 @@ if [ "$TARGET_MODE" = "keep" ] && [ "$TARGET_FS" = "ntfs" ]; then
     _wiped=0
     _left="?"
     # 第 1 轮：内核 ntfs3（快；FUSE 下 rm -rf 大量小文件 + sync 会卡几十秒）
-    if mount -t ntfs3 "$TARGET_DEV" /tmp/zj_wipe 2>/tmp/zjwipe.err; then
+    if timeout 60 mount -t ntfs3 "$TARGET_DEV" /tmp/zj_wipe 2>/tmp/zjwipe.err; then
         cp "$LOG" /tmp/zj_wipe/zjrestore-debug.log 2>/dev/null
         rm -rf /tmp/zj_wipe/* /tmp/zj_wipe/.[!.]* /tmp/zj_wipe/..?* 2>/tmp/zjrm.err
         sync
@@ -322,7 +682,7 @@ if [ "$TARGET_MODE" = "keep" ] && [ "$TARGET_FS" = "ntfs" ]; then
     # "File exists" → rc=46 (WIMLIB_ERR_NTFS_3G)。
     if [ "$_wiped" = "0" ] || [ -n "$_left" ]; then
         say "wipe: ntfs3 incomplete (mounted=$_wiped left=[$_left]) -> ntfs-3g pass"
-        if ntfs-3g -o force "$TARGET_DEV" /tmp/zj_wipe 2>>/tmp/zjwipe.err \
+        if timeout 60 ntfs-3g -o force "$TARGET_DEV" /tmp/zj_wipe 2>>/tmp/zjwipe.err \
            || mnt_dev "$TARGET_DEV" /tmp/zj_wipe; then
             cp "$LOG" /tmp/zj_wipe/zjrestore-debug.log 2>/dev/null
             rm -rf /tmp/zj_wipe/* /tmp/zj_wipe/.[!.]* /tmp/zj_wipe/..?* 2>/tmp/zjrm2.err
@@ -349,16 +709,20 @@ if [ "$KEPT_FS" = "0" ]; then
     [ "$START_LBA" -gt 0 ] 2>/dev/null || START_LBA=2048
     say "mkntfs $TARGET_DEV (start_lba=$START_LBA)"
     umount "$TARGET_DEV" 2>/dev/null
-    dd if="$TARGET_DEV" of=/tmp/pbr_orig.bin bs=512 count=1 2>/dev/null
-    mkntfs -f -S 63 -H 255 --partition-start "$START_LBA" "$TARGET_DEV" > /tmp/mkntfs.out 2>&1
+    timeout 30 dd if="$TARGET_DEV" of=/tmp/pbr_orig.bin bs=512 count=1 2>/dev/null
+    timeout 300 mkntfs -f -S 63 -H 255 --partition-start "$START_LBA" "$TARGET_DEV" > /tmp/mkntfs.out 2>&1
     mkfs_rc=$?
     while IFS= read -r line; do say "[mkntfs] $line"; done < /tmp/mkntfs.out
-    [ $mkfs_rc -eq 0 ] || { say "ERROR: mkntfs rc=$mkfs_rc"; exit 1; }
+    if [ $mkfs_rc -eq 124 ]; then
+        say "WARN: mkntfs TIMEOUT after 300s (disk I/O hang?)"
+        say_dmesg
+    fi
+    [ $mkfs_rc -eq 0 ] || { RESULT=FAILED; STEP=mkntfs-failed; say "ERROR: mkntfs rc=$mkfs_rc"; exit 1; }
     _b0=$((START_LBA & 0xFF)); _b1=$(((START_LBA >> 8) & 0xFF))
     _b2=$(((START_LBA >> 16) & 0xFF)); _b3=$(((START_LBA >> 24) & 0xFF))
     printf "\\$(printf '%03o' $_b0)\\$(printf '%03o' $_b1)\\$(printf '%03o' $_b2)\\$(printf '%03o' $_b3)" \
-        | dd of="$TARGET_DEV" bs=1 seek=28 count=4 conv=notrunc 2>/dev/null
-    _hid=$(dd if="$TARGET_DEV" bs=1 skip=28 count=4 2>/dev/null | od -An -tu4 | tr -d ' ')
+        | timeout 30 dd of="$TARGET_DEV" bs=1 seek=28 count=4 conv=notrunc 2>/dev/null
+    _hid=$(timeout 30 dd if="$TARGET_DEV" bs=1 skip=28 count=4 2>/dev/null | od -An -tu4 | tr -d ' ')
     [ "$_hid" = "$START_LBA" ] && say "hidden sectors = $_hid (OK)" \
                                || say "ERROR: hidden=$_hid want=$START_LBA"
 fi
@@ -369,8 +733,16 @@ fi
 #           无 FUSE/逐文件 fsync，通常最快）。**隐患**：写目录时 Windows ACL
 #           （安全描述符）不一定能完整恢复，故不做默认。
 #   block = wimlib 直接写块设备（libntfs-3g 用户态模式）——ACL 正确，保持默认。
+# 应用模式：block（产线；= wimlib NTFS 卷模式经 libntfs-3g 直写，能完整写回
+# Windows ACL/属性/ADS/短名/创建时间/重解析点）。dir/dirfuse 仅为**实验室测试
+# 钩子**（须由内核 cmdline `zjapply=` 显式指定）：目录写会系统性丢/篡改上述元数据
+# （PIT-102 实测：ACL 变 Everyone 完全控制、junction 变 symlink/普通文件等），
+# 故**不提供降级方案** —— block 失败即 fail-closed 报错（见下方 apply 失败分支）。
 APPLY_MODE=${ZJ_APPLY_MODE:-block}
-say "apply image -> $TARGET_DEV (index $IMAGE_INDEX, mode=$APPLY_MODE)"
+[ "$APPLY_MODE" = "dirfuse" ] && { APPLY_MODE="dir"; ZJ_APPLY_FS="fuse"; }
+APPLY_FS=${ZJ_APPLY_FS:-auto}
+STEP=applying
+say "apply image -> $TARGET_DEV (index $IMAGE_INDEX, mode=$APPLY_MODE fs=$APPLY_FS)"
 # wimlib 位置：新底座（Alpine）在 /usr/bin/wimlib-imagex；旧底座（BG-Rescue）在
 # /tmp/zjtools/wimlib-imagex（S99zjrestore 预置）。两种都兼容。
 WIMLIB="$(command -v wimlib-imagex 2>/dev/null)"
@@ -378,22 +750,49 @@ WIMLIB="$(command -v wimlib-imagex 2>/dev/null)"
 say "wimlib: $WIMLIB"
 # 诊断：内存 / 镜像大小 / 目标容量（wimlib 卡住时先看这些）
 say "mem: $(free 2>/dev/null | tr '\n' ' ')"
+# 低内存预警（2026-10-04 实测）：192MB 虚拟机里 wimlib 会在 apply **最后阶段**
+# （全部文件写完后设置安全描述符时）被 OOM 杀掉（rc=137）—— 等于整盘白写。
+# 512MB 实测正常。这里提前把风险写进日志/屏幕，用户能直接看到原因。
+_mem_kb=$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null)
+if [ -n "$_mem_kb" ] && [ "$_mem_kb" -lt 400000 ] 2>/dev/null; then
+    say "WARN: low memory (${_mem_kb}kB RAM) - wimlib apply may be OOM-killed; increase VM RAM"
+fi
 say "img bytes: $(ls -l "$IMG_FILE" 2>/dev/null | awk '{print $5}')"
 say "target sectors: $(cat /sys/class/block/$(basename "$TARGET_DEV")/size 2>/dev/null)"
 persist_log
+
+# 目录模式挂载（ZJ_APPLY_FS: auto=ntfs3 优先失败退 FUSE；ntfs3/fuse=强制）
+mount_apply_dir(){
+    umount /tmp/zj_apply 2>/dev/null
+    mkdir -p /tmp/zj_apply
+    case "$APPLY_FS" in
+        ntfs3)
+            timeout 60 mount -t ntfs3 "$TARGET_DEV" /tmp/zj_apply 2>/tmp/zjapply.err && return 0
+            ;;
+        fuse)
+            timeout 60 ntfs-3g -o remove_hiberfile "$TARGET_DEV" /tmp/zj_apply 2>>/tmp/zjapply.err && return 0
+            timeout 60 ntfs-3g -o force "$TARGET_DEV" /tmp/zj_apply 2>>/tmp/zjapply.err && return 0
+            timeout 60 mount -t ntfs-3g "$TARGET_DEV" /tmp/zj_apply 2>>/tmp/zjapply.err && return 0
+            ;;
+        *)
+            mnt_dev "$TARGET_DEV" /tmp/zj_apply && return 0
+            ;;
+    esac
+    return 1
+}
 
 # 应用目标：dir 模式先挂载（失败则退回块设备）
 APPLY_TGT="$TARGET_DEV"
 APPLY_MNT=""
 if [ "$APPLY_MODE" = "dir" ]; then
     umount "$TARGET_DEV" 2>/dev/null
-    mkdir -p /tmp/zj_apply
-    if mount -t ntfs3 "$TARGET_DEV" /tmp/zj_apply 2>/tmp/zjapply.err; then
+    if mount_apply_dir; then
         APPLY_TGT=/tmp/zj_apply
         APPLY_MNT=/tmp/zj_apply
-        say "apply target: /tmp/zj_apply (ntfs3 mounted dir)"
+        _mfs=$(awk -v m=/tmp/zj_apply '$2==m{print $3}' /proc/mounts 2>/dev/null)
+        say "apply target: /tmp/zj_apply (dir write TEST override, fs=${_mfs:-unknown})"
     else
-        say "ntfs3 mount failed ($(cat /tmp/zjapply.err 2>/dev/null | tr '\n' ' ')) -> block mode"
+        say "dir mount failed (fs=$APPLY_FS; $(cat /tmp/zjapply.err 2>/dev/null | tr '\n' ' ')) -> block mode"
         APPLY_MODE=block
     fi
 fi
@@ -464,44 +863,26 @@ run_apply(){
 # 分区用到了）会把卷标成 dirty，libntfs-3g 会直接失败 → rc=46
 # (WIMLIB_ERR_NTFS_3G)。所以 apply 前先清脏标志。
 if [ "$APPLY_MODE" = "block" ]; then
-    command -v ntfsfix >/dev/null 2>&1 && ntfsfix -d "$TARGET_DEV" >> "$LOG" 2>&1
+    command -v ntfsfix >/dev/null 2>&1 && timeout 60 ntfsfix -d "$TARGET_DEV" >> "$LOG" 2>&1
 fi
 _a0=$(date +%s)
 run_apply "$APPLY_TGT"
 apply_exit=$(cat /tmp/apply.exit 2>/dev/null)
 [ -n "$apply_exit" ] || apply_exit=1
 if [ "$apply_exit" != "0" ]; then
-    say "apply FAILED rc=$apply_exit; wimlib output head:"
-    head -n 10 /tmp/apply.out 2>/dev/null | while IFS= read -r _l; do say "  |$_l"; done
+    say "apply FAILED rc=$apply_exit $(rc_name "$apply_exit"); wimlib output head:"
+    head -n 5 /tmp/apply.out 2>/dev/null | while IFS= read -r _l; do say "  |$_l"; done
+    # wimlib 的 [ERROR] 行在输出**末尾**（进度行在前面），必须 tail
+    say "apply FAILED wimlib output tail:"
+    tail -n 20 /tmp/apply.out 2>/dev/null | while IFS= read -r _l; do say "  |$_l"; done
     if [ "$apply_exit" = "46" ]; then
         say "rc=46 (libntfs-3g) -> ntfsfix + retry once"
-        command -v ntfsfix >/dev/null 2>&1 && ntfsfix -d "$TARGET_DEV" >> "$LOG" 2>&1
+        command -v ntfsfix >/dev/null 2>&1 && timeout 60 ntfsfix -d "$TARGET_DEV" >> "$LOG" 2>&1
         umount "$TARGET_DEV" 2>/dev/null; umount "$APPLY_TGT" 2>/dev/null
         run_apply "$APPLY_TGT"
         apply_exit=$(cat /tmp/apply.exit 2>/dev/null)
         [ -n "$apply_exit" ] || apply_exit=1
         say "retry apply rc=$apply_exit"
-    fi
-fi
-# 最终兜底：块设备模式仍失败 → 挂成目录写入。wimlib 写目录会**覆盖**已存在
-# 文件，因此即使清空没删干净也能还原成功。代价：Windows ACL（安全描述符）可能
-# 不完整 —— 但"能起来的系统 + ACL 略缺"远好于"还原失败、系统起不来"。
-if [ "$apply_exit" != "0" ] && [ "$APPLY_MODE" = "block" ]; then
-    say "fallback -> apply to ntfs3-mounted dir (ACLs may be incomplete)"
-    mkdir -p /tmp/zj_apply
-    umount "$TARGET_DEV" 2>/dev/null
-    # 卷脏时 ntfs3 会拒绝挂载（块模式失败后常见）→ 先清脏标志，再用 mnt_dev
-    # 兜底（ntfs3 → ntfs-3g -o force）。只用 `mount -t ntfs3` 会在脏卷上失败，
-    # 使兜底形同虚设。
-    command -v ntfsfix >/dev/null 2>&1 && ntfsfix -d "$TARGET_DEV" >> "$LOG" 2>&1
-    if mnt_dev "$TARGET_DEV" /tmp/zj_apply; then
-        APPLY_MNT=/tmp/zj_apply
-        run_apply /tmp/zj_apply
-        apply_exit=$(cat /tmp/apply.exit 2>/dev/null)
-        [ -n "$apply_exit" ] || apply_exit=1
-        say "fallback apply rc=$apply_exit"
-    else
-        say "fallback mount failed: $(cat /tmp/zjmnt.err 2>/dev/null | tr '\n' ' ')"
     fi
 fi
 _a1=$(date +%s)
@@ -519,11 +900,16 @@ dmesg 2>/dev/null | grep -iE 'error|fail|warn|blocked|timeout|reset|I/O|ntfs|nvm
 # 镜像分区（$SRC_M）**先不卸载**：下面 ESP 子镜像（方案 C）还要直接用 $IMG_FILE
 # apply，统一挪到 ESP 段之后再 umount。
 if [ "$apply_exit" != "0" ]; then
-    say "ERROR: apply rc=$apply_exit"
+    RESULT=FAILED; STEP=apply-failed
+    say "ERROR: apply rc=$apply_exit $(rc_name "$apply_exit")"
+    say "ERROR: no degraded fallback by design (dir write would lose Windows ACL/attributes/ADS/short names)"
+    say "ERROR: target partition is already formatted; reboot to PE and use in-place restore to retry"
+    say_dmesg
     persist_log
     exit 1
 fi
 
+STEP=apply-done
 say "apply done"
 
 # ── 引导补全：把 \bootmgr + \Boot\* 拷进目标分区（万能镜像常缺 \Boot\BCD）──
@@ -532,8 +918,9 @@ say "apply done"
 # 已存在文件会报 "File exists"（rc=46 WIMLIB_ERR_NTFS_3G），而镜像里一般已有
 # \bootmgr —— cp 会正常覆盖。
 if [ -f /tmp/bootfix/bootmgr ]; then
+    STEP=bootfix
     say "install bootfix files (\\bootmgr + \\Boot)"
-    command -v ntfsfix >/dev/null 2>&1 && ntfsfix -d "$TARGET_DEV" >> "$LOG" 2>&1
+    command -v ntfsfix >/dev/null 2>&1 && timeout 60 ntfsfix -d "$TARGET_DEV" >> "$LOG" 2>&1
     BFM=/tmp/zj_bf
     mkdir -p "$BFM"
     if mount -t ntfs3 "$TARGET_DEV" "$BFM" 2>/tmp/zjbf.err \
@@ -645,14 +1032,23 @@ find_esp_dev(){
         [ -b "$_d" ] || continue
         case "$_d" in *loop*|*ram*) continue ;; esac
         [ "$_d" = "$TARGET_DEV" ] && continue
-        _t=$(blkid -s PART_ENTRY_TYPE -o value "$_d" 2>/dev/null | tr 'A-Z' 'a-z')
+        # ESP 一定在内置盘：U 盘上恰有 ESP 类型的 FAT 不该被当成目标机 ESP
+        is_removable "$(basename "$_d")" && continue
+        _t=$(timeout 30 blkid -s PART_ENTRY_TYPE -o value "$_d" 2>/dev/null | tr 'A-Z' 'a-z')
         [ "$_t" = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" ] && { echo "$_d"; return 0; }
     done
     for _d in $(list_parts); do
         [ -b "$_d" ] || continue
         case "$_d" in *loop*|*ram*) continue ;; esac
         [ "$_d" = "$TARGET_DEV" ] && continue
-        case "$(blkid -s TYPE -o value "$_d" 2>/dev/null)" in vfat|fat|fat32) ;; *) continue ;; esac
+        is_removable "$(basename "$_d")" && continue
+        case "$(timeout 30 blkid -s TYPE -o value "$_d" 2>/dev/null)" in vfat|fat|fat32) ;; *) continue ;; esac
+        # 已挂着的（如被认领为兜底日志窝的 ESP）直接用现挂载点判定
+        _mp=$(awk -v d="$_d" '$1==d{print $2; exit}' /proc/mounts 2>/dev/null)
+        if [ -n "$_mp" ]; then
+            [ -d "$_mp/EFI" ] && { echo "$_d"; return 0; }
+            continue
+        fi
         mkdir -p /tmp/zj_esp_probe
         if mnt_dev "$_d" /tmp/zj_esp_probe; then
             if [ -d /tmp/zj_esp_probe/EFI ]; then
@@ -665,6 +1061,7 @@ find_esp_dev(){
     return 1
 }
 if [ -n "$ESP_INDEX" ]; then
+    STEP=esp
     ESP_DEV=$(find_esp_dev)
     if [ -n "$ESP_DEV" ]; then
         ESPM=/tmp/zj_esp_m
@@ -706,6 +1103,7 @@ cleanup_after_success(){
         [ -b "$_d" ] || continue
         [ "$_d" = "$TARGET_DEV" ] && continue
         case "$_d" in *sr*|*loop*|*cdrom*) continue ;; esac
+        is_mounted "$_d" && continue
         mkdir -p /tmp/zj_cl
         if mnt_dev "$_d" /tmp/zj_cl; then
             _did=0
@@ -727,12 +1125,17 @@ cleanup_after_success(){
             # 蓝屏/引导损坏时也能用）。要清只能由 Windows 侧「删除启动还原」执行。
             # 注意：这说明 ~50MB 内核+initramfs 会长期占 ESP（ESP 一般 ≥100MB）。
             umount /tmp/zj_cl 2>/dev/null
-            command -v ntfsfix >/dev/null 2>&1 && ntfsfix -d "$_d" >> "$LOG" 2>&1
+            command -v ntfsfix >/dev/null 2>&1 && timeout 60 ntfsfix -d "$_d" >> "$LOG" 2>&1
         fi
     done
 }
 
-persist_log          # 把完整日志落到 ZJRESTORE\logs\（cleanup 会保留该子目录）
+# 成功：结果置 OK；日志 + 状态回执落软件目录与 ESP（**不写目标盘** —— 还原后
+# 的系统盘不留我们的文件；ESP 的 \EFI\ZJRESTORE\logs\ 是常驻救援模块的一部分）。
+RESULT=OK; STEP=done
+persist_log          # 把完整日志落到 <软件目录>\logs\（cleanup 会保留该子目录）
+bb_esp_drop
+stop_log_mirror      # 停掉后台日志镜像循环
 trap - EXIT          # 清理阶段不要再触发 persist_log 把日志写回去
 cleanup_after_success
 sync

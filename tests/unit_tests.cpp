@@ -18,6 +18,8 @@
 #include "boot/task.h"
 #include "common/i18n.h"
 #include "common/pathutil.h"
+#include "common/relocate.h"
+#include "common/rescue_decision.h"
 #include "common/sysinfo.h"
 #include "common/version.h"
 #include "common/zip.h"
@@ -518,4 +520,71 @@ TEST(bcd_enum_shows_os_entry) {
         "Windows Boot Loader\n"
         "path                    \\Windows\\system32\\winload.efi\n",
         &why));
+}
+
+// ────────────────────── relocate（运行目录搬迁目的地选择） ──────────────────────
+// 用户 2026-10-03 规则：系统分区之外的第一顺序可写固定分区；没有则退回系统分区。
+
+TEST(relocate_drive_choice) {
+    // 系统在 C: → 选第一块非系统盘
+    CHECK_EQ(SelectRelocateDrive({L'C', L'D', L'E'}, L'C'), L'D');
+    // 系统在 D: → 用 C:
+    CHECK_EQ(SelectRelocateDrive({L'C', L'D'}, L'D'), L'C');
+    // 只有系统盘 → 退回系统盘（单分区机器）
+    CHECK_EQ(SelectRelocateDrive({L'C'}, L'C'), L'C');
+    // 无候选 → 0
+    CHECK_EQ(SelectRelocateDrive({}, L'C'), L'\0');
+    // 大小写不敏感
+    CHECK_EQ(SelectRelocateDrive({L'c'}, L'c'), L'C');
+    // 候选顺序即优先级（C 被排除时取 D，即便 E 也在列表里）
+    CHECK_EQ(SelectRelocateDrive({L'D', L'E'}, L'C'), L'D');
+}
+
+// ────────────────────── rescue_decision（回执/待执行标记判定，PIT-115） ────
+// 用户 2026-10-05 规格："救援层是否真的跑过"必须能从记录中判定：
+//   标记（pending）比所有回执新 / 压根没回执 → 任务从未执行；
+//   有 FAILED 回执且标记不更新            → 上次还原失败；
+//   其余（只有 OK、标记时间相等）          → 无事可报。
+TEST(rescue_report_decision) {
+    using sysrecover::DecideRescueReport;
+    using sysrecover::RescueReport;
+    using sysrecover::RescueRunTimes;
+
+    // ① 什么都没有 → 不报
+    RescueRunTimes t{};
+    CHECK(DecideRescueReport(t) == RescueReport::None);
+
+    // ② 只有待执行标记（救援从未跑/从未写回执）→ 报"未执行"
+    t.pendingTime = "2026-10-05 10:00:00";
+    CHECK(DecideRescueReport(t) == RescueReport::TaskNotExecuted);
+
+    // ③ 标记 + 更旧的回执（旧任务的 OK/FAILED 不算数）→ 仍报"未执行"
+    t.latestStatusTime = "2026-10-05 09:00:00";
+    CHECK(DecideRescueReport(t) == RescueReport::TaskNotExecuted);
+
+    // ④ 标记 + 更新的 OK 回执 → 已执行、无失败 → 不报
+    t.latestStatusTime = "2026-10-05 11:00:00";
+    CHECK(DecideRescueReport(t) == RescueReport::None);
+
+    // ⑤ 同上但最新回执是 FAILED → 报"上次还原失败"
+    t.latestFailedTime = "2026-10-05 11:00:00";
+    CHECK(DecideRescueReport(t) == RescueReport::RestoreFailed);
+
+    // ⑥ 标记又更新（又暂存了一次、还没跑）→ 回到"未执行"
+    t.pendingTime = "2026-10-05 12:00:00";
+    CHECK(DecideRescueReport(t) == RescueReport::TaskNotExecuted);
+
+    // ⑦ 无标记 + FAILED 回执（老路径，0.6.29 之前就有的主场景）→ 报失败
+    t = RescueRunTimes{};
+    t.latestFailedTime = "2026-10-05 11:00:00";
+    CHECK(DecideRescueReport(t) == RescueReport::RestoreFailed);
+
+    // ⑧ 标记与回执**时间相等** → 视为已执行（防同秒竞态误报）
+    t.pendingTime = "2026-10-05 11:00:00";
+    CHECK(DecideRescueReport(t) == RescueReport::RestoreFailed);
+
+    // ⑨ 只有 OK 回执、无失败、无标记 → 不报
+    t = RescueRunTimes{};
+    t.latestStatusTime = "2026-10-05 11:00:00";
+    CHECK(DecideRescueReport(t) == RescueReport::None);
 }

@@ -447,7 +447,8 @@ bool ReadSmartData(uint32_t diskIndex, unsigned char* out) {
     return true;
 }
 
-bool SmartReturnStatus(uint32_t diskIndex, bool& failing) {
+bool SmartReturnStatus(uint32_t diskIndex, bool& failing, unsigned char* cl,
+                       unsigned char* ch) {
     Handle h = OpenPhysicalDrive(diskIndex);
     if (!h.valid())
         return false;
@@ -460,9 +461,25 @@ bool SmartReturnStatus(uint32_t diskIndex, bool& failing) {
     if (!DeviceIoControl(h.h, IOCTL_ATA_PASS_THROUGH, &apt, sizeof(apt), &apt,
                          sizeof(apt), &br, nullptr))
         return false;
-    // "即将故障" = 回读到的 LBA low/mid 仍是 0x4F/0xC2；健康时清 0。
-    failing = (apt.CurrentTaskFile[2] == 0x4F && apt.CurrentTaskFile[3] == 0xC2);
-    return true;
+    // ATA8-ACS：结果在 **Cylinder Low/High（下标 [3]/[4]）** ——
+    //   健康 = CL 0x4F / CH 0xC2；预测故障 = CL 0xF4 / CH 0x2C。
+    // ⚠️ 旧实现查的是 [2]/[3]（SectorNumber/CylinderLow）：在"控制器不回填
+    //    CurrentTaskFile"的机器上，[2]/[3] 会保留请求时写入的 0x4F/0xC2 →
+    //    健康盘被误报"驱动器自报即将故障"（2026-10-02 客户笔记本两块盘都误报，
+    //    第三方工具显示正常）。既非 OK 也非 over → 结果不可信，按 fail-open 处理。
+    if (cl)
+        *cl = apt.CurrentTaskFile[3];
+    if (ch)
+        *ch = apt.CurrentTaskFile[4];
+    if (apt.CurrentTaskFile[3] == 0x4F && apt.CurrentTaskFile[4] == 0xC2) {
+        failing = false;
+        return true;
+    }
+    if (apt.CurrentTaskFile[3] == 0xF4 && apt.CurrentTaskFile[4] == 0x2C) {
+        failing = true;
+        return true;
+    }
+    return false;  // 回读值不是约定值（含"请求值没被回填"）→ 不下结论
 }
 
 // 属性表：前 2 字节版本号，之后 30 条 × 12 字节（id/状态/当前/最差/raw6/保留）。
@@ -541,8 +558,10 @@ DiskHealth QueryDiskHealth(uint32_t diskIndex) {
         h.pendingSectors = SmartAttrRaw(d, 197);
         h.uncorrectableSectors = SmartAttrRaw(d, 198);
         bool failing = false;
-        if (SmartReturnStatus(diskIndex, failing))
+        if (SmartReturnStatus(diskIndex, failing, &h.srCl, &h.srCh)) {
             h.failing = failing;
+            h.failingKnown = true;
+        }
     } else if (ReadNvmeSmart(diskIndex, d)) {  // ── NVMe 路径（Win10+）
         h.smartKnown = true;
         h.isNvme = true;

@@ -5,12 +5,16 @@
 #include <windows.h>
 
 #include <cstdio>
+#include <string>
+#include <vector>
 
 #include "bcd.h"
 #include "uefi.h"
 #include "../disk/disk.h"
 #include "../common/process.h"
 #include "../common/selfarch.h"
+#include "../common/version.h"
+#include "../common/zip.h"  // Crc32（部署后校验，A6）
 
 namespace sysrecover {
 namespace {
@@ -27,6 +31,33 @@ std::string W2U(const std::wstring& w) {
     WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &s[0], n, nullptr,
                         nullptr);
     return s;
+}
+
+// 文件 CRC32（部署后校验用，A6：救援文件必须与 bootfiles 源一致 —— 防旧版残留/
+// 半截拷贝导致"旧救援配新契约"混用；用户 2026-10-04 要求杜绝）。
+bool FileCrc32(const std::wstring& path, uint32_t& out) {
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE)
+        return false;
+    std::vector<char> buf;
+    char tmp[1 << 20];
+    DWORD rd = 0;
+    while (ReadFile(h, tmp, sizeof(tmp), &rd, nullptr) && rd > 0)
+        buf.insert(buf.end(), tmp, tmp + rd);
+    CloseHandle(h);
+    out = Crc32(buf.data(), buf.size());
+    return true;
+}
+
+bool VerifyCopy(const std::wstring& src, const std::wstring& dst,
+                std::string& log) {
+    uint32_t a = 0, b = 0;
+    if (!FileCrc32(src, a) || !FileCrc32(dst, b) || a != b) {
+        log += "verify FAIL " + W2U(dst) + "\n";
+        return false;
+    }
+    return true;
 }
 
 bool WriteTextFile(const std::wstring& path, const std::string& utf8) {
@@ -177,6 +208,15 @@ bool CopyBootFiles(const std::wstring& dataDrive, const std::wstring& exeDir,
                   boot + L"\\initramfs-zjrestore.cpio.gz", log);
     ok &= CopyOne(exeDir + L"\\bootfiles\\zjrestore-lite.sh",
                   scripts + L"\\zjrestore-lite.sh", log);
+    // A6：部署后逐文件 CRC 校验（源 vs 落盘），不一致即视为部署失败 ——
+    // 杜绝"盘上是旧版救援、契约却是新版"的静默混用。
+    ok &= VerifyCopy(exeDir + L"\\bootfiles\\vmlinuz-zjrestore",
+                     boot + L"\\vmlinuz-zjrestore", log);
+    ok &= VerifyCopy(exeDir + L"\\bootfiles\\initramfs-zjrestore.cpio.gz",
+                     boot + L"\\initramfs-zjrestore.cpio.gz", log);
+    // 明文构建戳：diag/收集器可读，一眼核对盘上救援是哪一版
+    WriteTextFile(rec + L"\\rescue-build.txt",
+                  std::string(SYSRECOVER_VERSION) + "\n");
     return ok;
 }
 

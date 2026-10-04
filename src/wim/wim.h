@@ -48,7 +48,10 @@ public:
               const std::wstring& target, ProgressFn progress);
     // progress：校验进度（wimlib VERIFY_STREAMS 有真实字节数；不给回调也行）。
     int Verify(const std::wstring& imagePath, ProgressFn progress = {});
-    // 可用性检查（还原暂存前必做）：打开镜像并检查是否"写入未完成/不完整"。
+    // 可用性**快检**（秒级；还原暂存前必做、备份写出后也必做）：能打开 + 没有
+    // "写入未完成"标记 + 至少一个子镜像（防 PIT-057 的"半截镜像"黑屏）。
+    // ⚠️ 不做全文件校验（PIT-106）：大镜像全量扫描要十几分钟，用户无法忍受；
+    // 需要全量校验请显式调 Verify（--verify / verify 命令）。
     // 返回 0=可用；非 0=不可用（why 填原因，UTF-16）。
     int Probe(const std::wstring& imagePath, std::wstring& why);
     int ListImages(const std::wstring& imagePath,

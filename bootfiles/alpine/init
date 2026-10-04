@@ -27,8 +27,15 @@ mkdir -p /proc /sys /dev /tmp /mnt
 
 LOG=/tmp/zjrestore.log
 say(){ echo "SR: $*"; echo "$(date '+%F %T') $*" >> "$LOG"; }
+# 黑匣子探测表（与 zjrestore-lite.sh 共用同一文件）：每个分区的 mount 结果都
+# 记下来，失败时随日志写到所有可写面 —— "为什么找不到任务/镜像"有据可查。
+PROBE=/tmp/zj-probe.txt
+: > "$PROBE" 2>/dev/null
+probe(){ echo "$(date '+%F %T') $*" >> "$PROBE" 2>/dev/null; say "PROBE $*"; }
 
 say "SysRecover rescue (kernel $(uname -r))"
+# 救援层构建版本（PIT-103）：日志一眼可判"跑的是哪一版救援层"（防版本混淆）
+[ -f /zjrescue-version ] && say "rescue build $(cat /zjrescue-version 2>/dev/null)"
 
 # ── 加载存储 / 文件系统模块（覆盖 SATA/AHCI、NVMe、各厂商 HBA、虚拟化、USB）──
 # 注意：不要跑 depmod（busybox depmod 可能写坏 modules.dep）；直接用镜像里
@@ -119,14 +126,54 @@ for _p in /sys/module/nvme_core/parameters/io_timeout /sys/module/nvme/parameter
     fi
 done
 
-# ── 设备枚举（只取分区）──
+# ── 设备枚举（用户 2026-10-04 规格）──
+# 顺序：**内置盘分区 → 可移动盘分区 → 无分区的可移动整盘（光盘/未分区 U 盘）**。
+# 理由：镜像/目标通常在内置盘，U 盘/光盘放最后扫描（降低干扰面），但**不能丢** ——
+# 镜像可能合法地放在光盘/U 盘上（A9：这些情况必须被记录，不许"什么都不知道"）。
+is_removable(){
+    _rp=$(readlink -f "/sys/class/block/$1" 2>/dev/null)
+    [ -n "$_rp" ] || return 1
+    if [ -f "$_rp/removable" ]; then _rd="$_rp"; else _rd="$(dirname "$_rp")"; fi
+    [ "$(cat "$_rd/removable" 2>/dev/null)" = "1" ]
+}
 list_parts(){
     for _p in /sys/class/block/*; do
         [ -f "$_p/partition" ] || continue
-        echo "/dev/$(basename "$_p")"
+        _b=$(basename "$_p")
+        is_removable "$_b" || echo "/dev/$_b"
+    done
+    for _p in /sys/class/block/*; do
+        [ -f "$_p/partition" ] || continue
+        _b=$(basename "$_p")
+        is_removable "$_b" && echo "/dev/$_b"
+    done
+    for _p in /sys/class/block/*; do
+        [ -f "$_p/partition" ] && continue
+        _b=$(basename "$_p")
+        case "$_b" in loop*|ram*|dm-*) continue ;; esac
+        is_removable "$_b" && echo "/dev/$_b"
     done
 }
 say "block devs: $(ls /sys/class/block 2>/dev/null | tr '\n' ' ')"
+# 存储/USB 控制器清单（PCI ID + 绑定驱动）：排查"驱动覆盖/行为差异"用
+#（用户 2026-10-04 需求 A5；sysfs 直读，零新依赖）。
+say "storage/usb controllers (pci):"
+for _pd in /sys/bus/pci/devices/*; do
+    _cl=$(cat "$_pd/class" 2>/dev/null)
+    case "$_cl" in
+        0x0100*|0x0101*|0x0104*|0x0106*|0x0107*|0x0108*|0x0109*|0x0c03*)
+            _vn=$(cat "$_pd/vendor" 2>/dev/null)
+            _de=$(cat "$_pd/device" 2>/dev/null)
+            _dl=$(readlink "$_pd/driver" 2>/dev/null)
+            _dr=${_dl##*/}
+            [ -n "$_dr" ] || _dr=none
+            say "  $(basename "$_pd") $_vn:$_de class=$_cl driver=$_dr"
+            ;;
+    esac
+done
+# 整机/主板/BIOS 标识（DMI，用户 2026-10-05 规格）：硬件兼容排查第一步
+say "dmi: $(cat /sys/class/dmi/id/sys_vendor 2>/dev/null) | $(cat /sys/class/dmi/id/product_name 2>/dev/null) | $(cat /sys/class/dmi/id/board_name 2>/dev/null) | bios $(cat /sys/class/dmi/id/bios_version 2>/dev/null) $(cat /sys/class/dmi/id/bios_date 2>/dev/null)"
+say "cmdline: $(cat /proc/cmdline 2>/dev/null)"
 
 # ── 兜底：一个分区都没枚举到 → 名单可能漏了驱动，全量 modprobe 两轮再扫 ──
 # 这是为了"通用兼容"而设的保险：宁可慢一次，也不要因为漏一个驱动名而
@@ -153,26 +200,35 @@ mkdir -p "$ZJ_M"
 
 mnt_dev(){
     _dev="$1"; _mnt="$2"
+    # 屏幕级"进行中"标记（2026-10-05 用户规格）：内核级挂死/全盘不可写时，
+    # 文件一个都留不下——**最后一屏就是唯一证据**，这行告诉现场"卡在哪个设备"。
+    say "  mnt $_dev"
     : > /tmp/zjmnt.err
-    _fs=$(blkid -s TYPE -o value "$_dev" 2>/dev/null)
+    # 全部加 timeout（与 zjrestore-lite.sh 同款）：挂载/探测挂死（坏盘、控制器抽风、
+    # 特殊分区布局）时**绝不能静默卡死整个救援层** —— 超时后照常记 FAIL 继续。
+    _fs=$(timeout 30 blkid -s TYPE -o value "$_dev" 2>/dev/null)
     echo "$_fs" > /tmp/zjmnt.fs
     case "$_fs" in
         ntfs)
-            mount -t ntfs3 "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
-            ntfs-3g -o remove_hiberfile "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
-            ntfs-3g -o force "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            timeout 60 mount -t ntfs3 "$_dev" "$_mnt" 2>>/tmp/zjmnt.err; _r=$?
+            [ $_r -eq 0 ] && return 0
+            [ $_r -eq 124 ] && echo " TIMEOUT(60s:ntfs3)" >> /tmp/zjmnt.err
+            timeout 60 ntfs-3g -o remove_hiberfile "$_dev" "$_mnt" 2>>/tmp/zjmnt.err; _r=$?
+            [ $_r -eq 0 ] && return 0
+            [ $_r -eq 124 ] && echo " TIMEOUT(60s:ntfs-3g)" >> /tmp/zjmnt.err
+            timeout 60 ntfs-3g -o force "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
             ;;
         vfat|fat|fat32)
-            mount -t vfat "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            timeout 60 mount -t vfat "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
             ;;
         exfat)
-            mount -t exfat "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            timeout 60 mount -t exfat "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
             ;;
         ext4|ext3|ext2|xfs|btrfs)
-            mount "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            timeout 60 mount "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
             ;;
         *)
-            mount "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
+            timeout 60 mount "$_dev" "$_mnt" 2>>/tmp/zjmnt.err && return 0
             ;;
     esac
     return 1
@@ -181,29 +237,56 @@ mnt_dev(){
 # ── 1) 找 _zjresy*.log（主契约，位于目标分区根）──
 found_log=""
 TARGET_DEV=""
+# 分区实际起始偏移（字节 = sysfs start × 512；GPT/MBR/EBR 逻辑盘全准）。
+dev_offset_sectors(){
+    _st=$(cat "/sys/class/block/$(basename "$1")/start" 2>/dev/null)
+    [ -n "$_st" ] && { echo $((_st * 512)); return 0; }
+    return 1
+}
 # 扫各分区找任务日志（主契约：_zjresy*.log 在目标分区根）→ 设 found_log / TARGET_DEV。
+# 用户 2026-10-04 规格 A2：**优先采用"日志里的 target_part_offset == 该分区实际
+# 偏移"的那份**（正常全系统只剩一份；万一多份，靠这个挑对），其余只作最后兜底。
 # 抽成函数，便于"全量兜底扫模块后再找一遍"（见 2b）。
 scan_for_log(){
     found_log=""; TARGET_DEV=""
+    _fb_log=""; _fb_dev=""
     for _d in $(list_parts); do
         [ -b "$_d" ] || continue
+        _sz=$(cat "/sys/class/block/$(basename "$_d")/size" 2>/dev/null)
+        _off=$(blkid -s PART_ENTRY_OFFSET -o value "$_d" 2>/dev/null)
+        _rem=""; is_removable "$(basename "$_d")" && _rem="1"
         mkdir -p "$ZJ_M"
         if mnt_dev "$_d" "$ZJ_M"; then
             _hit=""
             for _f in "$ZJ_M"/_zjresy*.log; do
                 [ -f "$_f" ] || continue
-                cp "$_f" /tmp/ 2>/dev/null
-                found_log="$_f"; TARGET_DEV="$_d"; _hit=1
-                say "found log: $_f (dev=$_d)"
-                [ -f "$ZJ_M/restore-task.conf" ] && cp "$ZJ_M/restore-task.conf" /tmp/ 2>/dev/null
+                _hit=1
+                _want=$(grep '^target_part_offset=' "$_f" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r')
+                _have=$(dev_offset_sectors "$_d")
+                if [ -n "$_want" ] && [ -n "$_have" ] && [ "$_want" = "$_have" ]; then
+                    cp "$_f" /tmp/ 2>/dev/null
+                    found_log="$_f"; TARGET_DEV="$_d"
+                    say "found log: $_f (dev=$_d rem=${_rem:-0}, offset match $_want)"
+                    [ -f "$ZJ_M/restore-task.conf" ] && cp "$ZJ_M/restore-task.conf" /tmp/ 2>/dev/null
+                    break
+                fi
+                [ -z "$_fb_log" ] && { _fb_log="$_f"; _fb_dev="$_d"; }
             done
+            _root=$(ls -A "$ZJ_M" 2>/dev/null | head -n 8 | tr '\n' ',')
+            probe "dev=$_d size=${_sz}s off=${_off:-?} fs=$(cat /tmp/zjmnt.fs 2>/dev/null) rem=${_rem:-0} mount=ok root=[$_root] log=$([ -n "$_hit" ] && echo yes || echo no)"
             [ -z "$_hit" ] && say "mounted $_d (no log)"
             umount "$ZJ_M" 2>/dev/null
             [ -n "$found_log" ] && break
         else
+            probe "dev=$_d size=${_sz}s off=${_off:-?} fs=$(cat /tmp/zjmnt.fs 2>/dev/null) rem=${_rem:-0} mount=FAIL err=$(cat /tmp/zjmnt.err 2>/dev/null | tr '\n' ' ' | head -c 150)"
             say "mount FAILED $_d (fs=$(cat /tmp/zjmnt.fs 2>/dev/null)): $(cat /tmp/zjmnt.err 2>/dev/null | tr '\n' ' ')"
         fi
     done
+    if [ -z "$found_log" ] && [ -n "$_fb_log" ]; then
+        cp "$_fb_log" /tmp/ 2>/dev/null
+        found_log="$_fb_log"; TARGET_DEV="$_fb_dev"
+        say "WARN: no offset-matching _zjresy, fallback to first candidate (dev=$TARGET_DEV)"
+    fi
     [ -n "$found_log" ] || say "no _zjresy*.log found"
 }
 scan_for_log
@@ -249,6 +332,7 @@ fi
 if [ ! -f /tmp/bootfix/bootmgr ]; then
     for _d in $(list_parts); do
         [ -b "$_d" ] || continue
+        say "  scan $_d for bootfix"
         mkdir -p "$ZJ_M"
         if mnt_dev "$_d" "$ZJ_M"; then
             _bf=$(find "$ZJ_M" -maxdepth 4 -type f -path "*bootfix/bootmgr" 2>/dev/null | head -1)
@@ -261,6 +345,7 @@ if [ ! -f /tmp/bootfix/bootmgr ]; then
             [ -f /tmp/bootfix/bootmgr ] && break
         fi
     done
+    say "bootfix scan done"
 fi
 [ -f /tmp/bootfix/bootmgr ] || say "warn: no bootfix files (BIOS boot files may be missing)"
 
@@ -279,13 +364,69 @@ if [ -n "$TARGET_DEV" ] && [ -b "$TARGET_DEV" ]; then
     fi
 fi
 
+# ── 2d) 测试钩子（内核 cmdline，仅供实验室/"印证版"；产线不带这些参数）──
+#   zjapply=block|dir|dirfuse   zjfs=ntfs3|fuse|auto   zjtarget=format|keep
+# （zjapply=dir/dirfuse 仅供实验室复现"目录写"对比；产线用户流程永远是 block）
+for _kv in $(cat /proc/cmdline 2>/dev/null); do
+    case "$_kv" in
+        zjapply=*)    export ZJ_APPLY_MODE="${_kv#zjapply=}" ;;
+        zjfs=*)       export ZJ_APPLY_FS="${_kv#zjfs=}" ;;
+        zjtarget=*)   export ZJ_TARGET_MODE="${_kv#zjtarget=}" ;;
+    esac
+done
+
 # ── 3) 执行还原（有日志或 conf 即可）──
 # 不 exec：脚本若中途失败，落到 shell 便于排查，也避免 PID1 退出触发 panic。
-if [ -x /zjrestore-lite.sh ] && { [ -n "$found_log" ] || [ -f /tmp/restore-task.conf ]; }; then
+_ran=0
+if [ -x /zjrestore-lite.sh ] && { [ -n "$found_log" ] || [ -f /tmp/restore-task.conf ]; }; then _ran=1; fi
+_rc=0
+if [ "$_ran" = "1" ]; then
     say "run restore: target=${TARGET_DEV:-<from offset>}"
     /bin/sh /zjrestore-lite.sh "$TARGET_DEV"
-    say "restore script returned (rc=$?)"
+    _rc=$?
+    say "restore script returned (rc=$_rc)"
 fi
-
-say "no restore task -> shell"
+# 黑匣子兜底：脚本没跑（找不到任务）、或跑挂了没来得及写盘 → 调脚本的
+# zz-blackbox 模式把日志+探测表+状态写到所有可写面（逻辑单源，不重复实现）。
+# /tmp/zj-bb.done 非空 = 脚本自己已经扫过（失败路径的 EXIT trap），不重复扫。
+if [ ! -s /tmp/zj-bb.done ]; then
+    if [ "$_ran" = "1" ]; then _why=interrupted; else _why=no-task; fi
+    say "blackbox: sweep by init (reason=$_why)"
+    /bin/sh /zjrestore-lite.sh zz-blackbox "$_why"
+    [ -s /tmp/zj-bb.done ] || say "WARN: no writable surface found for logs"
+fi
+if [ "$_ran" = "1" ]; then
+    if [ "$_rc" -eq 0 ]; then
+        say "RESULT: restore finished ok (rc=0)"
+    else
+        say "RESULT: restore FAILED (rc=$_rc)"
+    fi
+else
+    say "RESULT: no restore task on this machine (all partitions scanned)"
+fi
+_wrote=0; [ -s /tmp/zj-bb.done ] && _wrote=1
+if [ "$_wrote" = "1" ]; then
+    say "logs written to: ZJRESTORE-last.log + ZJRESTORE-status.txt (disk roots / ESP \\EFI\\ZJRESTORE\\logs / software logs dir)"
+    if [ "$_ran" = "1" ] && [ "$_rc" -ne 0 ]; then
+        # 屏幕会滚动：失败时把日志尾部**再打一遍**，保证现场最后一屏自带关键线索
+        #（用户 2026-10-05 规格：任何失败都要能"从记录中评估"）。
+        # 先取快照再打头，避免"头部被 tail 自己读进去"（尾块最后一行变成本行）。
+        _tl=$(tail -n 20 /tmp/zjrestore.log 2>/dev/null)
+        say "---- log tail (last 20 lines) ----"
+        echo "$_tl" | while IFS= read -r _l; do say "  |$_l"; done
+        say "---- end ----"
+    fi
+else
+    # 没有任何可写分区：屏幕是唯一证据面（用户 2026-10-05 规格）
+    say "WARN: no writable surface found"
+    _tl=$(tail -n 25 /tmp/zjrestore.log 2>/dev/null)
+    _km=$(dmesg 2>/dev/null | tail -n 20)
+    say "===== PHOTOGRAPH THIS SCREEN (no logs could be written to disk) ====="
+    say "---- last log lines ----"
+    echo "$_tl" | while IFS= read -r _l; do say "  |$_l"; done
+    say "---- kernel messages ----"
+    echo "$_km" | while IFS= read -r _l; do say "  |$_l"; done
+    say "===== end (photograph this screen) ====="
+fi
+say "entering rescue shell"
 exec /bin/sh
