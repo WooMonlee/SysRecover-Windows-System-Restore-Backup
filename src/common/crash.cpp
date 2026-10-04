@@ -1,10 +1,12 @@
 #include "crash.h"
 
 #include <windows.h>
-#include <dbghelp.h>  // 只用类型（MINIDUMP_*）；函数动态加载，不链接 dbghelp
+#include <dbghelp.h>   // 只用类型（MINIDUMP_*）；函数动态加载，不链接 dbghelp
+#include <tlhelp32.h>  // FindProcessIdsByName（Toolhelp 快照）
 
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include "../common/version.h"
 
@@ -154,6 +156,60 @@ LONG WINAPI CrashFilter(EXCEPTION_POINTERS* ep) {
 
 std::wstring CrashDir(const std::wstring& baseDir) {
     return baseDir + L"\\logs\\crash";
+}
+
+// ── 「日志」按钮用（支持包）：给别的进程写迷你转储 ─────────────────────────
+// MiniDumpNormal 已含**全部线程的调用栈**（足够看等待链/死锁卡在哪个模块），
+// 再加 WithThreadInfo 拿线程时间戳；比 FullMemory 小一个数量级，便于发给支持。
+bool WriteProcessMiniDump(unsigned long pid, const std::wstring& dmpPath) {
+    HANDLE ph = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE,
+                            (DWORD)pid);
+    if (!ph)
+        return false;
+    HMODULE dbg = LoadLibraryW(L"dbghelp.dll");
+    if (!dbg) {
+        CloseHandle(ph);
+        return false;
+    }
+    typedef BOOL(WINAPI * Fn)(HANDLE, DWORD, HANDLE, MINIDUMP_TYPE,
+                              PMINIDUMP_EXCEPTION_INFORMATION,
+                              PMINIDUMP_USER_STREAM_INFORMATION,
+                              PMINIDUMP_CALLBACK_INFORMATION);
+    Fn writeDump = (Fn)(void*)GetProcAddress(dbg, "MiniDumpWriteDump");
+    bool ok = false;
+    if (writeDump) {
+        HANDLE f = CreateFileW(dmpPath.c_str(), GENERIC_WRITE, 0, nullptr,
+                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (f != INVALID_HANDLE_VALUE) {
+            ok = writeDump(ph, (DWORD)pid, f,
+                           (MINIDUMP_TYPE)(MiniDumpNormal |
+                                           MiniDumpWithThreadInfo),
+                           nullptr, nullptr, nullptr) != FALSE;
+            CloseHandle(f);
+            if (!ok)
+                DeleteFileW(dmpPath.c_str());
+        }
+    }
+    FreeLibrary(dbg);
+    CloseHandle(ph);
+    return ok;
+}
+
+std::vector<unsigned long> FindProcessIdsByName(const wchar_t* exeName) {
+    std::vector<unsigned long> out;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE)
+        return out;
+    PROCESSENTRY32W pe = {};
+    pe.dwSize = sizeof(pe);
+    if (Process32FirstW(snap, &pe)) {
+        do {
+            if (_wcsicmp(pe.szExeFile, exeName) == 0)
+                out.push_back(pe.th32ProcessID);
+        } while (Process32NextW(snap, &pe));
+    }
+    CloseHandle(snap);
+    return out;
 }
 
 void InstallCrashHandler(const std::wstring& baseDir) {

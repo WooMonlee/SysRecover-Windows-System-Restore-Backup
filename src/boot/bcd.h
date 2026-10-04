@@ -76,4 +76,11 @@ bool BcdSetBootsequence(const std::wstring& guid);
 // 备份 BCD（bcdedit /export），失败不致命。
 bool BcdExport(const std::wstring& backupPath);
 
+// 安全模式开关（「日志」按钮的诊断动作）：
+//   enable=true  → `bcdedit /set {current} safeboot minimal`
+//   enable=false → `bcdedit /deletevalue {current} safeboot`
+// bcdedit 原文追加进 log。注意：进入是一次性显示？不是——该设置**持续有效**，
+// 直到用本函数关闭（或用户自己 msconfig 取消），调用方必须把两个方向都做出来。
+bool BcdSetSafeBoot(bool enable, std::string& log);
+
 }  // namespace sysrecover

@@ -16,6 +16,8 @@
 #include "bcd.h"
 #include "bcd_parse.h"
 #include "../common/process.h"
+#include "../common/version.h"
+#include "../common/zip.h"  // Crc32（部署后校验，A6）
 
 // ── MOK/UKI 备选线（PIT-062）──────────────────────────────────────
 // 「固件启动项 → shimx64.efi → 我们签名的 UKI」这条路（需要一次性 MOK 注册）
@@ -28,6 +30,33 @@
 
 namespace sysrecover {
 namespace {
+
+// 文件 CRC32 + 部署后校验（A6）：救援文件必须与 bootfiles 源一致 —— 防旧版
+// 残留/半截拷贝导致"旧救援配新契约"混用（用户 2026-10-04 要求杜绝）。
+bool FileCrc32(const std::wstring& path, uint32_t& out) {
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE)
+        return false;
+    std::vector<char> buf;
+    char tmp[1 << 20];
+    DWORD rd = 0;
+    while (ReadFile(h, tmp, sizeof(tmp), &rd, nullptr) && rd > 0)
+        buf.insert(buf.end(), tmp, tmp + rd);
+    CloseHandle(h);
+    out = Crc32(buf.data(), buf.size());
+    return true;
+}
+
+bool VerifyCopy(const std::wstring& src, const std::wstring& dst,
+                std::string& log) {
+    uint32_t a = 0, b = 0;
+    if (!FileCrc32(src, a) || !FileCrc32(dst, b) || a != b) {
+        log += "verify FAIL " + std::string(dst.begin(), dst.end()) + "\n";
+        return false;
+    }
+    return true;
+}
 
 // EFI_GLOBAL_VARIABLE 命名空间。
 const wchar_t kGlobalGuid[] = L"{8BE4DF61-93CA-11D2-AA0D-00E098032B8C}";
@@ -524,6 +553,24 @@ bool InstallUefiBootEntry(const std::wstring& espRoot,
     if (!copied) {
         log += "copy UEFI rescue files FAIL\n";
         return false;
+    }
+    // A6：部署后逐文件 CRC 校验（源 vs ESP 落盘），不一致即失败；并写明文构建戳
+    for (const auto& f : files) {
+        if (!VerifyCopy(exeDir + f.first, dir + L"\\" + f.second, log)) {
+            log += "verify deployed rescue FAIL\n";
+            return false;
+        }
+    }
+    {
+        std::string vb = std::string(SYSRECOVER_VERSION) + "\n";
+        HANDLE hv = CreateFileW((dir + L"\\rescue-build.txt").c_str(),
+                                GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                                FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (hv != INVALID_HANDLE_VALUE) {
+            DWORD w = 0;
+            WriteFile(hv, vb.data(), (DWORD)vb.size(), &w, nullptr);
+            CloseHandle(hv);
+        }
     }
     if (mode == SbMode::None)
         SetFileAttributesW((dir + L"\\vmlinuz-zjrestore.efi").c_str(),

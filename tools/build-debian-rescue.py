@@ -31,6 +31,7 @@ import importlib.util
 import io
 import lzma
 import os
+import re
 import shutil
 import sys
 import tarfile
@@ -341,11 +342,51 @@ def main():
             shutil.copy2(s, os.path.join(zj.STG, name))
             zj.MODES[name] = mode
 
+    # 3b) "印证版"注入（不进产线）：把默认 apply 模式/驱动写进**打包副本**，
+    #     用于强制降级实验（ZJ_RESCUE_APPLY_MODE=dir|dirfuse /
+    #     ZJ_RESCUE_APPLY_FS=ntfs3|fuse），配合 ZJ_RESCUE_OUT 输出到别的文件名。
+    _t_mode = os.environ.get('ZJ_RESCUE_APPLY_MODE', '').strip()
+    _t_fs = os.environ.get('ZJ_RESCUE_APPLY_FS', '').strip()
+    if _t_mode or _t_fs:
+        sp = os.path.join(zj.STG, 'zjrestore-lite.sh')
+        with open(sp, encoding='utf-8') as fh:
+            st = fh.read()
+        inj = ''
+        if _t_mode:
+            inj += 'export ZJ_APPLY_MODE=%s\n' % _t_mode
+        if _t_fs:
+            inj += 'export ZJ_APPLY_FS=%s\n' % _t_fs
+        if 'set -u\n' not in st:
+            raise RuntimeError('test injection: "set -u" not found')
+        st = st.replace('set -u\n', 'set -u\n' + inj, 1)
+        with open(sp, 'w', encoding='utf-8', newline='\n') as fh:
+            fh.write(st)
+        log('TEST BUILD: injected %s' % inj.replace('\n', ' '))
+
+    # 3c) 救援层"构建版本戳"（PIT-103）：把版本号写进 initramfs，init 启动即打印。
+    # 用途：杜绝"客户换了新版、其实跑的还是旧救援层"的版本混淆 —— 以后任何救援日志
+    # 一眼能看到救援层版本；配合 `SysRecover.exe version` 即可确认整包一致。
+    try:
+        with open(os.path.join(HERE, '..', 'src', 'common', 'version.h'),
+                  encoding='utf-8') as fh:
+            _vh = fh.read()
+        _m = re.search(r'#define\s+SYSRECOVER_VERSION\s+"([^"]+)"', _vh)
+        _ver = _m.group(1) if _m else 'unknown'
+    except OSError:
+        _ver = 'unknown'
+    with open(os.path.join(zj.STG, 'zjrescue-version'), 'w',
+              encoding='utf-8', newline='\n') as fh:
+        fh.write(_ver + '\n')
+    zj.MODES['zjrescue-version'] = 0o644
+    log('rescue build stamp: %s' % _ver)
+
     # 4) 内核（Debian 签名）
     shutil.copy2(kernel, os.path.join(zj.BOOT, 'vmlinuz-zjrestore'))
 
-    # 5) 打包
-    out = os.path.join(zj.BOOT, 'initramfs-zjrestore.cpio.gz')
+    # 5) 打包（ZJ_RESCUE_OUT 可指定别的输出路径 —— "印证版"不覆盖产线 initramfs）
+    out = os.environ.get('ZJ_RESCUE_OUT') or os.path.join(
+        zj.BOOT, 'initramfs-zjrestore.cpio.gz')
+    os.makedirs(os.path.dirname(out), exist_ok=True)
     n, rawlen = zj.pack_cpio(zj.STG, out)
     log('initramfs: %d entries, %d bytes raw, %d bytes gz' %
         (n, rawlen, os.path.getsize(out)))

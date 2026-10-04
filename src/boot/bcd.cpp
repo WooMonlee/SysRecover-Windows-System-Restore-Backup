@@ -108,4 +108,15 @@ bool BcdExport(const std::wstring& backupPath) {
                       out) == 0;
 }
 
+bool BcdSetSafeBoot(bool enable, std::string& log) {
+    std::string out;
+    int rc = RunProcess(SysToolPath(L"bcdedit.exe"),
+                        enable ? L"/set {current} safeboot minimal"
+                               : L"/deletevalue {current} safeboot",
+                        out);
+    log += std::string("bcdedit safeboot ") + (enable ? "set" : "clear") +
+           " rc=" + std::to_string(rc) + ": " + out + "\n";
+    return rc == 0;
+}
+
 }  // namespace sysrecover

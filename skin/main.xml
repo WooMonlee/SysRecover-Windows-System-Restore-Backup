@@ -49,7 +49,10 @@
              互相取消（COptionUI 只有 m_sGroupName 非空才进组）。
              默认 visible=false：启动是还原模式。 -->
         <GlyphCheck name="EspChk" float="true" pos="388,296,510,329" text="ESP" visible="false"
-                tooltip="勾选后，备份时把ESP分区一并写入镜像（子镜像名ESP）；恢复系统时将自动把ESP一并恢复到ESP分区。" />
+                tooltip="备份时把ESP分区一并写入镜像（子镜像名ESP）；恢复系统时将自动把ESP一并恢复到ESP分区。" />
+        <!-- 2026-10-02 已删除「允许降级」选项：目录写会系统性丢/篡改 Windows 元数据
+             （ACL/属性/ADS/短名/创建时间/重解析点，见 PIT-102），不提供降级方案 ——
+             block 失败即明确报错（fail-closed），提示改用 PE 就地还原。 -->
         <SkinLabel name="NoteLabel" float="true" pos="112,118,232,132" text="镜像说明：" color="#FF5F6C80" fontsize="13" align="right" />
 
         <!-- ══════ 第二步卡片（蓝卡，y149..284） ══════ -->
@@ -72,14 +75,18 @@
         <SkinLabel name="Step3Badge" float="true" pos="30,301,92,324" text="第三步" bkcolor="#FFE08A2E" borderround="8,8" color="#FFFFFFFF" fontsize="13" align="center" />
         <SkinButton name="MainAction" float="true" pos="117,293,237,332" text="开始恢复" fontsize="16" bold="true" bkcolor="#FFE2E6EE" bordercolor="#FFE4E8EF" borderround="12,12" textcolor="#FF9AA3B2" enabled="false" />
         <!-- tooltip：鼠标悬停解释（Win32 Tooltip，300px 自动换行；LoadSkinXml 会翻属性值） -->
-    <GlyphCheck name="Silent" float="true" pos="420,302,520,326" text="静默模式"
+    <GlyphCheck name="Silent" float="true" pos="360,302,460,326" text="静默模式"
                 tooltip="不弹任何确认框，直接暂存任务并重启（无人值守/批量部署用）" />
+    <!-- 「日志」按钮（还原模式专属，2026-10-03 用户规格）：一键搜集 各盘日志 +
+         explorer 转储 + 事件日志 → 打包到桌面；结果框里可重启进/出安全模式。 -->
+    <SkinButton name="LogBtn" float="true" pos="466,296,524,329" text="日志" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFE7ECF2" borderround="14,14" textcolor="#FF1B2432"
+            tooltip="搜集还原日志与诊断信息并打包到桌面（含 explorer 转储、事件日志）" />
         <SkinLabel name="FormatLabel" float="true" pos="350,302,388,326" text="格式：" color="#FF1B2432" fontsize="13" align="right" visible="false" />
         <!-- 「类型」下拉（备份专属，2026-09-30 用户规格）：2026-09-30 二次调整——
              从第三步移到第一步「浏览」右侧（与「搜索」按钮同位置同尺寸 71×38）；
              收起框固定显示「类型」(collapsedtext)，展开仍是原来的三个格式选项。 -->
         <Combo name="FormatBox" float="true" pos="639,77,710,115" bkcolor="#FFFFFFFF" bordersize="1" bordercolor="#FFC9D6F2" borderround="16,16" textpadding="0,0,0,0" visible="false"
-                tooltip="备份格式（鼠标悬停看说明）：esd(慢)=慢速压缩、体积最小；wim(中)=正常大小；wim(快)=最快、体积最大">
+                tooltip="备份格式：esd(慢)=慢速压缩、体积最小；wim(中)=正常大小；wim(快)=最快、体积最大">
           <TextItem text="esd(慢)" height="30" collapsedtext="类型" />
           <TextItem text="wim(中)" height="30" collapsedtext="类型" />
           <TextItem text="wim(快)" height="30" collapsedtext="类型" />

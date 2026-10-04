@@ -8,8 +8,18 @@
 #include "../common/logger.h"    // LogInfo（启动耗时自检）
 #include "../common/process.h"   // MsSinceProcessStart
 #include "../common/selfarch.h"  // 位数自举：32 位程序在 64 位系统上换成 x64\同名
+#include "../common/relocate.h"  // 运行目录搬迁（光盘/U盘：复制到本地固定分区）
 using sysrecover::Tr;
+#include "confirm_dlg.h"
 #include "instance_dlg.h"
+
+namespace { std::wstring U2W8(const std::string& s) {
+    if (s.empty()) return L"";
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    std::wstring w(n > 0 ? n - 1 : 0, 0);
+    if (n > 0) MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, &w[0], n);
+    return w;
+} }  // namespace
 
 using namespace DuiLib;
 
@@ -64,8 +74,8 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         if (sysrecover::ReexecX64IfNeeded(&reexecCode, /*wait=*/false))
             return reexecCode;
     }
-    // 崩溃处理：装在最前面（真实进程），崩溃时把 dump+文本写到 <exeDir>\logs\crash\。
-    sysrecover::InstallCrashHandler(sysrecover::ExeDir());
+    // 崩溃处理：装在最前面（真实进程），崩溃时把 dump+文本写到 <日志根>\logs\crash\。
+    sysrecover::InstallCrashHandler(sysrecover::LogBaseDir());
     // i18n：词典必须在任何 Tr() 与建窗之前装好（皮肤 XML 也是在建窗时翻译的）。
     // GUI 只认 SYSRECOVER_LANG 环境变量 + 系统界面语言（CLI 另支持 --lang）。
     sysrecover::InitI18n(nullptr);
@@ -117,6 +127,48 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         // 找不到窗口：旧实例正在启动/退出途中 —— 直接继续，让本次成为新实例。
     }
     (void)hMutex;  // 另有分支已 CloseHandle；此处仅表示「本进程持锁」这一语义
+
+    // ── 运行目录搬迁（用户 2026-10-03 规格）──────────────────────────────
+    // 程序在光盘/U盘上：日志无法长期保存 → 询问后复制整包到本地固定分区再运行。
+    // 目的地 = 装了 Windows 的分区之外的第一顺序可写固定分区；没有别的分区时
+    // 文案说明"还原系统盘时程序与日志会被覆盖"。失败只提示并继续原地（产品永远能用）。
+    {
+        sysrecover::RelocatePlan rp = sysrecover::CheckRelocate();
+        if (rp.needed) {
+            std::wstring msg, left, right;
+            if (!rp.destRoot.empty()) {
+                msg = std::wstring(Tr(L"检测到程序在光盘或U盘上运行，")) + L"\n";
+                msg += std::wstring(Tr(L"是否复制到 ")) + rp.destRoot +
+                       std::wstring(Tr(L" 后运行？")) + L"\n";
+                msg += rp.onlySystemDrive
+                           ? Tr(L"注意：还原系统盘时程序与日志会被覆盖。")
+                           : Tr(L"复制后日志与还原记录都会保存在那里。");
+                left = Tr(L"留在原处");
+                right = Tr(L"复制并运行");
+            } else {
+                msg = Tr(L"程序在只读介质上，且没有可写磁盘。\n"
+                         L"本次运行的日志将无法保存。\n是否仍要继续？");
+                left = Tr(L"退出");
+                right = Tr(L"仍要运行");
+            }
+            if (CConfirmDlg::Ask2(nullptr, Tr(L"九转还原"), msg, left, right,
+                                  /*defaultIsRight=*/true) == 1) {
+                if (!rp.destRoot.empty()) {
+                    int code = 0;
+                    std::string err;
+                    if (sysrecover::DoRelocate(rp, /*wait=*/false, &code, &err)) {
+                        ::CoUninitialize();
+                        return 0;  // 新副本接手（单实例互斥由它继续持有）
+                    }
+                    std::wstring emsg =
+                        Tr(L"复制失败：") + U2W8(err) +
+                        Tr(L"\n将继续从当前位置运行，日志可能无法保存。");
+                    ::MessageBoxW(nullptr, emsg.c_str(), Tr(L"九转还原"),
+                                  MB_OK | MB_ICONWARNING);
+                }
+            }
+        }
+    }
 
     CMainForm* pWnd = new CMainForm();
     // 老界面是「自绘无外框」窗口：WS_POPUP → 没有系统标题栏、没有可拉伸边框

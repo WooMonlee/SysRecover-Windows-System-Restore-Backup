@@ -44,17 +44,17 @@ VERSION  := $(shell $(PYTHON) tools/version.py)
 CXXFLAGS = -O2 -std=c++17 -Wall -Wextra -D_WIN32_WINNT=0x0601 -DUNICODE -D_UNICODE
 INCLUDES = -Ithird_party/wimlib -Isrc
 LDFLAGS  = -static -mconsole
-LDLIBS   = -L$(WIMLIB) -l:libwim-15.dll -ladvapi32 -lole32 -lshell32 -luuid
+LDLIBS   = -L$(WIMLIB) -l:libwim-15.dll -ladvapi32 -lole32 -lshell32 -luuid -lgdi32
 
 # ---- 应用模块静态库（CLI 与 GUI 共用，避免双份编译 ODR 问题） ----
 APP_SRC = src/disk/disk.cpp src/wim/wim.cpp src/wim/exclude.cpp \
       src/common/process.cpp src/common/logger.cpp src/common/progress.cpp \
       src/common/singleton.cpp src/common/sysinfo.cpp src/common/zip.cpp \
       src/common/selfarch.cpp src/common/crash.cpp src/common/vss.cpp src/common/i18n.cpp \
-      src/common/pathutil.cpp src/common/cpucap.cpp src/boot/bcd.cpp src/boot/grub.cpp \
+      src/common/relocate.cpp src/common/pathutil.cpp src/common/cpucap.cpp src/boot/bcd.cpp src/boot/grub.cpp \
       src/boot/uefi.cpp src/boot/bcd_parse.cpp src/boot/bootpath.cpp src/boot/task.cpp src/boot/bootfix.cpp \
       src/app/safety.cpp src/app/advice.cpp \
-      src/app/shortcut.cpp src/app/ops.cpp
+      src/app/shortcut.cpp src/app/ops.cpp src/app/selfdiag.cpp
 APP_OBJS = $(patsubst src/%.cpp,$(OBJDIR)/app/%.o,$(APP_SRC))
 APP_LIB  = $(OBJDIR)/libapp.a
 
@@ -146,7 +146,7 @@ clean:
 # ---- 单元测试（零依赖，纯逻辑；不链 duilib/wimlib，跑得快） ----
 TEST_SRC   = tests/tiny_test.cpp tests/unit_tests.cpp tests/main.cpp
 TEST_UNITS = src/common/sysinfo.cpp src/wim/exclude.cpp src/boot/task.cpp src/common/zip.cpp src/app/advice.cpp \
-      src/common/i18n.cpp src/common/selfarch.cpp src/common/pathutil.cpp src/boot/bcd_parse.cpp src/boot/bootpath.cpp
+      src/common/i18n.cpp src/common/selfarch.cpp src/common/relocate.cpp src/common/pathutil.cpp src/boot/bcd_parse.cpp src/boot/bootpath.cpp
 TEST_BIN   = $(OBJDIR)/tests.exe
 
 check: $(TEST_BIN)
@@ -156,7 +156,7 @@ check: $(TEST_BIN)
 	$(PYTHON) tools/check-i18n.py
 	$(PYTHON) tools/check-widths.py
 
-$(TEST_BIN): $(TEST_SRC) $(TEST_UNITS) src/common/version.h | $(OBJDIR)
+$(TEST_BIN): $(TEST_SRC) $(TEST_UNITS) src/common/rescue_decision.h src/common/version.h | $(OBJDIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(TEST_SRC) $(TEST_UNITS) -o $(TEST_BIN) -static -mconsole -ladvapi32 -lole32 -luuid
 
 # ---- 崩溃处理回归探针（**会故意崩溃**；验证 dump + 可读文本真能落盘）----

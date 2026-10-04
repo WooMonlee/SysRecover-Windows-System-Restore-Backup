@@ -20,12 +20,14 @@
 #include "../common/cpucap.h"
 #include "../common/process.h"
 #include "../common/progress.h"
+#include "../common/relocate.h"
 #include "../common/singleton.h"
 #include "../common/vss.h"
 #include "../common/version.h"
 #include "../disk/disk.h"
 #include "../wim/exclude.h"
 #include "safety.h"
+#include "selfdiag.h"
 
 namespace sysrecover {
 namespace {
@@ -416,12 +418,13 @@ int CheckRestoreSpace(const std::wstring& imagePath, int index,
 // 下面这行 = 把老签名**声明为已删除**：谁在本翻译单元里再按旧签名调用，编译期就报错。
 std::string ErrorAdvice(int rc, const std::string& err) = delete;
 
-// 历史记录（P7）：往 <exeDir>\logs\history.jsonl 追加一行（JSON Lines，外部/AI 好读）。
+// 历史记录（P7）：往 日志根\logs\history.jsonl 追加一行（JSON Lines，外部/AI 好读）。
+// 日志根见 LogBaseDir（PIT-104/105：一般=程序目录；软件在系统盘时=数据盘 ZJRESTORE）。
 // 记"什么时候做了什么"：备份完成、就地还原、暂存还原（暂存的实际结果在救援层日志里）。
 void AppendHistory(const char* action, const std::wstring& image,
                    const std::wstring& target, unsigned long long ms,
                    const char* detail) {
-    std::wstring dir = ExeDir() + L"\\logs";
+    std::wstring dir = LogBaseDir() + L"\\logs";
     CreateDirectoryW(dir.c_str(), nullptr);
     HANDLE h = CreateFileW((dir + L"\\history.jsonl").c_str(), FILE_APPEND_DATA,
                            FILE_SHARE_READ, nullptr, OPEN_ALWAYS,
@@ -732,10 +735,12 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
         return 1;
     }
 
+    // 收尾可用性检查（PIT-057 / PIT-106）：默认只做**秒级快检**（打开 +
+    // "写入未完成"标记 + 子镜像数）；全量校验只在用户显式 --verify 时跑一次
+    // （带真实进度）。不再默认全扫：大镜像扫一遍十几分钟，用户无法忍受。
+    bool didVerify = false;
     if (req.verify) {
         ProgressUpdate("backup", 99, "verify");
-        // 进入校验前先亮阶段名：Verify 里 open(CHECK_INTEGRITY) 是全文件扫描、
-        // 注册不了回调，没这行就又是几十秒静默（PIT-098）。
         if (progress) progress(99, "verify");
         int vrc = engine.Verify(req.dest, progress);
         if (vrc != 0) {
@@ -748,13 +753,10 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
             LogError(err);
             return 5;
         }
+        didVerify = true;
         LogInfo("backup verify passed");
     }
-    // 即便没要求 --verify，也检查一下镜像是否"写入完成"（防止中断留下半个文件，
-    // 被当成有效镜像去还原 → rc=84 黑屏，PIT-057）。
-    // Probe 用 CHECK_INTEGRITY 打开 = 全文件哈希扫描，大镜像几十秒且**没有回调**
-    // —— 必须先亮阶段名，否则 100% 后状态栏冻在上一阶段像卡死（PIT-098）。
-    {
+    if (!didVerify) {
         if (progress) progress(99, "probe");
         WimEngine probe;
         std::wstring why;
@@ -762,7 +764,7 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
             ReleaseOpLock();
             ProgressDone("backup", "failed");
             if (adv) *adv = ADV_INCOMPLETE;
-            err = Tr("备份镜像不可用（写入未完成）：");
+            err = Tr("备份镜像不可用：");
             err += W2U(why);
             LogError(err);
             return 1;
@@ -788,8 +790,9 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
         err = Tr("缺少镜像路径");
         return 1;
     }
-    // 0) 镜像可用性检查：拒绝"上次没写完/不完整"的镜像（否则 Linux 侧 apply
-    //    rc=84 WIM_IS_INCOMPLETE，而目标分区已被格式化 → 开机黑屏，PIT-057）
+    // 0) 镜像可用性**快检**（秒级，PIT-057 + PIT-106）：只拒绝"上次没写完/
+    //    不完整"的镜像（否则 Linux 侧 apply rc=84，而目标分区已被格式化 →
+    //    开机黑屏）；**不做全量扫描**（大镜像十几分钟，用户无法忍受）。
     {
         WimEngine probe;
         std::wstring why;
@@ -974,7 +977,9 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
     }
 
     std::wstring exeDir = ExeDir();
-    std::wstring logsDir = exeDir + L"\\logs";
+    // 日志根同 LogBaseDir（PIT-105）：软件在系统盘时 BCD 备份也放数据盘，
+    // 免得随系统盘一起被格式化。
+    std::wstring logsDir = LogBaseDir() + L"\\logs";
     CreateDirectoryW(logsDir.c_str(), nullptr);
     if (req.repairBoot)
         BcdExport(logsDir + L"\\bcd-backup");  // 改 BCD 前先备份（§11）
@@ -1043,6 +1048,15 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
         return 1;
     }
     std::string tlog;
+    // A2（用户 2026-10-04 规格）：写新契约前，把**所有盘根**上的旧契约清掉，
+    // 全系统只留即将写入的这一份 —— 救援层就不会挑到别处残留的 _zjresy 把目标
+    // 指错（offset 校验仍保留作第二层防护）。
+    {
+        std::string clog;
+        int cleaned = CleanupStrayContracts(clog);
+        LogInfo("stray contracts cleanup: " + std::to_string(cleaned) +
+                " removed (" + clog.substr(0, clog.size() - 1) + ")");
+    }
     if (!WriteRestoreLog(target.letter[0], t, tlog)) {
         ReleaseOpLock();
         ProgressDone("restore", "failed");
@@ -1260,15 +1274,49 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             return 1;
         }
     }
+    // 把本次部署到目标盘的痕迹收进 logs（用户 2026-10-03 规格）：盘根的
+    // grldr/grldr.mbr/menu.lst/_zjresy 日志 + ZJRESTORE\bootfix|scripts|logs + 清单。
+    // 用户排错只需发 logs 文件夹（含这些 + diag.txt/list.txt + 救援日志）。
+    CollectDeployArtifacts(logsDir + L"\\collected",
+                           target.letter.empty() ? 0 : target.letter[0]);
     ReleaseOpLock();
-    if (needReboot)
-        *needReboot = false;  // 菜单项模式不重启（暂存路径由调用方按返回值判断）
+    // ⚠️ 只有**菜单项模式**不重启；暂存+重启模式必须保留 needReboot=true，
+    // 否则 GUI/CLI 走"就地完成"分支：显示"还原完成"且**不自动重启**（用户必须
+    // 手动重启，看起来像"中途停止"）。此 bug 自 ≤0.6.4 起存在，0.6.21 修复：
+    // 原来这里无条件 `*needReboot = false`，注释却写着"菜单项模式不重启"。
+    if (menuEntry && needReboot)
+        *needReboot = false;
     ProgressDone("restore", "staged");
     if (menuEntry) {
         LogInfo("restore menu entry installed (contract written; boots into the "
                 "rescue layer only if the user picks it)");
     } else {
         LogInfo("restore staged, reboot to execute");
+        // 待执行标记（用户 2026-10-05 规格）：救援层是否真的跑过，用它与
+        // ZJRESTORE-status.txt 的时间比较判断 —— 引导失败/开机断电导致"救援
+        // **从未执行**"时，下次启动也会明确提示，而不是"什么都没发生"。
+        // 只写"暂存+重启"路径；菜单安装不写（常驻菜单不是待执行任务）。
+        {
+            std::wstring md = LogBaseDir() + L"\\logs";
+            CreateDirectoryW(md.c_str(), nullptr);
+            SYSTEMTIME st2 = {};
+            GetLocalTime(&st2);
+            char mk[600];
+            snprintf(mk, sizeof(mk),
+                     "time=%04u-%02u-%02u %02u:%02u:%02u\ntarget=%s\nimage=%s\n",
+                     st2.wYear, st2.wMonth, st2.wDay, st2.wHour, st2.wMinute,
+                     st2.wSecond, W2U(target.letter).c_str(),
+                     W2U(imagePath).c_str());
+            HANDLE hm = CreateFileW(
+                (md + L"\\pending-restore.txt").c_str(), GENERIC_WRITE, 0,
+                nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (hm != INVALID_HANDLE_VALUE) {
+                std::string body(mk);
+                DWORD w = 0;
+                WriteFile(hm, body.data(), (DWORD)body.size(), &w, nullptr);
+                CloseHandle(hm);
+            }
+        }
     }
     return 0;
 }

@@ -31,7 +31,9 @@ BOOT = os.path.join(ROOT, 'bootfiles')
 BASE = os.path.join(HERE, 'base')
 IMG = os.path.join(BASE, 'drill.raw')
 WIM = os.path.join(HERE, 'drill-images', 'test.wim')
-INITRD = os.path.join(BOOT, 'initramfs-zjrestore.cpio.gz')
+# ZJ_DRILL_INITRD 可指定实验用 initramfs（如强制降级版）；默认产线版
+INITRD = os.environ.get('ZJ_DRILL_INITRD') or os.path.join(
+    BOOT, 'initramfs-zjrestore.cpio.gz')
 SEC = 512
 DISK_SECTORS = 2 * 1024 * 1024 * 1024 // SEC
 
@@ -174,13 +176,17 @@ def main():
     conf = os.path.join(BASE, 'restore-task.conf')
     with open(conf, 'w', newline='\n') as f:
         f.write(CONF_TXT)
+    # ZJRESTORE/ = 软件目录（log 里 software_path=D:\ZJRESTORE\SysRecover.exe）：
+    # 救援层 find_soft_dir 会命中它 → zjrestore-debug.log / zjrestore-apply.out
+    # 落盘（回归：日志实时镜像与最终持久化）。
     make_part(2, [
         (WIM, 'images/test.wim'),
         (conf, 'restore-task.conf'),
         (os.path.join(bf, 'bootmgr'), 'bootfix/bootmgr'),
         (os.path.join(bf, 'Boot', 'BCD'), 'bootfix/Boot/BCD'),
         (os.path.join(bf, 'Boot', 'fonts', 'chs_boot.ttf'), 'bootfix/Boot/fonts/chs_boot.ttf'),
-    ], subdirs=('images', 'bootfix', 'bootfix/Boot', 'bootfix/Boot/fonts'))
+    ], subdirs=('images', 'bootfix', 'bootfix/Boot', 'bootfix/Boot/fonts',
+                'ZJRESTORE'))
 
     print('== drill.raw ready: %s (%d bytes) ==' % (IMG, os.path.getsize(IMG)))
     return 0

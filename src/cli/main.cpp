@@ -16,6 +16,7 @@
 #include "../common/zip.h"
 #include "../app/ops.h"
 #include "../app/safety.h"
+#include "../app/selfdiag.h"
 #include "../app/shortcut.h"
 #include "../boot/bcd.h"
 #include "../boot/grub.h"
@@ -25,6 +26,7 @@
 #include "../common/logger.h"
 #include "../common/process.h"
 #include "../common/progress.h"
+#include "../common/relocate.h"
 #include "../common/selfarch.h"
 #include "../common/singleton.h"
 #include "../disk/disk.h"
@@ -34,124 +36,15 @@ using sysrecover::Tr;
 
 namespace {
 
-bool IsAdmin() {
-    BOOL isAdmin = FALSE;
-    PSID adminGroup = nullptr;
-    SID_IDENTIFIER_AUTHORITY ntAuth = SECURITY_NT_AUTHORITY;
-    if (AllocateAndInitializeSid(&ntAuth, 2, SECURITY_BUILTIN_DOMAIN_RID,
-                                 DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0,
-                                 &adminGroup)) {
-        CheckTokenMembership(nullptr, adminGroup, &isAdmin);
-        FreeSid(adminGroup);
-    }
-    return isAdmin == TRUE;
-}
-
 int CmdVersion() {
     std::printf("%s %s (contract v%d, MinGW %s)\n", SYSRECOVER_NAME,
                 SYSRECOVER_VERSION, SYSRECOVER_CONTRACT_VERSION, __VERSION__);
     return 0;
 }
 
-// 收集诊断信息到文本 —— `diag` 打印它，`diag --zip` 把它打进诊断包。
-// 返回 wimlib 初始化结果（0=OK），供调用方决定退出码。
-int DiagText(std::string& out) {
-    char buf[640];
-    snprintf(buf, sizeof(buf), "[diag] admin=%s\n", IsAdmin() ? "yes" : "no");
-    out += buf;
-    snprintf(buf, sizeof(buf), "[diag] firmware=%s\n",
-             sysrecover::IsUefiFirmware() ? "UEFI" : "BIOS");
-    out += buf;
-    if (sysrecover::IsUefiFirmware()) {
-        snprintf(buf, sizeof(buf), "[diag] secureboot=%s\n",
-                 sysrecover::IsSecureBootEnabled() ? Tr("ON (需签名引导)") : "off");
-        out += buf;
-        std::string detail;
-        bool installed = sysrecover::UefiBootEntryExists(detail);
-        snprintf(buf, sizeof(buf), "[diag] uefi boot entry=%s (%s)\n",
-                 installed ? "installed" : "not installed", detail.c_str());
-        out += buf;
-        // P6：固件信任哪张微软 UEFI CA（决定我们的救援环境能不能起来）
-        int ca = sysrecover::FirmwareTrustedUefiCas();
-        snprintf(buf, sizeof(buf), "[diag] firmware db: CA2011=%s CA2023=%s\n",
-                 (ca & sysrecover::kFirmwareCa2011) ? "yes" : "no",
-                 (ca & sysrecover::kFirmwareCa2023) ? "yes" : "no");
-        out += buf;
-        if (ca && !(ca & sysrecover::kFirmwareCa2011) &&
-            (ca & sysrecover::kFirmwareCa2023))
-            out += Tr("[diag] WARN: 本机固件只信任 CA2023，而我们的救援环境用 CA2011 " "签名 → 可能起不来（见 PLAN.md §11 备选 B/C）\n");
-    }
-    int rc = wimlib_global_init(0);
-    snprintf(buf, sizeof(buf), "[diag] wimlib_global_init -> %d (%s)\n", rc,
-             rc == 0 ? "OK" : "FAIL");
-    out += buf;
-    if (rc == 0)
-        wimlib_global_cleanup();
-    snprintf(buf, sizeof(buf), "[diag] version=%s\n", SYSRECOVER_VERSION);
-    out += buf;
-    // 工具路径自检：32 位 exe 在 64 位 Windows 上必须命中原生 System32（WOW64/Sysnative），
-    // 否则写 BCD / 修引导会「找不到文件」。见 src/common/process.cpp::SysToolPath。
-    {
-        BOOL wow = FALSE;
-        IsWow64Process(GetCurrentProcess(), &wow);
-        std::wstring bcdedit = sysrecover::SysToolPath(L"bcdedit.exe");
-        std::wstring bcdboot = sysrecover::SysToolPath(L"bcdboot.exe");
-        char p1[MAX_PATH * 2] = {}, p2[MAX_PATH * 2] = {};
-        WideCharToMultiByte(CP_UTF8, 0, bcdedit.c_str(), -1, p1, sizeof(p1),
-                            nullptr, nullptr);
-        WideCharToMultiByte(CP_UTF8, 0, bcdboot.c_str(), -1, p2, sizeof(p2),
-                            nullptr, nullptr);
-        snprintf(buf, sizeof(buf),
-                 "[diag] proc=%s wow64=%s\n"
-                 "[diag] tools: bcdedit=%s (%s), bcdboot=%s (%s)\n",
-                 sizeof(void*) == 4 ? "x86" : "x64", wow ? "yes" : "no", p1,
-                 GetFileAttributesW(bcdedit.c_str()) != INVALID_FILE_ATTRIBUTES
-                     ? "ok" : "MISSING",
-                 p2,
-                 GetFileAttributesW(bcdboot.c_str()) != INVALID_FILE_ATTRIBUTES
-                     ? "ok" : "MISSING");
-        out += buf;
-    }
-    std::wstring exeDir = sysrecover::ExeDir();
-    char narrow[MAX_PATH * 2] = {};
-    WideCharToMultiByte(CP_UTF8, 0, exeDir.c_str(), -1, narrow, sizeof(narrow),
-                        nullptr, nullptr);
-    snprintf(buf, sizeof(buf), "[diag] exe_dir=%s\n", narrow);
-    out += buf;
-    // 磁盘健康（PIT-086）：SMART 能读时打印关键属性；读不到（NVMe/RAID/USB 桥）明确写
-    // unavailable（不是错误，是能力边界）。CAUTION = 我们判定"建议先换盘"。
-    for (const auto& d : sysrecover::EnumerateDisks()) {
-        sysrecover::DiskHealth h = sysrecover::QueryDiskHealth(d.index);
-        char nm[MAX_PATH] = {};
-        WideCharToMultiByte(CP_UTF8, 0, d.model.c_str(), -1, nm, sizeof(nm),
-                            nullptr, nullptr);
-        if (!h.smartKnown)
-            snprintf(buf, sizeof(buf),
-                     "[diag] disk%u health=%s smart=unavailable\n", d.index, nm);
-        else if (h.isNvme)
-            snprintf(buf, sizeof(buf),
-                     "[diag] disk%u health=%s smart=nvme%s crit=0x%02x media=%lu "
-                     "errlog=%lu used=%d%% temp=%dC\n",
-                     d.index, nm, h.caution ? " **CAUTION**" : "",
-                     h.criticalWarning, (unsigned long)h.mediaErrors,
-                     (unsigned long)h.errorLogCount, h.usedPercent, h.tempC);
-        else
-            snprintf(buf, sizeof(buf),
-                     "[diag] disk%u health=%s smart=ata%s%s realloc=%lu pending=%lu "
-                     "uncorrect=%lu\n",
-                     d.index, nm, h.failing ? " FAILING" : "",
-                     h.caution ? " **CAUTION**" : "",
-                     (unsigned long)h.reallocatedSectors,
-                     (unsigned long)h.pendingSectors,
-                     (unsigned long)h.uncorrectableSectors);
-        out += buf;
-    }
-    return rc;
-}
-
 int CmdDiag() {
     std::string t;
-    int rc = DiagText(t);
+    int rc = sysrecover::DiagReportText(t);
     std::fputs(t.c_str(), stdout);
     return rc == 0 ? 0 : 1;
 }
@@ -543,7 +436,7 @@ int CmdExtract(const std::vector<std::string>& a) {
 // 用自写的 ZipWriter（store 模式，零依赖；见 src/common/zip.h）。
 int CmdDiagZip(const std::vector<std::string>& a) {
     std::wstring exeDir = sysrecover::ExeDir();
-    std::wstring logsDir = exeDir + L"\\logs";
+    std::wstring logsDir = sysrecover::LogBaseDir() + L"\\logs";
     std::wstring outPath;
     std::string outOpt = Opt(a, "--out");
     if (!outOpt.empty()) {
@@ -566,7 +459,7 @@ int CmdDiagZip(const std::vector<std::string>& a) {
     int n = 0;
     {  // 1) diag 文本
         std::string t;
-        DiagText(t);
+        sysrecover::DiagReportText(t);
         if (zip.AddData(t.data(), t.size(), "diag.txt"))
             ++n;
     }
@@ -615,7 +508,7 @@ int CmdHistory(const std::vector<std::string>& a) {
     int n = std::atoi(Opt(a, "--last", "20").c_str());
     if (n <= 0)
         n = 20;
-    std::wstring path = sysrecover::ExeDir() + L"\\logs\\history.jsonl";
+    std::wstring path = sysrecover::LogBaseDir() + L"\\logs\\history.jsonl";
     HANDLE h = CreateFileW(path.c_str(), GENERIC_READ,
                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                            OPEN_EXISTING, 0, nullptr);
@@ -702,6 +595,19 @@ int CmdShortcut(const std::vector<std::string>& a) {
     return 0;
 }
 
+// 支持包（「日志」按钮的 CLI 版）：各盘日志 + explorer 转储 + 事件日志 → zip。
+int CmdSupport(const std::vector<std::string>& a) {
+    std::string out = Opt(a, "--out");
+    sysrecover::SupportBundle r = sysrecover::BuildSupportBundle(
+        out.empty() ? std::wstring() : ToWide(out));
+    if (r.zipPath.empty()) {
+        std::printf(Tr("导出诊断包失败：%s\n"), W2U8(r.error).c_str());
+        return 1;
+    }
+    std::printf(Tr("已导出诊断包：%s\n"), W2U8(r.zipPath).c_str());
+    return 0;
+}
+
 // ── 帮助（问题清单 C1：原来只有一行 Usage，学生没法自学命令）──
 struct CmdHelp {
     const char* cmd;
@@ -716,6 +622,10 @@ const CmdHelp* CmdHelpTable(size_t* n) {
     {"list", Tr("list\n  列出磁盘/分区/文件系统/盘符/ESP 与系统标记。")},
     {"diag",
      Tr("diag [--zip [--out <zip>]]\n" "  自检（管理员/固件/Secure Boot/启动项/wimlib）。\n" "  --zip 导出诊断包（diag 文本 + logs/ + 契约文件），排错时直接发回。")},
+    {"support",
+     Tr("support [--out <zip>]\n"
+        "  一键收集诊断资料：各盘日志 + explorer 转储 + 事件日志 → 打包成一个 zip\n"
+        "  （不给 --out 时输出到桌面 SysRecover-logs-<时间>.zip）。")},
     {"images", Tr("images --file <镜像>\n  列出镜像里的子镜像：<index> - <名称>（<大小>）。")},
     {"backup",
      Tr("backup --dest <文件> [--source <目录>] [--compress fast|maximum|recovery]\n" "       [--name <名>] [--append] [--verify] [--esp] [--yes]\n" "  --source 写盘符根（`C:` 或 `C:/` 都行）即自动走 VSS 热备；\n" "  --compress 决定体积/速度；--verify 写完立即校验；--append 追加为同一 WIM 的新子镜像；\n" "  --esp 把 ESP 分区并入同一镜像（子镜像名 ESP，还原系统时自动恢复回 ESP）；\n" "  本机没有 ESP 时自动跳过（不算失败）。")},
@@ -736,7 +646,7 @@ const CmdHelp* CmdHelpTable(size_t* n) {
 
 void PrintAllUsage() {
     std::printf(
-        Tr("SysRecover 九转还原 · 命令行\n" "\n" "用法: SysRecover.exe <命令> [选项]      （`SysRecover.exe help <命令>` 看单项）\n" "\n" "命令:\n" "  list                        列出磁盘/分区/文件系统/盘符/ESP/系统标记\n" "  diag [--zip [--out <zip>]]  自检（固件/Secure Boot/启动项/wimlib）；--zip 导出诊断包\n" "  images --file <镜像>        列出镜像里的子镜像（含大小/描述）\n" "  backup --dest <文件> [--source <目录>] [--compress fast|maximum|recovery]\n" "         [--name <名>] [--append] [--verify] [--esp] [--yes]\n" "  restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--yes]\n" "  verify --image <文件>       校验镜像完整性\n"
+        Tr("SysRecover 九转还原 · 命令行\n" "\n" "用法: SysRecover.exe <命令> [选项]      （`SysRecover.exe help <命令>` 看单项）\n" "\n" "命令:\n"         "  list                        列出磁盘/分区/文件系统/盘符/ESP/系统标记\n" "  diag [--zip [--out <zip>]]  自检（固件/Secure Boot/启动项/wimlib）；--zip 导出诊断包\n" "  support [--out <zip>]       一键收集诊断资料（各盘日志+explorer转储+事件日志）打包\n" "  images --file <镜像>        列出镜像里的子镜像（含大小/描述）\n" "  backup --dest <文件> [--source <目录>] [--compress fast|maximum|recovery]\n" "         [--name <名>] [--append] [--verify] [--esp] [--yes]\n" "  restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--yes]\n" "  verify --image <文件>       校验镜像完整性\n"
         "  repair-boot [--disk N --part M]   修复引导（ESP 的 BCD/bootmgfw；引导坏了不用重装）\n"
         "  extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]\n" "                              从镜像里取单个/一组文件（支持通配符）\n" "  history                     列出操作历史（logs/history.jsonl）\n" "  shortcut --target <exe> [--args <...>] [--name <名>]   建快捷方式\n" "  version                     显示版本\n" "  help [命令]                 本帮助\n" "\n" "退出码: 0 成功 / 1 通用失败 / 2 参数错 / 3 需管理员 / 4 危险目标被拒 / 5 镜像校验失败 / 6 取消\n" "注意: 还原系统盘会重启进救援层，镜像必须放在**本地分区**（救援层访问不到网络）。\n"));
 }
@@ -768,8 +678,8 @@ int main() {
         if (sysrecover::ReexecX64IfNeeded(&reexecCode, /*wait=*/true))
             return reexecCode;
     }
-    // 崩溃处理：装在最前面（真实进程），崩溃时把 dump+文本写到 <exeDir>\logs\crash\。
-    sysrecover::InstallCrashHandler(sysrecover::ExeDir());
+    // 崩溃处理：装在最前面（真实进程），崩溃时把 dump+文本写到 <日志根>\logs\crash\。
+    sysrecover::InstallCrashHandler(sysrecover::LogBaseDir());
     // 控制台输出切到 UTF-8（否则中文提示在 GBK 控制台是乱码）；退出时还原原代码页。
     struct CpGuard {
         UINT out;
@@ -796,6 +706,26 @@ int main() {
         }
     }
     sysrecover::InitI18n(langArg.empty() ? nullptr : langArg.c_str());
+    // 只读介质 / U盘：自动整包搬到本地固定分区再运行（用户 2026-10-03 规格：
+    // CLI 不询问；等子进程结束并透传退出码。失败/无目的地 → 继续原地跑）。
+    {
+        sysrecover::RelocatePlan rp = sysrecover::CheckRelocate();
+        if (rp.needed) {
+            if (rp.destRoot.empty()) {
+                std::fprintf(stderr, "%s\n",
+                             Tr("程序在只读介质上，且没有可写磁盘：日志将无法保存。"));
+            } else {
+                std::printf("%s\n",
+                            Tr("程序在光盘或U盘上运行：正在复制到本地磁盘后继续..."));
+                int code = 0;
+                std::string rerr;
+                if (sysrecover::DoRelocate(rp, /*wait=*/true, &code, &rerr))
+                    return code;
+                std::fprintf(stderr, "%s%s\n", Tr("自动搬迁失败："),
+                             rerr.c_str());
+            }
+        }
+    }
     if (args.empty())
         return Usage();
     // 帮助（问题清单 C1）：`help [命令]` / `--help` / `-h`，以及 `<命令> --help`。
@@ -812,11 +742,20 @@ int main() {
         PrintCmdUsage(args[0].c_str());
         return 0;
     }
-    std::wstring exeDir = sysrecover::ExeDir();
-    std::wstring logsDir = exeDir + L"\\logs";
+    std::wstring logsDir = sysrecover::LogBaseDir() + L"\\logs";
     sysrecover::LogInit(logsDir);
     sysrecover::ProgressInit(logsDir);
-    SetConsoleCtrlHandler(OnCtrl, TRUE);  // Ctrl+C → 干净取消（备份/还原应用）
+    // 自诊断与痕迹收集（用户 2026-10-03 规格）：启动即把 diag.txt/list.txt 写进 logs，
+    // 并收集各盘上我们留下的部署文件 —— 用户排错只需发 logs 文件夹。
+    sysrecover::WriteDiagFiles(logsDir);
+    sysrecover::CollectDeployArtifacts(logsDir + L"\\collected", 0);
+    // 救援层失败回执（黑匣子，用户 2026-10-04 规格 2）：上次还原失败且还没提示过
+    // → 启动就提醒（日志已收进 logs\collected）。
+    {
+        std::wstring notice = sysrecover::CheckLastRescueFailure();
+        if (!notice.empty())
+            std::fprintf(stderr, "%s\n", W2U8(notice).c_str());
+    }    SetConsoleCtrlHandler(OnCtrl, TRUE);  // Ctrl+C → 干净取消（备份/还原应用）
     std::string cmdline = "cmd:";
     for (const auto& a : args) {
         cmdline += " ";
@@ -836,6 +775,8 @@ int main() {
                 return CmdDiagZip(args);  // diag --zip [--out x.zip]
         return CmdDiag();
     }
+    if (args[0] == "support")
+        return CmdSupport(args);
     if (args[0] == "list")
         return CmdList();
     if (args[0] == "backup")

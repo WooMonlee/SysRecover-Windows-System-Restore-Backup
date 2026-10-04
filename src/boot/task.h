@@ -58,6 +58,13 @@ std::string BuildRestoreLogText(const RestoreTask& t,
 // 失败返回 false（暂存流程应视为致命，缺日志则 Linux 侧找不到目标）。
 bool WriteRestoreLog(wchar_t letter, const RestoreTask& t, std::string& log);
 
+// 清掉**所有固定盘/可移动盘根目录**上的旧契约文件
+//（_zjresy*.log / restore-task.conf / restore-task.json）——用户 2026-10-04
+// 规格：暂存前清场，全系统只保留即将写入的唯一一份，杜绝救援层挑到别处残留
+// 日志把目标指错（参照机日志实证过该劫持）。不碰 <盘>\ZJRESTORE\ 与软件目录。
+// 返回删除的文件数。
+int CleanupStrayContracts(std::string& log);
+
 // 从 restore-task.conf 文本里取一个键的值（第一个匹配；找不到 → 空串）。
 // 纯逻辑（不碰文件系统），可单测。首字符 '#' 的行与空行跳过；值**不做 trim**
 //（路径可能带空格），只去掉行尾 \r。

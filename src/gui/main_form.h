@@ -35,8 +35,12 @@ using namespace DuiLib;
 #define WM_SR_QUERY_BUSY   (WM_APP + 12)
 // EN_SETFOCUS 后延迟弹「搜索结果」下拉（见 HandleMessage 同名分支，PIT-097）。
 #define WM_OPEN_PICK_MENU  (WM_APP + 13)
+// 「日志」按钮：支持包导出完成（worker → 主线程，lParam = SupportBundle*）。
+#define WM_SUPPORT_DONE    (WM_APP + 14)
+// 启动时检查救援层失败回执（黑匣子）：见 ShowRescueFailureNotice。
+#define WM_CHECK_RESCUE    (WM_APP + 15)
 
-namespace sysrecover { struct PartitionInfo; }
+namespace sysrecover { struct PartitionInfo; struct SupportBundle; }
 
 class CMainForm : public WindowImplBase {
 public:
@@ -79,6 +83,13 @@ private:
     void ApplyCpuCapFromUi();
     void ToggleBootMenu();       // 「安装/删除启动还原」按钮
     void RefreshBootMenuBtn();   // 按是否已安装刷新按钮文字
+    // 「日志」按钮（2026-10-03 用户规格）：一键收集 各盘日志 + explorer 转储 +
+    // 事件日志 → 打包到桌面；结果框里顺便提供「进入/退出安全模式」。
+    void ExportSupportFlow();
+    void OnSupportDone(sysrecover::SupportBundle* r);
+    // 启动时（收集完 diag/list/痕迹后）检查救援层失败回执（用户 2026-10-04
+    // 规格 2）：有未报告的失败 → 弹 3 行提示，「打开日志文件夹」直达 collected。
+    void ShowRescueFailureNotice();
     void RebootNow();
     bool AskBusyClose();          // 忙时关闭：true = 用户选了「终止并退出」
     // BitLocker 提醒（有加密卷时提醒"没密钥则数据无法恢复"）：true = 继续
