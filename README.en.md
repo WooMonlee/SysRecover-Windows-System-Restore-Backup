@@ -100,7 +100,11 @@ So **the user does not enrol MOK and does not turn Secure Boot off**. The shim i
 | **It cannot wipe the wrong disk** | Four-element verification (GUID / disk serial / offset / size); **four restore checks**: target is ESP, BitLocker, a recovery partition, or the image file lives inside the target partition → **any hit is refused** (exit code 4) |
 | **The MBR is never touched** | Only the target partition is formatted; rescue files go onto the target partition; **nothing new at the root of data disks** |
 | **It boots after the restore** | Writes back the complete NTFS boot region (426 B in sector 0 + sectors 1..8); adds `\bootmgr` and `C:\Boot\BCD`; BCD uses `device boot` (independent of drive letters / disk numbers) |
-| **A run can be cancelled** (`0.1.4`) | Closing the window mid-backup/restore offers "abort and exit", stops within a second and deletes the incomplete temp file |
+| **A run can be cancelled** | Closing the window mid-backup/restore offers "abort and exit", stops within a second and deletes the incomplete temp file |
+| **Every failure leaves evidence** (0.6.22+) | Rescue-layer "black box": every mountable partition root + the ESP gets `ZJRESTORE-status.txt` (result + step), the full log, and a **per-device probe table** (mount result / raw error / PCI controllers / DMI); a fallback log home is claimed when the software folder is missing |
+| **Reported on next boot** (0.6.29+) | The next start reads the receipts and reports "the last restore failed at step X"; a task that was staged but never executed (boot failure / power loss) is reported too |
+| **Stale contracts cannot hijack the target** (0.6.27+) | Old `_zjresy` / `restore-task*` files are cleaned from all drive roots before staging; the rescue layer only trusts the receipt whose offset equals the partition's real start |
+| **Verified deployment** (0.6.27+) | Boot/rescue files are CRC32-compared after being written; a mismatch fails the staging; `rescue-build.txt` records the on-disk rescue version |
 
 ---
 
@@ -110,16 +114,19 @@ So **the user does not enrol MOK and does not turn Secure Boot off**. The shim i
 |---|---|
 | BIOS / MBR full-chain restore | ✅ Verified 2026-09-19 (real hardware / VM) |
 | UEFI / GPT full-chain restore (Secure Boot off) | ✅ Verified 2026-09-19 |
-| UEFI / GPT + **Secure Boot on** (zero enrolment, zero interaction) | ✅ Verified 2026-09-19 |
+| UEFI / GPT + **Secure Boot on** (zero enrolment, zero interaction, Debian dual-signed chain) | ✅ Verified 2026-09-19 / 09-23 |
 | Hot backup (VSS) → boots into the OS afterwards | ✅ Verified 2026-09-19 |
 | Running the tool on a **Win7 host** (after installing the VC++ runtime) | ✅ Verified 2026-09-20 |
 | **Win7 host restoring a Win10 image** (cross-version) | ✅ Verified 2026-09-20, boots normally afterwards |
 | RAID/HBA drivers packaged (Debian kernel, all key HBAs covered) | ✅ Loaded successfully in QEMU (**real hardware pending**) |
 | QEMU automated regression (UEFI rescue boot, screen output, PBR probe, BIOS/GRUB4DOS, full drill…) | ✅ See [`docs/07`](docs/07-测试矩阵与回归记录.md) |
 | Full regression after **rescuing-layer module trimming** (779→494, dist 54→39 MB) | ✅ Verified 2026-09-24 (incl. end-to-end restore drill, PIT-079/080) |
+| **Three-disk customer replica** (MBR + extended + GPT; success / failure / fake contract / unmountable partition) | ✅ Verified 2026-10-04 (PIT-112/113/114) |
+| **Real-image stress** (Win10 7.57 GB / Win11 43.35 GB + ESP) | ✅ Full pass at 8 GB RAM; fine at 512 MB; OOM at 192 MB but fully recorded (PIT-113) |
 | **In-place restore from PE / to a non-system disk (no reboot)** | 🚧 **Not yet field-tested** (code ready; checklist in [`docs/09`](docs/09-PE直装验收清单.md)) |
-| **"Abort and exit" while busy** (`0.1.4`) | 🚧 **Not yet field-tested** |
-| Server RAID on **real hardware**, **zero-install** Win7 | 🚧 Pending (mechanism ready) |
+| **"Abort and exit" while busy** | 🚧 **Not yet field-tested** |
+| **Zero-install Win7** | 🚧 real-hardware test pending (UCRT x64/x86 already shipped) |
+| Server RAID on **real hardware**; 2026 firmware that only trusts CA2023 | 🚧 Pending (mechanism ready) |
 | 32-bit OS (Win7/Win10 x86) | ✅ **Supported**: dual-architecture package, root launcher picks automatically; a 32-bit process re-execs itself from `x64\` on a 64-bit OS (see [`docs/08`](docs/08-32位支持（评估与实现）.md)) |
 
 > Rows marked 🚧 are **not** to be treated as working — that is our own rule: nothing gets a ✅ until it actually ran end to end.
@@ -285,6 +292,7 @@ skin/ resources/ version.json THIRD_PARTY_LICENSES.txt
   (the rescue layer runs Linux and cannot execute `bcdboot`) → in testing, restoring Win7 inside a "Win10-configured UEFI VM" produced a **boot loop**.
   **Recommend restoring Win7 targets via BIOS/MBR** (the mainstream Win7 shape). On the todo list (see `docs/14` §3: run `bcdboot` on first boot after the restore).
 - **PE in-place restore / RAID on real hardware / closing while busy**: code ready, **pending field testing** ([`docs/11` §3](docs/11-接手指南（读我优先）.md) has the checklist).
+- **Rescue-layer memory floor**: 512 MB restored a 43 GB image end to end in testing; **192 MB gets the apply OOM-killed near the end** (the failure is still fully recorded, and below 400 MB a warning appears on screen and in the log). Give the rescue environment ≥1 GB.
 - `ZJ_ENABLE_MOK_PATH` (the alternative path: our self-signed UKI + MOK enrolment) is **not compiled and not shipped by default**
   (change it to 1 in `src/boot/uefi.cpp` to enable).
 
@@ -315,6 +323,6 @@ Most documents are written in Chinese.
 | [`docs/12-相对优势与竞品对比`](docs/12-相对优势与竞品对比.md) | Where we win and lose against similar tools (incl. talking points for customers, and a section on Image for Windows) |
 | [`docs/13-开源同类调研（Clonezilla-Rescuezilla-FOG）`](docs/13-开源同类调研（Clonezilla-Rescuezilla-FOG）.md) | Research on open-source peers (Clonezilla / Rescuezilla / FOG) |
 | [`docs/14-成熟技术借鉴（可靠性机制调研）`](docs/14-成熟技术借鉴（可靠性机制调研）.md) | Mature reliability mechanisms (Windows `recoverysequence`, Android A/B, RAUC…) — which ones we already use, which we should adopt |
-| [`AGENTS.md`](AGENTS.md) | Operator manual: §0 five red lines, §7 boot SOP, **§13 pitfall register (PIT-001~089)**, §18 i18n discipline |
+| [`AGENTS.md`](AGENTS.md) | Operator manual: §0 five red lines, §7 boot SOP, **§13 pitfall register (PIT-001~117)**, §18 i18n discipline |
 | [`PLAN.md`](PLAN.md) | Roadmap, version-number rules, open decisions |
 | [`LICENSE`](LICENSE) / [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt) | MIT for our own code; third-party list, license texts and source provenance |
