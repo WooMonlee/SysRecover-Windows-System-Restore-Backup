@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：393/396 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：397/398 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n建议：以管理员身份运行（本程序要读写分区与引导）。': '\n\nAdvice: run as administrator (this program reads and writes partitions and boot data).',
@@ -192,6 +192,7 @@ EN = {
     '已清除引导项与相关文件': 'Boot entry and related files cleared',
     '已载入镜像：': 'Image loaded: ',
     '已选择镜像：': 'Selected image: ',
+    '带扩展属性(EA)的文件数：': 'Files carrying extended attributes (EA): ',
     '应用镜像失败': 'Failed to apply the image',
     '开始备份': 'Start Backup',
     '开始恢复': 'Start Restore',
@@ -231,6 +232,7 @@ EN = {
     '教育版': 'Education',
     '文件→系统': 'Restore',
     '文件对话框创建失败': 'Failed to create the file dialog',
+    '文件属性检查': 'File attribute audit',
     '旗舰版': 'Ultimate',
     '无法创建 CPU 限制任务对象（err=%lu）': 'Failed to create the CPU limit job object (err=%lu)',
     '无法创建备份目录：': 'Failed to create the backup directory: ',

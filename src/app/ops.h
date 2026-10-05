@@ -95,6 +95,11 @@ bool ReadMenuBinding(std::wstring* imagePath, int* imageIndex,
                      unsigned long long* targetOffset,
                      unsigned long long* targetSize);
 
+// 删除"菜单绑定"副契约（<exeDir>\restore-task.conf|json）：「删除菜单 / 清除
+// 引导项」时必须一起删 —— 否则 ReadMenuBinding 仍判"已安装"，按钮回不到
+// 「安装菜单」（用户 2026-10-05 实测 bug）。
+void DeleteMenuBinding();
+
 // 本次还原/装菜单该走哪套引导链（PIT-092）：UEFI 固件 **且** 目标盘 GPT →
 // UEFI/ESP；否则（含"UEFI 固件 + MBR 盘"）BIOS/GRUB4DOS。GUI 用它给
 // "安装菜单成功"的提示选对说法（UEFI=开机按 F12 选固件启动项；

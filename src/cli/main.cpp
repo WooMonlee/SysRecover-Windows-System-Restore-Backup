@@ -539,6 +539,26 @@ int CmdHistory(const std::vector<std::string>& a) {
     return 0;
 }
 
+// scan-ea [--root <目录>] [--out <文件>]：列出带 NTFS 扩展属性（EA）的文件
+//（客户 2026-10-05：Linux 侧还原丢 EA；在 PE 还原后的系统上跑一次即可取证）。
+static int CmdScanEa(const std::vector<std::string>& args) {
+    std::wstring root = L"C:\\", out;
+    for (size_t i = 1; i < args.size(); ++i) {
+        if (args[i] == "--root" && i + 1 < args.size())
+            root = ToWide(args[++i]);
+        else if (args[i] == "--out" && i + 1 < args.size())
+            out = ToWide(args[++i]);
+    }
+    std::string err;
+    int n = sysrecover::ScanEaFiles(root, out, err);
+    if (n < 0) {
+        std::fprintf(stderr, "%s\n", err.c_str());
+        return 1;
+    }
+    std::printf("%s%d\n", Tr("带扩展属性(EA)的文件数："), n);
+    return 0;
+}
+
 int CmdList() {    const auto disks = sysrecover::EnumerateDisks();
     const double gb = 1024.0 * 1024 * 1024;
     for (const auto& d : disks) {
@@ -779,6 +799,8 @@ int main() {
         return CmdSupport(args);
     if (args[0] == "list")
         return CmdList();
+    if (args[0] == "scan-ea")
+        return CmdScanEa(args);
     if (args[0] == "backup")
         return CmdBackup(args);
     if (args[0] == "restore")

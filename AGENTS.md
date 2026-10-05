@@ -707,6 +707,31 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · ⚠️ 构建坑：CLI 链接需补 `-lgdi32`（截屏用到 GDI；GUI 早就链接了）。
   · 回归：支持包实测含 `logs/screens/screen-*.bmp`（6.0MB）+ diag 的 `bios`/`env` 行；三盘失败演练含 `console text (/dev/vcs)` 且内容非空。✅ 2026-10-05（`0.6.32`）
 
+- PIT-118 **客户 0.6.33 实测抓出：`mnt` 屏幕标记污染命令替换 → ESP 子镜像恢复/成功回执失效（`0.6.34` 修复）；同批收获大量真机验证**（2026-10-05）：
+  · **根因**：PIT-116 的 `mnt <dev>` 标记用 `echo` 走 **stdout**，而 `ESP_DEV=$(find_esp_dev)` 会把函数内所有 stdout 一起捕获 → `ESP_DEV` 变成 `"ZJ:   mnt /dev/sda1\n/dev/sda1"` → 后续 `mnt_dev` 必然失败。客户机（GPT ESP）的 Alpine blkid **没返回 `PART_ENTRY_TYPE`** → `find_esp_dev` 走 **FAT 回退**（此路径会调用 `mnt_dev`）→ 触发；QEMU 演练盘 blkid 能返回 GUID → 走 GUID 路径（不调用 mnt_dev）→ 此前所有 drill 全绿也没暴露 ✗。
+  · **影响**：① ESP 子镜像恢复失败（`ERROR: esp mount failed`，非致命；因 ESP 未被改动 + 暂存时 bcdboot 已刷新 C: 引导文件，系统照常启动）；② 成功路径的状态回执（原先只写 ESP）一并失败 → 下次启动会把 pending 标记**误报成"任务未执行"**。
+  · **修复**：① 两个脚本的 `say()` 一律走 **stderr**（`1>&2`；屏幕/串口照旧，禁止再污染 `$(...)`）；② 成功路径把 `ZJRESTORE-status.txt` **也写进软件目录 logs**（BIOS 无 ESP 也保证有 OK 回执）；③ Windows `CheckLastRescueFailure` 增加扫描日志根直下；④ `run-drill.ps1` 新增 7 项断言（含 `esp restored` + `blackbox ESP`）——此前只打印不判定，是这次静默漏检的原因。
+  · **真机实证**（客户 LENOVO 90MU000CCD，Netac 256G + HKVSN 2T GPT，**7-Zip SFX 单文件包在 `%TEMP%\7ZipSfx.001` 运行**）：VSS+ESP 备份 ✓、暂存 ✓、**自动重启（`reboot: ExitWindowsEx ok`）✓**、救援全链 `apply rc=0`（12.7GB/123s）✓、`RESTORE DONE` ✓；A2 清场（0 stray）、DMI（`dmi: LENOVO | 90MU000CCD`）/PCI 清单、pending 标记、sysfs offset 校验（该盘 blkid 偏移也为空，靠 sysfs 救回）均在真机落地。✅ 2026-10-05（`0.6.34`）
+
+- PIT-119 **客户 0.6.33 复测反馈两件事：①还原后 explorer/右键卡死（新备份里原样复现）②PE 还原把易数启动项干掉了 —— 修 bcdboot 重建 BCD + 新增壳扩展审计（`0.6.35`）**（2026-10-05）：
+  · **背景**：客户重新备份（0.6.33）→ 还原 → 症状不变（登录后 explorer 卡、任务管理器重启 explorer 才能用；**桌面右键必转圈**、左键正常）。"重新备份再还原仍复现" → **故障在源系统里**（我们的还原是如实的）；右键菜单卡死是**第三方 shell 扩展死锁**的教科书症状；救援日志可见 C: 根有 `Coodesker`（酷呆桌面）——头号嫌疑（易数/火绒外壳项次之）。
+  · **修复 1（BCD 第三方条目保护）**：`bcdboot` 会**重建 BCD**（只剩 Windows 条目），易数等第三方启动项被抹掉。三条路径（PE 就地 UEFI/BIOS、暂存 UEFI）全部改为：**先判定 BCD 已有效就跳过 bcdboot**（`VerifyEspBcd` / 新增 `BiosBcdLooksValid`；同机还原原 BCD 本就指向同一 C:），只有缺失/损坏才重建，且重建前 `BcdExport` 备份为 `bcd-backup-before-bcdboot`。
+  · **修复 2（壳扩展审计）**：`diag` 新增 `shellext` 行 —— 枚举右键处理器（`*`/`AllFilesystemObjects`/`Directory`/`Directory\Background`/`Drive`/`Folder`/`ThisPC`）/ 图标叠加 / `ShellExecuteHooks` / 被屏蔽项，CLSID→`InprocServer32` DLL 并查文件存在。**只有"解析到真实路径但文件没了"才标 `*** MISSING ***`**（Windows 内建无 InprocServer32 的形态不当故障）；两种注册形态（子键名=CLSID 或 默认值=CLSID）都识别——本机实测出 7-Zip/火绒外壳项与内建项的正确 DLL。
+  · 待复测：0.6.35 客户机暂存日志应出现 `skip bcdboot (preserve third-party...)`、易数条目保留；壳扩展排查需客户在卡死系统上跑 `support` 发回（先停用 **Coodesker** 试验，安全模式对照）。✅ 2026-10-05（`0.6.35`；bcdboot 跳过逻辑待真机复测）
+
+- PIT-120 **客户"别的软件还原没事、我们还原后右键卡死"的实锤差异：Linux 侧 wimlib 丢 NTFS 扩展属性（EA），Windows 侧不丢（`0.6.36`）**（2026-10-05）：
+  · **证据 1（客户）**：0.6.33 的 `zjrestore-apply.out` 里唯一一条警告：`[WARNING] Ignoring extended attributes of 804 files`。
+  · **证据 2（二进制）**：`Ignoring extended attributes` 字符串只存在于 **Linux 侧 wimlib**（initramfs 的 wimlib-imagex），**Windows 的 libwim-15.dll 里没有**（Windows 侧支持写 EA）。
+  · **证据 3（实验室，可复现）**：新增 `tools/ea-scan.cpp`（`--set` 用 `NtSetEaFile` 造 EA；无参扫描列出带 EA 文件）。造 `ea1.bin`（EA `ZJTEST=1`）→ 我们工具 `backup`（Windows）→ `extract`（Windows wimlib）→ `fsutil file queryea` **EA 仍在** ✅。结论：**PE 就地还原（Windows 侧 wimlib）保 EA；暂存重启（Linux 侧 wimlib）丢 EA** —— "别人没事、我们有事"的保真度差异坐实。
+  · **取证命令**：新增 `SysRecover.exe scan-ea [--root <目录>] [--out <文件>]`（`selfdiag.cpp::ScanEaFiles`，`NtQueryEaFile` 列出路径 + EA 名/值前 32 字节）→ 客户在 PE 还原后的系统上跑一次，即可拿到那 800 个文件的名单。
+  · **BCD 保护（同批）**：`bcdboot` 重建 BCD 会删第三方条目（客户 BCD 备份实证：`Boot Windows created by 石头`、`Windows_PE`、UEFI 设备条目等）。三条路径改为 **BCD 有效即跳过 bcdboot**（`VerifyEspBcd`/`BiosBcdLooksValid`）；重建前 `BcdExport` 备份。客户手上 `logs\bcd-backup` 可用 `bcdedit /import` 找回条目。
+  · 待定：EA 丢失与"右键卡死"的**因果**需客户交叉验证（0.6.36 的 PE 就地还原 → 右键应恢复；或 Dism++ 应用我们的镜像对照）。若坐实，Linux 侧 EA 恢复方案（捕获 sidecar + 首启补写）另行设计。✅ 2026-10-05（`0.6.36`；实验室差异已复现）
+
+- PIT-121 **三项小修：①「删除菜单」后按钮不回「安装菜单」②备份完成自动做 EA 审计（清单落日志）③多款还原软件对照信息（`0.6.37`）**（2026-10-05）：
+  · **① 根因**：`RefreshBootMenuBtn` 的"已安装" = `BootMenuInstalled()`（引导条目/文件）**或** `ReadMenuBinding()`（读 `<exeDir>\restore-task.conf`）；「删除菜单」只删了引导条目/文件，**没删副契约** → 永远判"已安装"，按钮停在「删除菜单」。修复：新增 `ops::DeleteMenuBinding()`（删 conf/json + 清 pending 标记），「删除菜单」与「清除引导项」都调用并刷新按钮。
+  · **② 自动取证**：`RunBackup` 收尾自动调用 `ScanEaFiles(源)`（阶段名 `ea-scan`，状态栏中文"文件属性检查"），清单写 `<logs>\ea-scan-<时间>.txt`；发现 EA 时 `WARN`（附"Linux 救援还原会丢 / PE 不丢"）。实测全盘 C: **30.2 万文件仅 15 秒**，用户零操作；开发机 0 个 EA（客户机的 804 个来自其特定软件，名单下次备份自动拿到）。
+  · **③ 客户对照**：**多款还原软件（易数等）均正常，只有我们的（Linux 救援路径）有问题** → 与 PIT-120 的 EA 差异互相印证；下一步让客户用 **0.6.37 在 PE 就地还原 `20261005Win10.19044备份.wim`**（Windows 侧 apply 保 EA + 不再重建 BCD），右键应恢复，随后 `scan-ea` 出名单即定案。✅ 2026-10-05（`0.6.37`）
+
 ---
 
 ## 14. License 合规（SBOM，随版本更新）

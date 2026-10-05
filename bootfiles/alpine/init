@@ -26,7 +26,9 @@ mkdir -p /proc /sys /dev /tmp /mnt
 /bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null
 
 LOG=/tmp/zjrestore.log
-say(){ echo "SR: $*"; echo "$(date '+%F %T') $*" >> "$LOG"; }
+# 控制台输出走 stderr（与 zjrestore-lite.sh 同款）：防止 `$(...)` 命令替换把
+# 日志行当成函数返回值捕获（2026-10-05 客户实测教训）。
+say(){ echo "SR: $*" 1>&2; echo "$(date '+%F %T') $*" >> "$LOG"; }
 # 黑匣子探测表（与 zjrestore-lite.sh 共用同一文件）：每个分区的 mount 结果都
 # 记下来，失败时随日志写到所有可写面 —— "为什么找不到任务/镜像"有据可查。
 PROBE=/tmp/zj-probe.txt
