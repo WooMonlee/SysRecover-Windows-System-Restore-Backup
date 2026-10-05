@@ -44,7 +44,7 @@ VERSION  := $(shell $(PYTHON) tools/version.py)
 CXXFLAGS = -O2 -std=c++17 -Wall -Wextra -D_WIN32_WINNT=0x0601 -DUNICODE -D_UNICODE
 INCLUDES = -Ithird_party/wimlib -Isrc
 LDFLAGS  = -static -mconsole
-LDLIBS   = -L$(WIMLIB) -l:libwim-15.dll -ladvapi32 -lole32 -lshell32 -luuid -lgdi32
+LDLIBS   = -L$(WIMLIB) -l:libwim-15.dll -ladvapi32 -lole32 -lshell32 -luuid -lgdi32 -lntdll
 
 # ---- 应用模块静态库（CLI 与 GUI 共用，避免双份编译 ODR 问题） ----
 APP_SRC = src/disk/disk.cpp src/wim/wim.cpp src/wim/exclude.cpp \
@@ -78,7 +78,7 @@ GUI_SRC = src/gui/main_win.cpp src/gui/main_form.cpp src/gui/ui_skin.cpp src/gui
 GUI_OUT = $(DISTDIR)/SysRecoverUI.exe
 GUI_INCLUDES = -Isrc -I$(DUI_ROOT) -I$(DUI_ROOT)/Control -I$(DUI_ROOT)/Core -I$(DUI_ROOT)/Layout -I$(DUI_ROOT)/Utils
 GUI_FLAGS = -std=c++17 -O1 -fpermissive -DUNICODE -D_UNICODE -DWIN32 -D_WIN32_WINNT=0x0601 -D_stdcall=__stdcall -DUILIB_STATIC
-GUI_LDLIBS = -lgdi32 -lcomctl32 -limm32 -lole32 -luuid -lmsimg32 -lshlwapi -luxtheme -ldwmapi -lwinmm -lgdiplus -loleaut32 -ladvapi32 -lshell32
+GUI_LDLIBS = -lgdi32 -lcomctl32 -limm32 -lole32 -luuid -lmsimg32 -lshlwapi -luxtheme -ldwmapi -lwinmm -lgdiplus -loleaut32 -ladvapi32 -lshell32 -lntdll
 
 # ---- 提权清单（requireAdministrator）：windres 编成 .o 再链入 ----
 # 备份/还原核心功能（枚举分区、写 BCD/引导、wimlib 挂载）全需管理员权限，

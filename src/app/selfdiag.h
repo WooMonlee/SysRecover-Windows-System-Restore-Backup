@@ -36,6 +36,13 @@ std::wstring CheckLastRescueFailure();
 // 契约（restore-task.* / _zjresy*）与引导文件不动。返回删除条目数。
 int CleanupStrayLogs();
 
+// 扫描带 NTFS 扩展属性（EA）的文件（用户 2026-10-05：客户 Linux 侧还原的
+// apply.out 报 `Ignoring extended attributes of 804 files` —— EA 只在 Linux
+// 还原时丢失，Windows 侧（PE 就地）保留）。列出 路径 + EA 名，供排查/取证；
+// 结果同时写进 outPath（UTF-8）。返回带 EA 的文件数。
+int ScanEaFiles(const std::wstring& root, const std::wstring& outPath,
+                std::string& err);
+
 // ── 「日志」按钮 / `support` 命令：支持包 ─────────────────────────────────
 struct SupportBundle {
     std::wstring zipPath;  // 成功 = 包路径；失败 = 空

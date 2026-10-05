@@ -359,6 +359,118 @@ bool ExportEventLogsTo(const std::wstring& dir, int& n) {
     return n > 0;
 }
 
+// ── 壳扩展审计（用户 2026-10-05 规格）────────────────────────────────────
+// "还原后桌面右键转圈 / explorer 卡死"的头号原因是第三方 shell 扩展死锁或
+// DLL 缺失。枚举右键菜单处理器 / 图标叠加 / ShellExecuteHooks，解析到
+// InprocServer32 的 DLL 并检查文件是否存在（缺失标 *** MISSING ***）。
+std::wstring ResolveClsidDll(const wchar_t* clsid) {
+    if (!clsid || !clsid[0])
+        return {};
+    std::wstring c = clsid;
+    if (c[0] != L'{')
+        c = L"{" + c + L"}";
+    HKEY k = nullptr;
+    std::wstring sub = L"CLSID\\" + c + L"\\InprocServer32";
+    if (RegOpenKeyExW(HKEY_CLASSES_ROOT, sub.c_str(), 0, KEY_READ, &k) !=
+        ERROR_SUCCESS)
+        return L"<no InprocServer32>";
+    wchar_t p[1024] = {};
+    DWORD cb = sizeof(p) - 2, t = 0;
+    RegQueryValueExW(k, nullptr, nullptr, &t, (LPBYTE)p, &cb);
+    RegCloseKey(k);
+    std::wstring d = p;
+    if (!d.empty() && d[0] == L'"') {
+        size_t e = d.find(L'"', 1);
+        if (e != std::wstring::npos)
+            d = d.substr(1, e - 1);
+    } else {
+        size_t pos = d.find(L".dll");
+        if (pos != std::wstring::npos)
+            d = d.substr(0, pos + 4);
+        else {
+            size_t sp = d.find(L' ');
+            if (sp != std::wstring::npos)
+                d = d.substr(0, sp);
+        }
+    }
+    if (!d.empty()) {
+        wchar_t ex[1200] = {};
+        ExpandEnvironmentStringsW(d.c_str(), ex, 1200);
+        d = ex;
+    }
+    return d;
+}
+
+void AuditExtOne(const char* scope, const wchar_t* name, const wchar_t* clsid,
+                 std::string& out) {
+    std::wstring dll = ResolveClsidDll(clsid);
+    // 只有"解析出真实路径但文件不存在"才算 MISSING；`<no InprocServer32>`
+    // 是部分 Windows 内建处理器的正常形态（如 Taskband Pin），不当故障。
+    bool missing = !dll.empty() && dll[0] != L'<' &&
+                   GetFileAttributesW(dll.c_str()) == INVALID_FILE_ATTRIBUTES;
+    char n1[512] = {}, c1[256] = {}, d1[2048] = {};
+    WideCharToMultiByte(CP_UTF8, 0, name ? name : L"", -1, n1, sizeof(n1),
+                        nullptr, nullptr);
+    WideCharToMultiByte(CP_UTF8, 0, clsid ? clsid : L"", -1, c1, sizeof(c1),
+                        nullptr, nullptr);
+    WideCharToMultiByte(CP_UTF8, 0, dll.c_str(), -1, d1, sizeof(d1), nullptr,
+                        nullptr);
+    char buf[3200];
+    snprintf(buf, sizeof(buf), "[diag] shellext %s\\%s clsid=%s dll=%s%s\n",
+             scope, n1, c1[0] ? c1 : "-", d1[0] ? d1 : "(none)",
+             missing ? "  *** MISSING ***" : "");
+    out += buf;
+}
+
+// 子键形态（子键名 = 处理程序名，默认值 = CLSID）
+void AuditExtSubkeys(HKEY root, const wchar_t* sub, const char* scope,
+                     std::string& out) {
+    HKEY k = nullptr;
+    if (RegOpenKeyExW(root, sub, 0, KEY_READ, &k) != ERROR_SUCCESS)
+        return;
+    for (DWORD i = 0;; ++i) {
+        wchar_t name[256] = {};
+        DWORD nl = 255;
+        if (RegEnumKeyExW(k, i, name, &nl, nullptr, nullptr, nullptr, nullptr) !=
+            ERROR_SUCCESS)
+            break;
+        HKEY h = nullptr;
+        if (RegOpenKeyExW(k, name, 0, KEY_READ, &h) != ERROR_SUCCESS)
+            continue;
+        wchar_t clsid[128] = {};
+        DWORD cb = sizeof(clsid) - 2, t = 0;
+        RegQueryValueExW(h, nullptr, nullptr, &t, (LPBYTE)clsid, &cb);
+        RegCloseKey(h);
+        // 两种注册形态都要认：子键名=友好名、默认值=CLSID（常见）；
+        // 或子键名=CLSID、默认值=显示名（如 Taskband Pin）→ 交换。
+        if (name[0] == L'{')
+            AuditExtOne(scope, clsid, name, out);
+        else
+            AuditExtOne(scope, name, clsid, out);
+    }
+    RegCloseKey(k);
+}
+
+// 值形态（值名 = CLSID，数据 = 描述；如 ShellExecuteHooks）
+void AuditExtValues(HKEY root, const wchar_t* sub, const char* scope,
+                    std::string& out) {
+    HKEY k = nullptr;
+    if (RegOpenKeyExW(root, sub, 0, KEY_READ, &k) != ERROR_SUCCESS)
+        return;
+    for (DWORD i = 0;; ++i) {
+        wchar_t name[256] = {};
+        DWORD nl = 255;
+        BYTE data[512] = {};
+        DWORD dl = sizeof(data) - 2, t = 0;
+        if (RegEnumValueW(k, i, name, &nl, nullptr, &t, data, &dl) !=
+            ERROR_SUCCESS)
+            break;
+        // 值形态：值名 = CLSID，数据 = 描述（如 ShellExecuteHooks）
+        AuditExtOne(scope, (const wchar_t*)data, name, out);
+    }
+    RegCloseKey(k);
+}
+
 // ── 救援层黑匣子回执（ZJRESTORE-status.txt，用户 2026-10-04 规格 2）────────
 std::wstring Utf8ToW(const std::string& s) {
     if (s.empty())
@@ -668,6 +780,54 @@ int DiagReportText(std::string& out) {
                  (unsigned long)GetUserDefaultUILanguage());
         out += buf;
     }
+    // 壳扩展审计（用户 2026-10-05 规格）：还原后"桌面右键转圈/explorer 卡死"
+    // 排查用 —— 列全右键菜单处理器/图标叠加/ShellExecuteHooks 及其 DLL 是否缺失。
+    {
+        static const wchar_t* ctxKeys[] = {
+            L"*\\shellex\\ContextMenuHandlers",
+            L"AllFilesystemObjects\\shellex\\ContextMenuHandlers",
+            L"Directory\\shellex\\ContextMenuHandlers",
+            L"Directory\\Background\\shellex\\ContextMenuHandlers",
+            L"Drive\\shellex\\ContextMenuHandlers",
+            L"Folder\\shellex\\ContextMenuHandlers",
+            L"CLSID\\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\shellex\\"
+            L"ContextMenuHandlers",
+        };
+        for (const wchar_t* s : ctxKeys)
+            AuditExtSubkeys(HKEY_CLASSES_ROOT, s, "ctx", out);
+        AuditExtSubkeys(HKEY_LOCAL_MACHINE,
+                        L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\"
+                        L"Explorer\\ShellIconOverlayIdentifiers",
+                        "overlay", out);
+        AuditExtValues(HKEY_LOCAL_MACHINE,
+                       L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\"
+                       L"Explorer\\ShellExecuteHooks",
+                       "exec-hook", out);
+        HKEY bk = nullptr;
+        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+                          L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\"
+                          L"Shell Extensions\\Blocked",
+                          0, KEY_READ, &bk) == ERROR_SUCCESS) {
+            for (DWORD i = 0;; ++i) {
+                wchar_t vn[128] = {};
+                DWORD nl = 127;
+                BYTE data[512] = {};
+                DWORD dl = sizeof(data) - 2, t = 0;
+                if (RegEnumValueW(bk, i, vn, &nl, nullptr, &t, data, &dl) !=
+                    ERROR_SUCCESS)
+                    break;
+                char n1[256] = {}, d1[512] = {};
+                WideCharToMultiByte(CP_UTF8, 0, vn, -1, n1, sizeof(n1), nullptr,
+                                    nullptr);
+                WideCharToMultiByte(CP_UTF8, 0, (const wchar_t*)data, -1, d1,
+                                    sizeof(d1), nullptr, nullptr);
+                snprintf(buf, sizeof(buf), "[diag] shellext blocked %s = %s\n",
+                         n1, d1);
+                out += buf;
+            }
+            RegCloseKey(bk);
+        }
+    }
     // 磁盘健康（PIT-086）：SMART 能读时打印关键属性；读不到（NVMe/RAID/USB 桥）明确写
     // unavailable（不是错误，是能力边界）。CAUTION = 我们判定"建议先换盘"。
     for (const auto& d : sysrecover::EnumerateDisks()) {
@@ -759,6 +919,9 @@ std::wstring CheckLastRescueFailure() {
     std::wstring base = LogBaseDir() + L"\\logs";
     std::vector<std::wstring> files;
     FindStatusFiles(base + L"\\collected", 4, files);
+    // 日志根直下的回执（救援层"成功"会把 ZJRESTORE-status.txt 写进软件目录
+    // 的 logs\ —— BIOS 机器没有 ESP，这是成功唯一的回执落点）。
+    FindStatusFiles(base, 1, files);
     std::string bestTime, bestStep, bestBuild;  // 最新一条 FAILED 回执
     std::string lastAnyTime;                    // 最新一条回执（OK/FAILED 都算）
     for (const auto& f : files) {
@@ -1079,6 +1242,118 @@ SupportBundle BuildSupportBundle(const std::wstring& outZip) {
     // 到处放）。只删已知日志文件/目录，契约与引导文件不动。
     CleanupStrayLogs();
     return r;
+}
+
+// ── EA（NTFS 扩展属性）扫描（用户 2026-10-05）────────────────────────────
+// 背景：客户 Linux 侧还原的 apply.out 报 `Ignoring extended attributes of
+// 804 files` —— EA 只在 Linux 还原路径丢失，Windows（PE 就地）保留。此命令
+// 列出"哪些文件带 EA、EA 叫什么"，供取证（在 PE 还原后的系统上跑一次）。
+extern "C" long __stdcall NtQueryEaFile(HANDLE, void*, void*, unsigned long,
+                                        unsigned char, void*, unsigned long,
+                                        unsigned long*, unsigned char);
+namespace {
+const long kStatusBufferOverflow = (long)0x80000005;
+
+void EaScanRec(const std::wstring& dir, std::string& out,
+               unsigned long long& files, unsigned long long& hit,
+               bool& capped) {
+    static std::vector<unsigned char> buf;
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE)
+        return;
+    do {
+        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L".."))
+            continue;
+        std::wstring p = dir + L"\\" + fd.cFileName;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
+                EaScanRec(p, out, files, hit, capped);
+            continue;
+        }
+        ++files;
+        HANDLE f = CreateFileW(p.c_str(), FILE_READ_EA | FILE_READ_ATTRIBUTES,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                   FILE_SHARE_DELETE,
+                               nullptr, OPEN_EXISTING,
+                               FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (f == INVALID_HANDLE_VALUE)
+            continue;
+        if (buf.empty())
+            buf.assign(256 * 1024, 0);
+        struct {
+            long status;
+            void* info;
+        } iosb = {};
+        long st = NtQueryEaFile(f, &iosb, buf.data(), (unsigned long)buf.size(),
+                                FALSE, nullptr, 0, nullptr, FALSE);
+        CloseHandle(f);
+        if (st != 0 && st != kStatusBufferOverflow)
+            continue;  // 没有 EA / 无权限
+        ++hit;
+        if (capped)
+            continue;
+        if (out.size() > (8u << 20)) {  // 输出上限 8MB（防爆内存）
+            capped = true;
+            continue;
+        }
+        out += ToUtf8(p);
+        if (st == kStatusBufferOverflow) {
+            out += " | (EA too large, names truncated)\r\n";
+            continue;
+        }
+        unsigned long off = 0;
+        for (;;) {
+            unsigned char* e = buf.data() + off;
+            unsigned long next = *(unsigned long*)e;
+            unsigned char nameLen = e[5];
+            unsigned short valLen = *(unsigned short*)(e + 6);
+            out += " | ";
+            out.append((char*)e + 8, nameLen);
+            out += "=";
+            size_t vn = valLen < 32 ? valLen : 32;
+            for (size_t i = 0; i < vn; ++i) {
+                char b[4];
+                snprintf(b, sizeof(b), "%02X", e[8 + nameLen + 1 + i]);
+                out += b;
+            }
+            if (valLen > 32)
+                out += "..";
+            if (next == 0 || (off + next + 8) >= buf.size())
+                break;
+            off += next;
+        }
+        out += "\r\n";
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+}
+}  // namespace
+
+int ScanEaFiles(const std::wstring& root, const std::wstring& outPath,
+                std::string& err) {
+    if (GetFileAttributesW(root.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        err = "root not found";
+        return -1;
+    }
+    std::string out;
+    out += "# SysRecover scan-ea " SYSRECOVER_VERSION " root=" + ToUtf8(root) +
+           "\r\n";
+    unsigned long long files = 0, hit = 0;
+    bool capped = false;
+    EaScanRec(root, out, files, hit, capped);
+    out += "# files=" + std::to_string(files) +
+           " withEA=" + std::to_string(hit) +
+           (capped ? " (listing capped)" : "") + "\r\n";
+    std::wstring dst =
+        outPath.empty() ? (LogBaseDir() + L"\\logs\\ea-scan.txt") : outPath;
+    CreateDirectoryW((LogBaseDir() + L"\\logs").c_str(), nullptr);
+    if (!WriteUtf8File(dst, out)) {
+        err = "write failed";
+        return -1;
+    }
+    LogInfo("ea-scan: files=" + std::to_string(files) +
+            " withEA=" + std::to_string(hit) + " -> " + ToUtf8(dst));
+    return (int)hit;
 }
 
 }  // namespace sysrecover

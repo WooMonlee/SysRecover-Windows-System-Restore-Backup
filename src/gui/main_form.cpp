@@ -407,6 +407,7 @@ static std::wstring StageCn(const std::wstring& s) {
     if (s.compare(0, 3, L"esp") == 0) return Tr(L"备份ESP");
     if (s.compare(0, 6, L"verify") == 0) return Tr(L"校验镜像");
     if (s.compare(0, 5, L"probe") == 0) return Tr(L"完整性检查");
+    if (s.compare(0, 7, L"ea-scan") == 0) return Tr(L"文件属性检查");
     return s;
 }
 
@@ -744,8 +745,10 @@ void CMainForm::Notify(TNotifyUI& msg) {
             // grldr/grldr.mbr/menu.lst/ZJRESTORE（用户要求：要清就清干净）
             std::string log;
             bool ok = RemoveBootLayer(log);
+            DeleteMenuBinding();  // 绑定副契约一并清（同 BootMenuBtn，2026-10-05）
             SetStatus(ok ? Tr(L"已清除引导项与相关文件") : Tr(L"清除引导项未完全成功"));
             LogInfo(std::string("GUI remove boot layer: ") + log);
+            RefreshBootMenuBtn();
         } else if (name == _T("BootMenuBtn")) {
             ToggleBootMenu();
         } else if (name == _T("LogBtn")) {
@@ -872,6 +875,9 @@ void CMainForm::ToggleBootMenu() {
     std::string detail, log;
     if (BootMenuInstalled(detail)) {
         bool ok = RemoveBootLayer(log);
+        // 绑定副契约必须一起删：否则 ReadMenuBinding 仍判"已安装" → 按钮
+        // 停在「删除菜单」回不到「安装菜单」（用户 2026-10-05 实测 bug）。
+        DeleteMenuBinding();
         SetStatus(ok ? Tr(L"已删除启动还原") : Tr(L"删除启动还原未完全成功"));
         LogInfo(std::string("GUI boot menu toggle: ") + log);
         RefreshBootMenuBtn();

@@ -5,7 +5,12 @@
 # 控制台无中文字库 → 消息全 ASCII。日志尽量持久化到非目标分区（重启后可取）。
 set -u
 LOG=/tmp/zjrestore.log
-say(){ echo "ZJ: $*"; echo "$(date '+%F %T') $*" >> "$LOG"; }
+# 注意：控制台输出一律走 **stderr**（1>&2）——函数返回值/设备名等靠 stdout，
+# 而 `ESP_DEV=$(find_esp_dev)` 这类命令替换会捕获函数内**所有 stdout**；若
+# say 走 stdout，"mnt <dev>" 屏幕标记会被一起捕获污染 ESP_DEV（2026-10-05 客户
+# 实测：esp mount failed 'ZJ:   mnt /dev/sda1 /dev/sda1'）。stderr 同样打到控制台，
+# 屏幕/串口日志不受影响。
+say(){ echo "ZJ: $*" 1>&2; echo "$(date '+%F %T') $*" >> "$LOG"; }
 # 黑匣子探测表（2026-10-04 客户失败的教训）：每个分区的 mount/open 结果都记在
 # 这里（与 init 共用同一文件），失败时随日志写到所有可写面 —— "为什么找不到"
 # 从此有据可查（客户那次只剩屏幕视频、扫描阶段没有任何文件证据）。
@@ -1134,7 +1139,15 @@ cleanup_after_success(){
 # 的系统盘不留我们的文件；ESP 的 \EFI\ZJRESTORE\logs\ 是常驻救援模块的一部分）。
 RESULT=OK; STEP=done
 persist_log          # 把完整日志落到 <软件目录>\logs\（cleanup 会保留该子目录）
+# 成功回执也必须落**软件目录**（BIOS 机器没有 ESP；UEFI 的 ESP 写入也可能失败）：
+# 否则 Windows 侧看不到"已成功"，会把待执行标记误报成"任务未执行"（0.6.29 规则）。
+if [ -n "$SOFT_MNT" ] && [ -d "$SOFT_MNT/$SD_REL" ]; then
+    mkdir -p "$SOFT_MNT/$SD_REL/logs" 2>/dev/null
+    bb_status_text > "$SOFT_MNT/$SD_REL/logs/ZJRESTORE-status.txt" 2>/dev/null
+fi
+[ -n "$BB_HOME" ] && bb_status_text > "$BB_HOME/ZJRESTORE-status.txt" 2>/dev/null
 bb_esp_drop
+sync
 stop_log_mirror      # 停掉后台日志镜像循环
 trap - EXIT          # 清理阶段不要再触发 persist_log 把日志写回去
 cleanup_after_success

@@ -188,6 +188,7 @@ wimlib 初始化失败\n=wimlib initialization failed\n
 已清除引导项与相关文件=Boot entry and related files cleared
 已载入镜像：=Image loaded: 
 已选择镜像：=Selected image: 
+带扩展属性(EA)的文件数：=Files carrying extended attributes (EA): 
 应用镜像失败=Failed to apply the image
 开始备份=Start Backup
 开始恢复=Start Restore
@@ -227,6 +228,7 @@ wimlib 初始化失败\n=wimlib initialization failed\n
 教育版=Education
 文件→系统=Restore
 文件对话框创建失败=Failed to create the file dialog
+文件属性检查=File attribute audit
 旗舰版=Ultimate
 无法创建 CPU 限制任务对象（err\=%lu）=Failed to create the CPU limit job object (err\=%lu)
 无法创建备份目录：=Failed to create the backup directory: 
