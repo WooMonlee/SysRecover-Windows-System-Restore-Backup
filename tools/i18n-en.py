@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：397/398 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：398/399 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n建议：以管理员身份运行（本程序要读写分区与引导）。': '\n\nAdvice: run as administrator (this program reads and writes partitions and boot data).',
@@ -80,6 +80,7 @@ EN = {
     '」失败（错误 ': ') failed (error ',
     '」已被禁用，无法创建卷影快照。\r\n（热备份必需；不修复则备份必报 rc=89: Unable to create a filesystem snapshot。）\r\n': ') is disabled, so no volume shadow copy can be created.\r\n(Required for a hot backup; without it the backup always fails with rc=89: Unable to create a filesystem snapshot.)\r\n',
     '」是 ESP 分区备份，不能单独还原为系统。恢复系统时会自动把 ESP 一并恢复；请选择系统子镜像。': '" is an ESP partition backup and cannot be restored as a system by itself. It is restored to the ESP automatically when restoring the system; select a system image.',
+    '」是扩展属性（EA）修复数据，不能单独还原为系统；请选择系统子镜像。': '" is extended-attributes (EA) fix data and cannot be restored as a system by itself; select a system image.',
     '」状态失败（错误 ': ') (error ',
     '」（服务不存在），无法创建卷影快照。\r\n（精简/封装版 Windows 可能删除了它；不修复则备份必报 rc=89: Unable to create a filesystem snapshot。）': ') does not exist, so no volume shadow copy can be created.\r\n(Lite/customized Windows builds sometimes remove it; without it the backup always fails with rc=89: Unable to create a filesystem snapshot.)',
     '」（错误 ': ') (error ',

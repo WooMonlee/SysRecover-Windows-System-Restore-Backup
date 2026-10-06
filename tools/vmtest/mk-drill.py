@@ -14,6 +14,13 @@
   sda3 1606848..4194303 1.2GB  镜像分区（images/test.wim + bootfix/ + restore-task.conf）
 
 用法：python tools/vmtest/mk-drill.py   （先确保 drill-images/test.wim 存在）
+
+EA 修复子镜像（PIT-122）要求 test.wim 里带 ZJEA 子镜像（index=3）。git 不保存
+NTFS 扩展属性，换机器/重新生成 test.wim 前先给样例文件打 EA（否则 test.wim 会
+少一个子镜像，run-drill 的 EA 断言会失败）：
+  build\\ea-scan.exe --set tools\\vmtest\\drill-src\\ea-test.txt
+  build\\ea-scan.exe --set tools\\vmtest\\drill-src\\DirA\\ea2.bin
+  （ea-scan.exe 构建：g++ -O2 -static -municode -o build\\ea-scan.exe tools\\ea-scan.cpp -lntdll）
 """
 import os
 import struct
@@ -57,6 +64,7 @@ target_vol_label=ZJSYS
 image_path=D:/images/test.wim
 image_index=1
 esp_index=2
+ea_index=3
 repair_boot=1
 pt_type=mbr
 """
@@ -69,6 +77,7 @@ target_disk_serial=QEMU-DRILL-0001
 image_path=D:/images/test.wim
 image_index=1
 esp_index=2
+ea_index=3
 repair_boot=1
 """
 
@@ -134,6 +143,7 @@ def main():
         print('missing %s - create it first:' % WIM)
         print('  dist/SysRecover.exe backup --source tools/vmtest/drill-src/ '
               '--dest tools/vmtest/drill-images/test.wim --compress fast --esp --yes')
+        print('  (EA samples need EAs first - see the header comment)')
         return 1
     for f in ('grldr', 'grldr.mbr', 'vmlinuz-zjrestore'):
         if not os.path.exists(os.path.join(BOOT, f)):

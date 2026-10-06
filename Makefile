@@ -51,7 +51,7 @@ APP_SRC = src/disk/disk.cpp src/wim/wim.cpp src/wim/exclude.cpp \
       src/common/process.cpp src/common/logger.cpp src/common/progress.cpp \
       src/common/singleton.cpp src/common/sysinfo.cpp src/common/zip.cpp \
       src/common/selfarch.cpp src/common/crash.cpp src/common/vss.cpp src/common/i18n.cpp \
-      src/common/relocate.cpp src/common/pathutil.cpp src/common/cpucap.cpp src/boot/bcd.cpp src/boot/grub.cpp \
+      src/common/relocate.cpp src/common/pathutil.cpp src/common/cpucap.cpp src/common/ea.cpp src/boot/bcd.cpp src/boot/grub.cpp \
       src/boot/uefi.cpp src/boot/bcd_parse.cpp src/boot/bootpath.cpp src/boot/task.cpp src/boot/bootfix.cpp \
       src/app/safety.cpp src/app/advice.cpp \
       src/app/shortcut.cpp src/app/ops.cpp src/app/selfdiag.cpp
@@ -143,10 +143,23 @@ clean:
 	-del /Q $(subst /,\,$(DISTDIR))\SysRecover.exe $(subst /,\,$(DISTDIR))\SysRecoverUI.exe 2>nul
 	-del /S /Q $(subst /,\,$(OBJDIR)) 2>nul
 
+# ---- 首启 EA 补写器（PIT-122/123）----
+# 独立极小 exe（不链 wimlib/i18n）：救援层把它投放到目标系统后，由本地组策略
+# 「启动脚本」在**登录前以 SYSTEM** 拉起（QEMU 全链实测），把 eapack.dat 里的
+# EA 用 NtSetEaFile 写回，随后自清理。固定用 **x86 工具链**：x86/x64 目标
+# Windows 都能跑（还原目标位数未知；32 位系统也要能用）。
+EA_APPLY_SRC = src/tools/ea_apply_main.cpp src/common/ea.cpp
+EA_APPLY_X86 = D:/Prog/ProgIDE/mingw32/bin/i686-w64-mingw32-g++
+EA_APPLY_OUT = bootfiles/zj-ea-apply.exe
+ea-apply: $(EA_APPLY_OUT)
+$(EA_APPLY_OUT): $(EA_APPLY_SRC) src/common/version.h
+	$(EA_APPLY_X86) $(CXXFLAGS) $(INCLUDES) $(EA_APPLY_SRC) -o $(EA_APPLY_OUT) -static -mconsole -municode -lntdll
+
 # ---- 单元测试（零依赖，纯逻辑；不链 duilib/wimlib，跑得快） ----
 TEST_SRC   = tests/tiny_test.cpp tests/unit_tests.cpp tests/main.cpp
 TEST_UNITS = src/common/sysinfo.cpp src/wim/exclude.cpp src/boot/task.cpp src/common/zip.cpp src/app/advice.cpp \
-      src/common/i18n.cpp src/common/selfarch.cpp src/common/relocate.cpp src/common/pathutil.cpp src/boot/bcd_parse.cpp src/boot/bootpath.cpp
+      src/common/i18n.cpp src/common/selfarch.cpp src/common/relocate.cpp src/common/pathutil.cpp src/boot/bcd_parse.cpp src/boot/bootpath.cpp \
+      src/common/ea.cpp
 TEST_BIN   = $(OBJDIR)/tests.exe
 
 check: $(TEST_BIN)
@@ -157,7 +170,7 @@ check: $(TEST_BIN)
 	$(PYTHON) tools/check-widths.py
 
 $(TEST_BIN): $(TEST_SRC) $(TEST_UNITS) src/common/rescue_decision.h src/common/version.h | $(OBJDIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) $(TEST_SRC) $(TEST_UNITS) -o $(TEST_BIN) -static -mconsole -ladvapi32 -lole32 -luuid
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(TEST_SRC) $(TEST_UNITS) -o $(TEST_BIN) -static -mconsole -ladvapi32 -lole32 -luuid -lntdll
 
 # ---- 崩溃处理回归探针（**会故意崩溃**；验证 dump + 可读文本真能落盘）----
 # 单独目标（不进 make check —— 它会真的崩）。产物在 tests\crash-out\（gitignore）。
@@ -181,7 +194,7 @@ smoke:
 # 递归调用 make 时**必须把 $(MAKE) 的正斜杠换成反斜杠**：mingw32-make 把 $(MAKE) 展开成
 # `D:/Prog/.../mingw32-make.exe`，而 shell 是 cmd，正斜杠路径会被判为"系统找不到指定的路径"。
 SELF = $(subst /,\,$(MAKE))
-package:
+package: ea-apply
 	@echo === [1/3] 构建 x64 -^> dist/x64 ===
 	$(SELF) -f Makefile ARCH=x64 all
 	@echo === [2/3] 构建 x86 -^> dist（根，入口）===
@@ -193,6 +206,7 @@ package:
 	@copy /Y bootfiles\vmlinuz-zjrestore dist\bootfiles\ >nul
 	@copy /Y bootfiles\initramfs-zjrestore.cpio.gz dist\bootfiles\ >nul
 	@copy /Y bootfiles\zjrestore-lite.sh dist\bootfiles\ >nul
+	@copy /Y bootfiles\zj-ea-apply.exe dist\bootfiles\ >nul
 	@if not exist dist\bootfiles\sb mkdir dist\bootfiles\sb
 # package 只增不删 → 换链时旧资产会残留（grub-ubuntu.efi 曾与 grubx64.efi 并存）。
 # 注意：这里必须用 make 的 `#` 注释；命令行注释 `::` 在「单独一条 cmd /c」下不是合法命令。

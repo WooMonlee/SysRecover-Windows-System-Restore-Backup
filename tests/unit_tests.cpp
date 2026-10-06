@@ -23,6 +23,7 @@
 #include "common/sysinfo.h"
 #include "common/version.h"
 #include "common/zip.h"
+#include "common/ea.h"
 #include "wim/exclude.h"
 
 using namespace sysrecover;
@@ -587,4 +588,120 @@ TEST(rescue_report_decision) {
     t = RescueRunTimes{};
     t.latestStatusTime = "2026-10-05 11:00:00";
     CHECK(DecideRescueReport(t) == RescueReport::None);
+}
+
+// ────────────── ea（EA 打包 / 组策略文件助手，PIT-122）──────────────
+TEST(ea_pack_roundtrip) {
+    std::vector<ea::FileEntry> in;
+    ea::FileEntry a;
+    a.relPath = L"Windows\\System32\\drivers\\foo.sys";
+    ea::EaValue v1;
+    v1.name = "ZJTEST";
+    v1.value = {'1'};
+    ea::EaValue v2;
+    v2.name = "BIN";
+    v2.value = {0x00, 0x01, 0xFF, 0x7F, 0x80};
+    a.eas.push_back(v1);
+    a.eas.push_back(v2);
+    in.push_back(a);
+    ea::FileEntry b;
+    b.relPath = L"Program Files\\中文 目录\\x.dll";
+    ea::EaValue v3;
+    v3.name = "EMPTY";
+    b.eas.push_back(v3);
+    in.push_back(b);
+
+    auto bytes = ea::BuildPack(in);
+    std::vector<ea::FileEntry> out;
+    std::string why;
+    CHECK(ea::ParsePack(bytes.data(), bytes.size(), out, why));
+    CHECK_EQ(out.size(), (size_t)2);
+    CHECK_EQ(out[0].relPath, in[0].relPath);
+    CHECK_EQ(out[0].eas.size(), (size_t)2);
+    CHECK_EQ(out[0].eas[0].name, std::string("ZJTEST"));
+    CHECK(out[0].eas[0].value.size() == 1 && out[0].eas[0].value[0] == '1');
+    CHECK_EQ(out[0].eas[1].value.size(), (size_t)5);
+    CHECK_EQ(out[0].eas[1].value[4], (unsigned char)0x80);
+    CHECK_EQ(out[1].relPath, in[1].relPath);
+    CHECK_EQ(out[1].eas[0].value.size(), (size_t)0);
+}
+
+TEST(ea_pack_reject) {
+    std::vector<ea::FileEntry> out;
+    std::string why;
+    auto empty = ea::BuildPack({});
+    CHECK(ea::ParsePack(empty.data(), empty.size(), out, why));
+    CHECK_EQ(out.size(), (size_t)0);
+    auto bad = empty;
+    bad[0] = 'X';
+    CHECK(!ea::ParsePack(bad.data(), bad.size(), out, why));
+    std::vector<ea::FileEntry> one;
+    ea::FileEntry f;
+    f.relPath = L"a";
+    ea::EaValue v;
+    v.name = "N";
+    v.value = {1, 2, 3};
+    f.eas.push_back(v);
+    one.push_back(f);
+    auto full = ea::BuildPack(one);
+    CHECK(!ea::ParsePack(full.data(), full.size() - 2, out, why));
+}
+
+TEST(ea_pol_fragment_strip) {
+    auto frag = ea::BuildSyncPolFragment();
+    CHECK(frag.size() > 16);
+    CHECK(memcmp(frag.data(), "PReg", 4) == 0);
+    bool removed = false;
+    auto stripped = ea::StripOurPolRecords(frag, &removed);
+    CHECK(removed);
+    CHECK_EQ(stripped.size(), (size_t)8);
+    std::vector<unsigned char> junk = {1, 2, 3};
+    bool r2 = false;
+    auto same = ea::StripOurPolRecords(junk, &r2);
+    CHECK(!r2);
+    CHECK_EQ(same.size(), (size_t)3);
+}
+
+TEST(ea_set_ea_buffer_layout) {
+    std::vector<ea::EaValue> eas;
+    ea::EaValue e1;
+    e1.name = "AA";
+    e1.value = {1, 2};
+    ea::EaValue e2;
+    e2.name = "BBB";
+    e2.value = {3, 4, 5, 6, 7};
+    eas.push_back(e1);
+    eas.push_back(e2);
+    auto buf = ea::BuildSetEaBuffer(eas);
+    // 第一条: 8+2+1+2=13 → 对齐 16；第二条: 8+3+1+5=17 → 对齐 20
+    CHECK_EQ(buf.size(), (size_t)(16 + 20));
+    CHECK_EQ(*(unsigned long*)&buf[0], (unsigned long)16);
+    CHECK_EQ(buf[5], (unsigned char)2);
+    CHECK_EQ(buf[8], (unsigned char)'A');
+    CHECK_EQ(*(unsigned long*)&buf[16], (unsigned long)0);
+    CHECK_EQ(buf[16 + 5], (unsigned char)3);
+    CHECK_EQ(buf[16 + 8 + 4], (unsigned char)3);
+}
+
+TEST(ea_scripts_ini_remove) {
+    std::string ini =
+        "[Startup]\r\n0cmdLine=zj-ea-restore.cmd\r\n0Parameters=\r\n"
+        "1cmdLine=other.cmd\r\n1Parameters=\r\n";
+    CHECK(ea::RemoveScriptEntry(ini, "zj-ea-restore.cmd"));
+    CHECK(ini.find("zj-ea-restore") == std::string::npos);
+    CHECK(ini.find("other.cmd") != std::string::npos);
+    std::string ini2 =
+        "[Startup]\r\n0CMDLINE=ZJ-EA-RESTORE.CMD\r\n0PARAMETERS=\r\n";
+    CHECK(ea::RemoveScriptEntry(ini2, "zj-ea-restore.cmd"));
+    CHECK(ini2.find("RESTORE") == std::string::npos);
+    std::string ini3 = "[Startup]\r\n0cmdLine=other.cmd\r\n";
+    CHECK(!ea::RemoveScriptEntry(ini3, "zj-ea-restore.cmd"));
+}
+
+TEST(ea_gpt_bump) {
+    std::string g = "[General]\r\nVersion=65537\r\n";
+    CHECK(ea::BumpGptIniVersion(g));
+    CHECK(g.find("Version=65538\r\n") != std::string::npos);
+    std::string g2 = "[General]\r\n";
+    CHECK(!ea::BumpGptIniVersion(g2));
 }

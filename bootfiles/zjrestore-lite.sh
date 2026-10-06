@@ -1090,7 +1090,146 @@ if [ -n "$ESP_INDEX" ]; then
         say "WARN: task has esp subimage (idx $ESP_INDEX) but no ESP partition found (skip)"
     fi
 fi
-# 镜像分区到此才卸载（ESP 子镜像 apply 直接读 $IMG_FILE，见上面的注释）
+# ── EA 修复投放（PIT-122，2026-10-06）──
+# 镜像里可能含名为 ZJEA 的子镜像（备份时自动并入：带 EA 的文件打包 eapack.dat +
+# 首启补写器 zj-ea-apply.exe + 同步策略片段 zj-regpol.bin；契约键 ea_index）。
+# 背景：Linux 侧 wimlib apply 丢 Windows EA（PIT-120 客户实测 804 个文件）。
+# 这里把修复载荷投放到目标系统，并安装**本地组策略启动脚本钩子** —— 目标系统
+# 首次开机时（登录前、SYSTEM）自动用 NtSetEaFile 写回 EA，然后自清理。
+# 机理（CSE 声明 / gpt.ini 版本递增 / RunStartupScriptSync+SyncForegroundPolicy
+# 同步策略 / 预登录执行 / 每引导重跑 / 文件可写性）已 QEMU 全链实测（PIT-123）。
+# 没有 ea_index 时整段不跑（绝大多数任务不带）。
+EA_INDEX=$(get_task ea_index)
+case "$EA_INDEX" in ''|0) EA_INDEX="" ;; esac
+if [ -n "$EA_INDEX" ]; then
+    STEP=ea
+    say "ea subimage: index=$EA_INDEX (deploy first-boot EA restore)"
+    EAD=/tmp/zj_ea
+    mkdir -p "$EAD"
+    if "$WIMLIB" apply "$IMG_FILE" "$EA_INDEX" "$EAD" > /tmp/ea.out 2>&1; then
+        if [ -s "$EAD/eapack.dat" ] && [ -s "$EAD/zj-ea-apply.exe" ]; then
+            say "ea payload extracted: pack=$(wc -c < "$EAD/eapack.dat" | tr -d ' ')B applier=yes"
+            EAM=/tmp/zj_ea_m
+            mkdir -p "$EAM"
+            if mnt_dev "$TARGET_DEV" "$EAM"; then
+                mkdir -p "$EAM/ZJRESTORE/ea" \
+                         "$EAM/Windows/System32/GroupPolicy/Machine/Scripts/Startup"
+                cp "$EAD/eapack.dat" "$EAM/ZJRESTORE/ea/" 2>/dev/null
+                cp "$EAD/zj-ea-apply.exe" "$EAM/ZJRESTORE/ea/" 2>/dev/null
+                # 启动脚本：包不在（已修复/已放弃/删除）→ 秒退；否则调补写器
+                printf '@echo off\r\nif not exist "%%SystemDrive%%\\ZJRESTORE\\ea\\eapack.dat" goto :eof\r\n"%%SystemDrive%%\\ZJRESTORE\\ea\\zj-ea-apply.exe" --pack "%%SystemDrive%%\\ZJRESTORE\\ea\\eapack.dat"\r\n' \
+                    > "$EAM/Windows/System32/GroupPolicy/Machine/Scripts/Startup/zj-ea-restore.cmd"
+                # scripts.ini 合并：[Startup] 段追加我们的条目（保留用户已有条目）。
+                # 统一 CRLF→LF 处理再转回，避免 \r 混进插入行（busybox awk 对 \r
+                # 转义支持不一的坑）。
+                SINI="$EAM/Windows/System32/GroupPolicy/Machine/Scripts/scripts.ini"
+                if [ -s "$SINI" ]; then
+                    tr -d '\r' < "$SINI" > /tmp/zj_ea_ini0.txt
+                    MAXIDX=$(grep -oE '^[0-9]+' /tmp/zj_ea_ini0.txt 2>/dev/null | sort -n | tail -n 1)
+                    if [ -n "$MAXIDX" ]; then IDX=$((MAXIDX + 1)); else IDX=0; fi
+                    if grep -qi '^\[Startup' /tmp/zj_ea_ini0.txt; then
+                        awk -v idx="$IDX" '
+                            BEGIN { insec=0; done=0 }
+                            /^\[Startup/ { insec=1; print; next }
+                            /^\[/ { if (insec && !done) { printf "%scmdLine=zj-ea-restore.cmd\n%sParameters=\n", idx, idx; done=1 } insec=0; print; next }
+                            { print }
+                            END { if (insec && !done) { printf "%scmdLine=zj-ea-restore.cmd\n%sParameters=\n", idx, idx } }
+                        ' /tmp/zj_ea_ini0.txt > /tmp/zj_ea_ini1.txt
+                    else
+                        cp /tmp/zj_ea_ini0.txt /tmp/zj_ea_ini1.txt
+                        printf '[Startup]\n%scmdLine=zj-ea-restore.cmd\n%sParameters=\n' "$IDX" "$IDX" >> /tmp/zj_ea_ini1.txt
+                    fi
+                    awk '{printf "%s\r\n", $0}' /tmp/zj_ea_ini1.txt > "$SINI"
+                    say "ea: scripts.ini merged (idx=$IDX)"
+                else
+                    printf '[Startup]\r\n0cmdLine=zj-ea-restore.cmd\r\n0Parameters=\r\n' > "$SINI"
+                    say "ea: scripts.ini created"
+                fi
+                # gpt.ini 合并：声明 Scripts/Registry 两个 CSE + 版本号递增 ——
+                # 版本必须与注册表 State\...\GPO-List\0\Version 不同，否则 gpsvc
+                # 判"无变化"跳过处理（PIT-123 实测踩过，初装写 65537 被跳）。
+                GINI="$EAM/Windows/System32/GroupPolicy/gpt.ini"
+                SCRPAIR='{42B5FAAE-6536-11D2-AE5A-0000F87571E3}{40B6664F-4972-11D1-A7CA-0000F87571E3}'
+                REGPAIR='{35378EAC-683F-11D2-A89A-00C04FBBCFA2}{D02B1F72-3407-48AE-BA88-E8213C6761F1}'
+                if [ -s "$GINI" ]; then
+                    tr -d '\r' < "$GINI" > /tmp/zj_ea_gpt0.txt
+                    VER=$(grep -o '^Version=[0-9]*' /tmp/zj_ea_gpt0.txt 2>/dev/null | head -1 | cut -d= -f2)
+                    if [ -n "$VER" ]; then NVER=$((VER + 1)); else NVER=2147418113; fi
+                    HASSCR=0; HASREG=0
+                    grep -qF "$SCRPAIR" /tmp/zj_ea_gpt0.txt 2>/dev/null && HASSCR=1
+                    grep -qF "$REGPAIR" /tmp/zj_ea_gpt0.txt 2>/dev/null && HASREG=1
+                    ADD=""
+                    [ "$HASSCR" = "0" ] && ADD="$ADD[$SCRPAIR]"
+                    [ "$HASREG" = "0" ] && ADD="$ADD[$REGPAIR]"
+                    if grep -q '^gPCMachineExtensionNames=' /tmp/zj_ea_gpt0.txt; then
+                        if [ -n "$ADD" ]; then
+                            sed "s#^\(gPCMachineExtensionNames=.*\)\$#\1$ADD#" /tmp/zj_ea_gpt0.txt > /tmp/zj_ea_gpt1.txt
+                        else
+                            cp /tmp/zj_ea_gpt0.txt /tmp/zj_ea_gpt1.txt
+                        fi
+                    else
+                        awk -v add="gPCMachineExtensionNames=[$SCRPAIR][$REGPAIR]" '
+                            BEGIN { done=0 }
+                            /^\[General/ { print; print add; done=1; next }
+                            { print }
+                            END { if (!done) { print "[General]"; print add } }
+                        ' /tmp/zj_ea_gpt0.txt > /tmp/zj_ea_gpt1.txt
+                    fi
+                    if grep -q '^Version=' /tmp/zj_ea_gpt1.txt; then
+                        sed "s/^Version=[0-9]*\$/Version=$NVER/" /tmp/zj_ea_gpt1.txt > /tmp/zj_ea_gpt2.txt
+                    else
+                        cp /tmp/zj_ea_gpt1.txt /tmp/zj_ea_gpt2.txt
+                        printf 'Version=%s\n' "$NVER" >> /tmp/zj_ea_gpt2.txt
+                    fi
+                    awk '{printf "%s\r\n", $0}' /tmp/zj_ea_gpt2.txt > "$GINI"
+                    say "ea: gpt.ini merged (version=$NVER scripts=$HASSCR registry=$HASREG)"
+                else
+                    printf '[General]\r\ngPCMachineExtensionNames=[%s][%s]\r\nVersion=2147418113\r\n' \
+                        "$SCRPAIR" "$REGPAIR" > "$GINI"
+                    say "ea: gpt.ini created"
+                fi
+                # Registry.pol：追加同步策略记录（已有文件剥掉片段头再 cat 追加；
+                # 用户已有记录保留 —— pol 记录可安全串接，重复记录后者生效）。
+                POL="$EAM/Windows/System32/GroupPolicy/Machine/Registry.pol"
+                FRAG="$EAD/zj-regpol.bin"
+                if [ -s "$FRAG" ]; then
+                    if [ -s "$POL" ]; then
+                        tail -c +9 "$FRAG" > /tmp/zj_ea_frag.bin
+                        cat "$POL" /tmp/zj_ea_frag.bin > /tmp/zj_ea_pol.bin
+                    else
+                        cp "$FRAG" /tmp/zj_ea_pol.bin
+                    fi
+                    cp /tmp/zj_ea_pol.bin "$POL"
+                    say "ea: Registry.pol merged"
+                else
+                    say "WARN: ea regpol fragment missing (sync policy not set)"
+                fi
+                sync
+                # 落盘复核（失败要在日志里显形，不静默）
+                _eaok=1
+                [ -s "$EAM/ZJRESTORE/ea/eapack.dat" ] || _eaok=0
+                [ -s "$EAM/ZJRESTORE/ea/zj-ea-apply.exe" ] || _eaok=0
+                [ -s "$EAM/Windows/System32/GroupPolicy/Machine/Scripts/Startup/zj-ea-restore.cmd" ] || _eaok=0
+                [ -s "$EAM/Windows/System32/GroupPolicy/Machine/Scripts/scripts.ini" ] || _eaok=0
+                [ -s "$EAM/Windows/System32/GroupPolicy/gpt.ini" ] || _eaok=0
+                [ -s "$EAM/Windows/System32/GroupPolicy/Machine/Registry.pol" ] || _eaok=0
+                if [ "$_eaok" = "1" ]; then
+                    say "ea: deployed (payload + GPO hook; applies on first boot)"
+                else
+                    say "WARN: ea deploy INCOMPLETE (some files missing; EA fix may not run)"
+                fi
+                umount "$EAM" 2>/dev/null
+            else
+                say "ERROR: ea mount target failed: $(cat /tmp/zjmnt.err 2>/dev/null | tr '\n' ' ')"
+            fi
+        else
+            say "ERROR: ea payload incomplete in subimage (files: $(ls "$EAD" 2>/dev/null | tr '\n' ' '))"
+        fi
+    else
+        say "ERROR: ea subimage apply rc=$?: $(tail -n 3 /tmp/ea.out 2>/dev/null | tr '\n' ' ')"
+    fi
+fi
+# 镜像分区到此才卸载（ESP/EA 子镜像 apply 直接读 $IMG_FILE，见上面的注释）
 umount "$SRC_M" 2>/dev/null
 
 say "========================================="
