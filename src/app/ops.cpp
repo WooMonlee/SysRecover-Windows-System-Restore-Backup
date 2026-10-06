@@ -635,8 +635,11 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
             (volumeRoot ? " (volume root -> VSS hot backup)" : ""));
     const ULONGLONG t0 = GetTickCount64();  // P7：历史记录用
     // 盘符根（C:/ 或 C:\）→ 热备：VSS 快照 + 排除配置（PIT-008/009）；
-    // 也可用 req.snapshot 显式强制（例如备份正在使用的数据库目录）。
-    bool snapshot = req.snapshot || volumeRoot;
+    // 也可用 req.snapshot 显式强制（例如备份正在使用的数据库目录）；
+    // req.noSnapshot 显式**禁止**（PE / 离线卷 / 挂载的 VHD 卷上 VSS 不可用）。
+    bool snapshot = (req.snapshot || volumeRoot) && !req.noSnapshot;
+    if (req.noSnapshot && volumeRoot)
+        LogInfo("snapshot disabled by --no-snapshot (cold backup of volume root)");
     // CPU 硬上限（BackupRequest::cpuCap，GUI 的「限制CPU」下拉）：在动数据之前
     // 设好，所有成功/失败退出路径都由 guard 复位回“不限”。
     struct CpuCapGuard {

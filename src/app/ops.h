@@ -17,6 +17,9 @@ struct BackupRequest {
     bool append = false;           // true=追加到已有 WIM
     bool verify = false;           // true=写完后跑 wimlib_verify_wim
     bool snapshot = false;         // true=强制 VSS 快照（非盘符根也可用，如活动数据库目录）
+    // true=**禁止** VSS 快照（冷备）：盘符根默认走 VSS 热备，但 PE / 离线卷 /
+    // 挂载的 VHD 卷上 VSS 不可用（rc=89）→ 显式冷备（CLI --no-snapshot）。
+    bool noSnapshot = false;
     int  cpuCap = 0;               // CPU 硬上限百分比（0=不限；1..100，见 common/cpucap.h）
     // true=把 ESP 分区并入主镜像（方案 C，用户 2026-09-30 规格 / 无忧 66 楼）：
     // ESP 作为同一文件里的子镜像（name="ESP"）一起写出；还原时由暂存契约
