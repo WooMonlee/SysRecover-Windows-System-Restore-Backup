@@ -765,6 +765,14 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **验证**：单测 **40 用例/263 断言**（新增 `esp_soft_item_verdict` 四态）+ `make check` 全绿 + CLI 编译零警告。🚧 待真机/精简系统复测（本机无精简 Win11；论坛用户升级后验证）。
   · **给受影响用户的处置**：① 失败是 **fail-closed 中止、未动目标分区**（系统没坏）；② 0.6.3 的"卡在删除菜单"是 PIT-121 的旧 bug（0.6.37 已修），升级即可；③ 手工清残留：删程序目录 `restore-task.conf|json` + 目标盘根 `_zjresy*.log`；④ 升级到 `0.6.42+` 后重装菜单应直接成功。
 
+- PIT-127 **跨固件还原实测（GPT/UEFI ↔ MBR/BIOS 双向均通过）；顺带证实两条设计关键点（ESP 子镜像不含 BCD / bootfix 恒为 BIOS 味道）**（2026-10-06，`0.6.42` 代码验证、无代码改动）：
+  · **背景**：用户提问核实"备份从 GPT 恢复到 BIOS、或反之，会不会出问题（含镜像有无 ESP 两种情况）"→ 实验室两轮**真启动**验证（QEMU 直启内核跑救援 + 真 Windows 首启）：
+    ① **GPT/UEFI 源（镜像含 ESP 子镜像）→ MBR/BIOS 目标**：救援层 `apply rc=0` → bootfix（BIOS 味道）→ PBR 引导区 → **`WARN: task has esp subimage (idx 3) but no ESP partition found (skip)`**（带 ESP 的镜像到无 ESP 机器 = 正确跳过、不中断）→ **SeaBIOS 启动到桌面 ✓**（截图 `D:\EA-lab\e2e2\shot-bios1/2.png`）。
+    ② **MBR/BIOS 源（无 ESP）→ GPT/UEFI 目标**：`apply rc=0` → `UEFI/GPT: ESP untouched, skip PBR` → EA 投放 → 用 `bcdboot /f UEFI /nofirmwaresync` 补 ESP（等价真机暂存侧 bcdboot；`/nofirmwaresync` 避免动本机 NVRAM）→ **OVMF 启动到桌面 ✓**（`shot-uefi3/4.png`）。
+  · **两条设计关键点（本次实测顺带证实）**：a) **ESP 子镜像不含 BCD**（捕获时排除 `\EFI\Microsoft\Boot\BCD`；当初的原因是被运行中的 Windows 锁住，见 ESP 备份条目）→ 还原到 UEFI 目标时**不会覆盖目标机自己的 BCD**（目标 BCD 指向同一分区 → 恢复后照样启动，这是"UEFI 目标机跳过 bcdboot"安全的前提）；b) `PrepareBootFixFiles` **恒为 BIOS 味道**（无 `C:\Boot\BCD` 时先 `bcdboot /f BIOS` 生成，再改写 `{default}` 为 `device boot` + `path \Windows\system32\winload.exe`）→ 目标无论固件类型都可用（UEFI 下仅作摆设，UEFI 引导走 ESP）。
+  · **边界/注意**：a) UEFI 目标若 **ESP 全空**（新盘）→ 依赖**暂存侧 bcdboot** 先写好（0.6.35+ "BCD 有效即跳过"，无效时会重建）；b) UEFI 目标 ESP 的 BCD 若指向**别的分区**（多系统 / 还原到非原系统分区）→ 跳过逻辑不比较目标分区，可能启动旧系统（边缘场景，暂记录）；c) 实验室 OVMF 需**空 NVRAM** 或 `\EFI\BOOT\BOOTX64.EFI` 兜底（旧 vars 会优先走失效条目 → PXE）；真机 NVRAM 里有目标机自己的条目，不受影响。
+  · 实验素材：`D:\EA-lab\e2e2\`（实验室目录，不入库）。✅ 2026-10-06（`0.6.42`）
+
 ---
 
 ## 14. License 合规（SBOM，随版本更新）
