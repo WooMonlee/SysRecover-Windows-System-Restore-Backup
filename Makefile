@@ -43,7 +43,9 @@ PYTHON   ?= D:/Prog/ProgIDE/Python/Python313/python.exe
 VERSION  := $(shell $(PYTHON) tools/version.py)
 CXXFLAGS = -O2 -std=c++17 -Wall -Wextra -D_WIN32_WINNT=0x0601 -DUNICODE -D_UNICODE
 INCLUDES = -Ithird_party/wimlib -Isrc
-LDFLAGS  = -static -mconsole
+# -s = 链接时剥符号表：发布体积显著下降（实测 x64 CLI -838KB / GUI -1.1MB /
+# EA 补写器 -495KB）；崩溃处理只用"模块+偏移"（PIT-084），不依赖符号表。
+LDFLAGS  = -static -mconsole -s
 LDLIBS   = -L$(WIMLIB) -l:libwim-15.dll -ladvapi32 -lole32 -lshell32 -luuid -lgdi32 -lntdll
 
 # ---- 应用模块静态库（CLI 与 GUI 共用，避免双份编译 ODR 问题） ----
@@ -137,7 +139,7 @@ $(GUI_RC_OBJ): $(GUI_RC) src/gui/SysRecoverUI.manifest resources/SysRecover.ico 
 	$(WINDRES) -I src/gui -I resources $< -o $@
 
 $(GUI_OUT): $(GUI_SRC) $(GUI_RC_OBJ) $(DUI_LIB) $(APP_LIB) src/common/version.h | $(DISTDIR)
-	$(CXX) $(GUI_FLAGS) $(GUI_INCLUDES) $(GUI_SRC) $(GUI_RC_OBJ) $(APP_LIB) $(DUI_LIB) -o $(GUI_OUT) -static -mwindows $(GUI_LDLIBS) -L$(WIMLIB) -l:libwim-15.dll
+	$(CXX) $(GUI_FLAGS) $(GUI_INCLUDES) $(GUI_SRC) $(GUI_RC_OBJ) $(APP_LIB) $(DUI_LIB) -o $(GUI_OUT) -static -mwindows -s $(GUI_LDLIBS) -L$(WIMLIB) -l:libwim-15.dll
 
 clean:
 	-del /Q $(subst /,\,$(DISTDIR))\SysRecover.exe $(subst /,\,$(DISTDIR))\SysRecoverUI.exe 2>nul
@@ -153,7 +155,7 @@ EA_APPLY_X86 = D:/Prog/ProgIDE/mingw32/bin/i686-w64-mingw32-g++
 EA_APPLY_OUT = bootfiles/zj-ea-apply.exe
 ea-apply: $(EA_APPLY_OUT)
 $(EA_APPLY_OUT): $(EA_APPLY_SRC) src/common/version.h
-	$(EA_APPLY_X86) $(CXXFLAGS) $(INCLUDES) $(EA_APPLY_SRC) -o $(EA_APPLY_OUT) -static -mconsole -municode -lntdll
+	$(EA_APPLY_X86) $(CXXFLAGS) $(INCLUDES) $(EA_APPLY_SRC) -o $(EA_APPLY_OUT) -static -mconsole -municode -s -lntdll
 
 # ---- 单元测试（零依赖，纯逻辑；不链 duilib/wimlib，跑得快） ----
 TEST_SRC   = tests/tiny_test.cpp tests/unit_tests.cpp tests/main.cpp
@@ -207,6 +209,9 @@ package: ea-apply
 	@copy /Y bootfiles\initramfs-zjrestore.cpio.gz dist\bootfiles\ >nul
 	@copy /Y bootfiles\zjrestore-lite.sh dist\bootfiles\ >nul
 	@copy /Y bootfiles\zj-ea-apply.exe dist\bootfiles\ >nul
+# 交付目录不留运行期垃圾：从 dist 直接运行过 exe 时会在 dist\logs 落日志/诊断包
+# （LogBaseDir 的"程序目录"分支）——打包时清掉，避免把测试残留当交付物分发。
+	@if exist dist\logs rmdir /S /Q dist\logs
 	@if not exist dist\bootfiles\sb mkdir dist\bootfiles\sb
 # package 只增不删 → 换链时旧资产会残留（grub-ubuntu.efi 曾与 grubx64.efi 并存）。
 # 注意：这里必须用 make 的 `#` 注释；命令行注释 `::` 在「单独一条 cmd /c」下不是合法命令。
