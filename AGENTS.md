@@ -129,10 +129,10 @@ Windows C++ 层 ↔ `restore-task.conf` ↔ Linux `restore.sh`。C++ 侧只许�
 
 | 文件 | 位置 | 用途 |
 |---|---|---|
-| `restore-task.conf` | 软件目录 | 还原任务参数（key=value：action/pt_type/image_part_guid/image_rel_path/image_path/image_index/esp_index/target_guid/target_offset/target_size/target_disk_serial/repair_boot/partition_count/**contract_version**；`esp_index`=镜像里 ESP 子镜像的 index，0/缺省=没有——增量键，不升 contract_version） |
+| `restore-task.conf` | 软件目录 | 还原任务参数（key=value：action/pt_type/image_part_guid/image_rel_path/image_path/image_index/esp_index/target_guid/target_offset/target_size/target_disk_serial/repair_boot/partition_count/**contract_version**；`esp_index`=镜像里 ESP 子镜像的 index，0/缺省=没有——增量键，不升 contract_version；`ea_index`=EA 修复子镜像（ZJEA）的 index，同上——增量键） |
 | `restore-task.json` | 软件目录 | 同上 JSON 形态 |
 | `progress.json` | logs 目录 | 实时进度（Phase/Percent/Status/Detail/UpdatedAt/Pid，供 AI/外部工具读） |
-| `_zjresy*.log` | **目标分区根**（C:） | 主发现契约（由 `WriteRestoreLog` 写）：action=restore / log_time / software_version / software_path / target_disk_name / target_disk_serial / target_disk_size / target_part_offset / target_part_size / target_fs / target_vol_label / image_path / image_index / esp_index / repair_boot / pt_type / **contract_version**。**救援层启动即核对**：`get_task contract_version`（缺省视为 1）≠ `zjrestore-lite.sh` 里的 `ZJ_CONTRACT` 常量 → **报错退出、不碰目标分区**（G1 防版本错配） |
+| `_zjresy*.log` | **目标分区根**（C:） | 主发现契约（由 `WriteRestoreLog` 写）：action=restore / log_time / software_version / software_path / target_disk_name / target_disk_serial / target_disk_size / target_part_offset / target_part_size / target_fs / target_vol_label / image_path / image_index / esp_index / ea_index / repair_boot / pt_type / **contract_version**。**救援层启动即核对**：`get_task contract_version`（缺省视为 1）≠ `zjrestore-lite.sh` 里的 `ZJ_CONTRACT` 常量 → **报错退出、不碰目标分区**（G1 防版本错配） |
 | `menu.lst` | 恢复分区根（D:\） | GRUB4DOS 菜单（`kernel` + `initrd`，不是 GRUB2 的 `linux`） |
 | `grub.cfg` | GPT/UEFI 用 | GRUB2 菜单（UEFI 分支） |
 
@@ -731,6 +731,23 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **① 根因**：`RefreshBootMenuBtn` 的"已安装" = `BootMenuInstalled()`（引导条目/文件）**或** `ReadMenuBinding()`（读 `<exeDir>\restore-task.conf`）；「删除菜单」只删了引导条目/文件，**没删副契约** → 永远判"已安装"，按钮停在「删除菜单」。修复：新增 `ops::DeleteMenuBinding()`（删 conf/json + 清 pending 标记），「删除菜单」与「清除引导项」都调用并刷新按钮。
   · **② 自动取证**：`RunBackup` 收尾自动调用 `ScanEaFiles(源)`（阶段名 `ea-scan`，状态栏中文"文件属性检查"），清单写 `<logs>\ea-scan-<时间>.txt`；发现 EA 时 `WARN`（附"Linux 救援还原会丢 / PE 不丢"）。实测全盘 C: **30.2 万文件仅 15 秒**，用户零操作；开发机 0 个 EA（客户机的 804 个来自其特定软件，名单下次备份自动拿到）。
   · **③ 客户对照**：**多款还原软件（易数等）均正常，只有我们的（Linux 救援路径）有问题** → 与 PIT-120 的 EA 差异互相印证；下一步让客户用 **0.6.37 在 PE 就地还原 `20261005Win10.19044备份.wim`**（Windows 侧 apply 保 EA + 不再重建 BCD），右键应恢复，随后 `scan-ea` 出名单即定案。✅ 2026-10-05（`0.6.37`）
+
+- PIT-122 **EA（NTFS 扩展属性）全自动修复链路落地：备份采集 → ZJEA 子镜像 → 救援投放 → 首启补写器（`0.6.38`，2026-10-06）**：Linux 侧 wimlib apply 丢 Windows EA 是 PIT-120 实锤的客户"还原后桌面/右键卡死"根因差异；"Linux 侧直接写回 EA"经两组 QEMU 实验**否决**（`ntfs-3g user_xattr` 把 `user.*` 写成 **ADS 流**而非 EA；对真 EA 读不到、`system.ntfs_ea` 写被拒）→ 改为**首启补写**（Windows API 写 EA 是唯一可行通道，PIT-123 提供钩子）。链路与落点：
+  · **备份端**（`src/common/ea.{h,cpp}` + `ops.cpp::RunBackup`）：`CaptureVolume(源)` 一次遍历产出审计清单（`logs\ea-scan-<时间>.txt`，沿用 PIT-121）**+ eapack.dat**（二进制格式 `ZJEA1`：每文件 u32 路径字节数+UTF-16LE 相对路径+EA 列表[名/值，值二进制安全]，值上限 65535、包上限 128MB 超限只审计）；发现 EA → 把 `eapack.dat + zj-ea-apply.exe（自 bootfiles/ 拷入）+ zj-regpol.bin（策略片段）` 打成**子镜像 `ZJEA`**（复用 ESP 的 Append 机制；`RunBackup` 的 `stage` 改为**非 append 一律暂存**，任何子镜像并入失败不损主镜像）。**非致命**：采集/并入失败只 WARN，主镜像照常交付。
+  · **还原端**：`StageRestoreImpl` 从镜像内容发现名含 `ZJEA` 的子镜像 → 契约 **`ea_index`**（增量键，不升 contract_version）；名含 ZJEA 的子镜像**拒绝单独还原**（同 ESP 防呆，rc=4）。**就地还原（PE/非系统盘）无需此链**——Windows 侧 apply 原生保 EA。
+  · **救援层**（`zjrestore-lite.sh`）：apply 完主系统后按 `ea_index` 解出子镜像 → 目标盘投放 `\ZJRESTORE\ea\{eapack.dat, zj-ea-apply.exe}` + 写 GPO 钩子（cmd + scripts.ini 合并 + gpt.ini 合并 + Registry.pol 追加，见 PIT-123）→ **落盘复核**（6 个文件逐个查，缺一即 WARN "deploy INCOMPLETE"，不静默）。
+  · **首启补写器**（`src/tools/ea_apply_main.cpp` → `bootfiles/zj-ea-apply.exe`，**x86 构建**（x86/x64 目标都要能跑），无 wimlib 依赖，~900KB）：登录前 SYSTEM 执行 → `NtSetEaFile` 逐文件写回（`FILE_FULL_EA_INFORMATION` **链式**、逐条 4 字节对齐、末条 NextOffset=0、**无外层头** —— 对齐 go-winio/restic 实现，实验室 `--set` 单条目版已 fsutil 复核）→ 写 `ea-apply.log`（含 `shell_started=` 预登录判据）+ `ea-result.txt`（一行计数）→ **自清理**：scripts.ini 删条目、gpt.ini 版本 +1、Registry.pol 剥记录（解析失败原样不动）、删 pack、cmd/自身 `MOVEFILE_DELAY_UNTIL_REBOOT` 延迟删除（下轮启动生效；文件被占用时删不掉是 cmd 常态）→ 失败保留重试（attempts 计数，3 次后改名 `.failed` 停重试）。
+  · **测试全绿**（全部由 AI 独自完成，无用户参与）：单测 6 个新用例（包往返/拒绝截断/pol 剥记录/EA 缓冲布局/ini 清理/gpt 递增）→ `make check` **39 用例/259 断言**；本机 e2e（造 EA → backup → extract → ea-apply → `fsutil queryea` 确认写回）；**QEMU 演练 9/9 PASS**（`ea subimage: index=3` → `ea: deployed (payload + GPO hook` → 盘上字节级复核：ini CRLF/双 CSE/版本/pol 382B 头全对）；**VM 首启 e2e（真实 Win10，round6~9）**：预登录执行（`shell_started=no`）、**含 `System32\` 路径**的 EA 写回成功、清理全项完成、延迟删除生效、**次轮不重跑**。✅ 2026-10-06（`0.6.38`）
+  · ⚠️ **遗留**：客户**已有旧镜像**（EA 完好但无 ZJEA 子镜像）→ 需 Windows 侧还原（PE 就地）或后续 `ea-repack`（从旧镜像在 Windows 上物化 EA 再打包，**尚未实现**）；UEFI 真机全链（暂存→重启→首启补写）待客户实测。
+
+- PIT-123 **本地组策略「启动脚本」当首启钩子的机理定稿 + 三个实测坑（WOW64 重定向 / gpt.ini 版本撞车 / ccs 日志编码）（2026-10-06，`0.6.38`）**：EA 补写器必须在**登录前**（explorer 加载前）以 SYSTEM 跑完，否则卡死的 explorer 已经挂了。方案 = **纯文件**写本地 GPO（免注册表编辑），QEMU 对真实 Win10 做了 9 轮实验定稿：
+  · **布局**：`Windows\System32\GroupPolicy\Machine\Scripts\Startup\<cmd>` + `Machine\Scripts\scripts.ini`（`[Startup]` 段 `NcmdLine=<cmd>` + `NParameters=`，索引=全文件数字键 max+1，插入点在 Startup 段内/新段）；`gpt.ini` 的 `gPCMachineExtensionNames` **必须声明两个 CSE 对**：Scripts `[{42B5FAAE-…}{40B6664F-…}]` + Registry `[{35378EAC-…}{D02B1F72-…}]`（缺 Scripts 对 → **脚本 CSE 根本不被调用**，策略处理了也不跑脚本，Extension-List 里没有它）；`Machine\Registry.pol`（记录格式 = `[key;\0 name;\0 type(4LE);\0 size(2LE)+00 00;\0 data]\0`，头 `PReg`+u32 1）追加两条 **REG_DWORD=1**：`Software\Microsoft\Windows\CurrentVersion\Policies\System!RunStartupScriptSync` + `Software\Policies\Microsoft\Windows NT\CurrentVersion\Winlogon!SyncForegroundPolicy`（ADMX 权威值；没有它们 Win10 默认**异步**执行启动脚本 → 实测登录后 ~1 分钟才跑，赶不上）。追加 pol 片段要**剥掉片段头 8 字节**（`tail -c +9`）再 cat，保留用户已有记录。
+  · **坑① gpt.ini Version 撞车**：gpsvc 拿 `gpt.ini Version` 与注册表 `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Group Policy\State\Machine\GPO-List\0\Version` 比对，**相同 = "无变化"直接跳过**（实测初装写 65537 恰好撞上镜像里的残留记录 → 脚本从不执行，事件日志 `no changes detected`、Extension-List 只有 `{00000000}`）。规则：**有文件 → 机器字 +1；没有 → 写 `2147418113`（0x7FFF0001，压过常见残留）**。另实测：**脚本每引导都会跑**（不需要反复改版本；失败重试天然可行）。
+  · **坑② WOW64 文件系统重定向（PIT-082 家族，2026-10-06 实测）**：补写器是 **32 位** exe（x86/x64 目标通吃），在 64 位 Windows 上访问 `C:\Windows\System32\GroupPolicy\…` 被**重定向到 `SysWOW64`** → 组策略文件全读不到（清理静默跳过）、延迟删除删错对象；EA 目标若在 System32 下也会写错文件。修复：wmain 开头 `Wow64DisableWow64FsRedirection`（GetProcAddress 两步 cast）进程级关闭。
+  · **坑③ CRT `ccs=UTF-8` 日志吞文本**：`_wfopen(…, L"a, ccs=UTF-8")` + `fputs` 写出的日志只剩 BOM + 每行 `\r\n` 的 UTF-8 形态（U+0A0D 乱码），全部文本丢失 —— 改用 `CreateFileW(FILE_APPEND_DATA)` + `WriteFile` 裸字节追加。
+  · **清理语义**：SYSTEM 身份下可覆写/删除 gpt.ini/scripts.ini/Registry.pol（实测 ok）；正在执行的 cmd 与自身 exe 用 `MOVEFILE_DELAY_UNTIL_REBOOT`（下轮启动删；**注意**：延迟删除会在下轮启动删掉**同路径的新文件** —— 实验室重新部署后曾被上一轮的延迟删除误杀，真机不会遇到，但排查时别被绕）。
+  · **验证手法（可复用）**：真实 Win10 的 VMDK → `qemu-img convert` → VHD（清 sparse 标志才能挂载）→ 开发机挂载离线注入 → QEMU/OVMF 启动（`-boot order=c`，ESP 放 `\EFI\BOOT\BOOTX64.EFI` 兜底）→ monitor `screendump`/`system_powerdown` → 重新挂载查 marker/日志。全自动、无 guest 凭据需求。
+  · ✅ 2026-10-06（`0.6.38`；EA 链整体见 PIT-122）
 
 ---
 

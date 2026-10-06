@@ -32,6 +32,8 @@ $checks = [ordered]@{
     "mkntfs start_lba=206848"   = "mkntfs /dev/sda2 (start_lba=206848)"
     "apply rc=0"                = "apply rc=0"
     "ESP subimage restored"     = "esp restored (rc=0)"
+    "EA subimage picked"        = "ea subimage: index=3"
+    "EA deployed + hook"        = "ea: deployed (payload + GPO hook"
     "blackbox to ESP"           = "blackbox: log -> /dev/sda1 (ESP)"
     "RESTORE DONE"              = "RESTORE DONE: /dev/sda2"
 }

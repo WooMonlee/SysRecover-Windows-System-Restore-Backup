@@ -64,6 +64,7 @@ std::string BuildTaskConf(const RestoreTask& t) {
         "image_path=%s\n"
         "image_index=%d\n"
         "esp_index=%d\n"
+        "ea_index=%d\n"
         "target_guid=%s\n"
         "target_offset=%llu\n"
         "target_size=%llu\n"
@@ -74,7 +75,7 @@ std::string BuildTaskConf(const RestoreTask& t) {
         "contract_version=%d\n",
         t.ptType.c_str(), W2U(t.imagePartGuid).c_str(),
         W2U(t.imageRelPath).c_str(), W2U(t.imagePath).c_str(), t.imageIndex,
-        t.espIndex,
+        t.espIndex, t.eaIndex,
         W2U(t.targetGuid).c_str(),
         (unsigned long long)t.targetOffset,
         (unsigned long long)t.targetSize, W2U(t.targetDiskSerial).c_str(),
@@ -90,11 +91,12 @@ std::string BuildTaskJson(const RestoreTask& t) {
         "{\"schema\":1,\"action\":\"restore\",\"pt_type\":\"%s\","
         "\"image_path\":\"%s\",\"image_rel_path\":\"%s\",\"image_index\":%d,"
         "\"esp_index\":%d,"
+        "\"ea_index\":%d,"
         "\"target_disk\":%d,\"target_part\":%d,"
         "\"target_offset\":%llu,\"target_size\":%llu,"
         "\"repair_boot\":%s,\"partition_count\":%u}\n",
         t.ptType.c_str(), JsonEsc(W2U(t.imagePath)).c_str(),
-        W2U(t.imageRelPath).c_str(), t.imageIndex, t.espIndex,
+        W2U(t.imageRelPath).c_str(), t.imageIndex, t.espIndex, t.eaIndex,
         t.targetDisk, t.targetPart, (unsigned long long)t.targetOffset,
         (unsigned long long)t.targetSize, t.repairBoot ? "true" : "false",
         t.partCount);
@@ -119,6 +121,7 @@ std::string BuildRestoreLogText(const RestoreTask& t,
              "image_path=%s\n"
              "image_index=%d\n"
              "esp_index=%d\n"
+             "ea_index=%d\n"
              "repair_boot=%d\n"
              "pt_type=%s\n"
              "contract_version=%d\n",
@@ -129,8 +132,8 @@ std::string BuildRestoreLogText(const RestoreTask& t,
              (unsigned long long)t.targetOffset,
              (unsigned long long)t.targetSize, W2U(t.targetFs).c_str(),
              W2U(t.targetVolLabel).c_str(), W2U(t.imagePath).c_str(),
-             t.imageIndex, t.espIndex, t.repairBoot ? 1 : 0, t.ptType.c_str(),
-             SYSRECOVER_CONTRACT_VERSION);
+             t.imageIndex, t.espIndex, t.eaIndex, t.repairBoot ? 1 : 0,
+             t.ptType.c_str(), SYSRECOVER_CONTRACT_VERSION);
     return buf;
 }
 

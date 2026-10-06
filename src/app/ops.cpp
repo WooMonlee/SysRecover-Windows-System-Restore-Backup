@@ -15,12 +15,14 @@
 #include "../boot/grub.h"
 #include "../boot/task.h"
 #include "../boot/uefi.h"
+#include "../common/ea.h"
 #include "../common/logger.h"
 #include "../common/pathutil.h"
 #include "../common/cpucap.h"
 #include "../common/process.h"
 #include "../common/progress.h"
 #include "../common/relocate.h"
+#include "../common/selfarch.h"
 #include "../common/singleton.h"
 #include "../common/vss.h"
 #include "../common/version.h"
@@ -79,6 +81,26 @@ std::wstring ExePath() {
 bool IsDir(const std::wstring& p) {
     DWORD a = GetFileAttributesW(p.c_str());
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+// 递归删除目录树（EA 临时目录清理用；失败不致命）。
+void DeleteTreeRec(const std::wstring& dir) {
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (wcscmp(fd.cFileName, L".") == 0 ||
+                wcscmp(fd.cFileName, L"..") == 0)
+                continue;
+            std::wstring p = dir + L"\\" + fd.cFileName;
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+                DeleteTreeRec(p);
+            else
+                DeleteFileW(p.c_str());
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    RemoveDirectoryW(dir.c_str());
 }
 
 // 递归复制目录（软件自保用；不处理 ACL）。
@@ -533,6 +555,13 @@ static const wchar_t kEspImageDesc[] =
     L"SysRecover ESP partition backup; restored to the ESP automatically "
     L"when restoring the system (never restore this image alone)";
 
+// EA 修复子镜像的 <DESCRIPTION>（PIT-122）：内容 = eapack.dat（带 EA 的文件
+// 路径+名字+值）+ zj-ea-apply.exe（首启补写器）+ zj-regpol.bin（同步策略片段）。
+// 救援层按契约 ea_index 解包投放，目标系统首启（登录前 SYSTEM）自动写回 EA。
+static const wchar_t kEaImageDesc[] =
+    L"SysRecover extended-attributes (EA) fix data; deployed to the target by "
+    L"the rescue layer and applied on first boot (never restore this image alone)";
+
 // ESP 捕获的排除配置（wimscript 格式，临时文件，同 EnsureExclusionConfig 做法）：
 //   · \EFI\ZJRESTORE —— 我们的常驻救援载荷（约 33MB，还原后 Windows 侧会重新
 //     部署，进镜像纯属浪费，且它不是"原厂 ESP 内容"）；
@@ -660,13 +689,14 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
         LogError("排除配置生成失败，热备可能因易失文件报 rc=88（PIT-009）");
     else
         LogInfo("exclusion config: " + W2U(cfg));
-    // ── ESP 并入主镜像（方案 C，用户 2026-09-30 规格 / 无忧 66 楼）──
-    // ESP 作为**同一个文件里的子镜像**（name="ESP" + kEspImageDesc 注释），
-    // 还原时由暂存契约 esp_index 定位（StageRestore 从镜像内容发现）、救援层
-    // apply 完主系统后恢复到 ESP 分区；不再产出 .esp 文件。
-    // 原子性：非 append 时主镜像先写 `<dest>.stage`，ESP 并入结束且 stage 确认
-    // 可用后才 rename 成正式文件 —— **ESP 并入失败绝不损坏已写好的主镜像**。
-    const bool stage = req.esp && !req.append;
+    // ── ESP / EA 并入主镜像 ──
+    // ESP（方案 C，用户 2026-09-30 规格 / 无忧 66 楼）：作为**同一个文件里的
+    // 子镜像**（name="ESP"），还原时由契约 esp_index 定位、救援层恢复；
+    // EA（PIT-122，2026-10-06）：子镜像 name="ZJEA"（见下）。
+    // 原子性：非 append 时**一律**先写 `<dest>.stage`（ESP/EA 并入结束且 stage
+    // 确认可用后才 rename 成正式文件）—— 并入失败绝不损坏已写好的主镜像；
+    // 无子镜像时多一次 rename，代价可忽略（Windows 同卷 rename 是元数据操作）。
+    const bool stage = !req.append;
     const std::wstring mainDest = stage ? req.dest + L".stage" : req.dest;
     if (stage) {
         DeleteFileW(mainDest.c_str());             // 上次异常残留的 stage
@@ -720,6 +750,77 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
             LogInfo("esp append rc=" + std::to_string(erc) + " dest=" +
                     W2U(mainDest) + " (" + blog + ")");
         }
+    }
+
+    // ── EA 采集并入（PIT-122，2026-10-06）──
+    // 背景：Linux 侧 wimlib apply 丢 Windows EA（apply.out: `Ignoring extended
+    // attributes of N files`，PIT-120 客户实测 804 个文件）；Windows 侧不丢，
+    // 但重启类还原必须走 Linux（§2 红线 1）。做法：把源里带 EA 的文件（路径+
+    // 名字+值）打包成 eapack.dat，连同首启补写器/同步策略片段打成子镜像
+    // "ZJEA"；救援层投放后由目标系统**首次开机**（登录前、SYSTEM）自动写回。
+    // 非致命：采集/并入失败只警告 —— EA 修复是增益，主镜像照常交付。
+    {
+        std::wstring root = source;
+        while (!root.empty() && (root.back() == L'/' || root.back() == L'\\'))
+            root.pop_back();
+        if (root.empty())
+            root = L"C:";
+        // 审计文本沿用 logs\ea-scan-<时间>.txt（用户 2026-10-05 规格）
+        std::wstring logsDir = LogBaseDir() + L"\\logs";
+        CreateDirectoryW(logsDir.c_str(), nullptr);
+        SYSTEMTIME stw = {};
+        GetLocalTime(&stw);
+        wchar_t stamp[40] = {};
+        swprintf(stamp, 40, L"%04u%02u%02u-%02u%02u%02u", stw.wYear, stw.wMonth,
+                 stw.wDay, stw.wHour, stw.wMinute, stw.wSecond);
+        std::wstring auditPath = logsDir + L"\\ea-scan-" + stamp + L".txt";
+        // 临时目录：eapack.dat + zj-regpol.bin + zj-ea-apply.exe
+        std::wstring eaTmp = req.dest + L".ea.tmp";
+        DeleteTreeRec(eaTmp);
+        if (MakeDirTree(eaTmp)) {
+            if (progress) progress(99, "ea-scan");
+            ProgressUpdate("backup", 99, "ea-scan");
+            std::string eaErr;
+            int eaN = ea::CaptureVolume(root, eaTmp + L"\\eapack.dat",
+                                        auditPath, eaErr);
+            if (eaN < 0) {
+                LogWarn("EA capture failed: " + eaErr);
+            } else if (eaN == 0) {
+                LogInfo("EA capture: no EA-bearing files in source");
+            } else {
+                LogInfo("EA capture: " + std::to_string(eaN) +
+                        " EA-bearing file(s); audit: " + W2U(auditPath));
+                // 子镜像内容：pack + 策略片段 + 补写器（x86，x86/x64 都能跑）
+                bool okFiles = ea::WriteBytes(eaTmp + L"\\zj-regpol.bin",
+                                              ea::BuildSyncPolFragment());
+                std::wstring applier = AppDir() + L"\\bootfiles\\zj-ea-apply.exe";
+                if (okFiles)
+                    okFiles = CopyFileW(applier.c_str(),
+                                        (eaTmp + L"\\zj-ea-apply.exe").c_str(),
+                                        FALSE) != 0;
+                if (!okFiles) {
+                    LogWarn("EA deploy files incomplete (zj-ea-apply.exe "
+                            "missing?); EA fix skipped");
+                } else {
+                    WimEngine eaEng;
+                    std::wstring eaSrc = eaTmp + L"\\";
+                    int earc = eaEng.Append(eaSrc, mainDest, req.compress,
+                                            L"ZJEA", false, L"", progress,
+                                            kEaImageDesc);
+                    if (earc != 0) {
+                        LogWarn("EA pack append failed rc=" +
+                                std::to_string(earc) +
+                                " (main image continues without EA fix)");
+                    } else {
+                        LogInfo("EA pack appended as subimage ZJEA (" +
+                                std::to_string(eaN) + " file(s))");
+                    }
+                }
+            }
+        } else {
+            LogWarn("EA temp dir create failed; EA fix skipped");
+        }
+        DeleteTreeRec(eaTmp);
     }
 
     // ESP 失败时统一的错误文本（tail 由调用方给）
@@ -821,36 +922,8 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
             return 1;
         }
     }
-    // 源文件"异常属性"审计（用户 2026-10-05 规格）：备份完成时**自动**扫一遍源里的
-    // NTFS 扩展属性（EA）文件并把清单落进日志 —— Linux 救援层还原时 wimlib 会丢弃
-    // EA（apply.out 的 `Ignoring extended attributes of N files`），Windows 侧还原
-    // 不丢（PIT-120）。用户零操作即可拿到名单；发现 EA 时显式 WARN。
-    {
-        if (progress) progress(100, "ea-scan");
-        ProgressUpdate("backup", 100, "ea-scan");
-        std::wstring root = source;
-        while (!root.empty() &&
-               (root.back() == L'/' || root.back() == L'\\'))
-            root.pop_back();
-        std::wstring logsDir = LogBaseDir() + L"\\logs";
-        CreateDirectoryW(logsDir.c_str(), nullptr);
-        SYSTEMTIME stw = {};
-        GetLocalTime(&stw);
-        wchar_t stamp[40] = {};
-        swprintf(stamp, 40, L"%04u%02u%02u-%02u%02u%02u", stw.wYear, stw.wMonth,
-                 stw.wDay, stw.wHour, stw.wMinute, stw.wSecond);
-        std::wstring out = logsDir + L"\\ea-scan-" + stamp + L".txt";
-        std::string eaErr;
-        int eaN = ScanEaFiles(root.empty() ? L"C:" : root, out, eaErr);
-        if (eaN > 0)
-            LogWarn("EA audit: source has " + std::to_string(eaN) +
-                    " EA-bearing file(s); list: " + W2U(out) +
-                    " (Linux rescue apply drops EAs; Windows/PE apply keeps them)");
-        else if (eaN == 0)
-            LogInfo("EA audit: no EA-bearing files in source");
-        else
-            LogWarn("EA audit failed: " + eaErr);
-    }
+    // 源文件"异常属性"审计 + EA 修复并入：已在上面的 `ea-scan` 块完成
+    // （PIT-122 起审计与 eapack/ZJEA 子镜像一体化，不再单独扫第二遍）。
     ReleaseOpLock();
     ProgressDone("backup", "done");
     LogInfo("backup done");
@@ -885,39 +958,55 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             return 5;
         }
     }
-    // 0.5) 子镜像检查（方案 C，用户 2026-09-30 规格）：
-    //   ① 名含关键词 "ESP" 的子镜像 = ESP 分区备份，**不能单独当系统还原** →
-    //      拒绝并提示（GUI 弹框 / CLI 打印，退出码 4；在一切写盘动作之前）；
-    //   ② 顺带从镜像**内容**发现 ESP 子镜像 index（esp_index，0=没有）写进契约，
-    //      救援层 apply 完主系统后恢复到 ESP 分区 —— 与备份时是否勾选 --esp
-    //      无关，用老镜像还原也照样能恢复 ESP。
+    // 0.5) 子镜像检查（方案 C，用户 2026-09-30 规格 + PIT-122 EA 子镜像）：
+    //   ① 名含 "ESP" 的子镜像 = ESP 分区备份，**不能单独当系统还原** → 拒绝
+    //      （GUI 弹框 / CLI 打印，退出码 4；在一切写盘动作之前）；"ZJEA" 同理；
+    //   ② 顺带从镜像**内容**发现 ESP / EA 子镜像 index（esp_index / ea_index，
+    //      0=没有）写进契约，救援层 apply 完主系统后按需恢复 ESP、投放 EA 修复。
     int espIndex = 0;
+    int eaIndex = 0;
     {
         WimEngine eng;
         std::vector<ImageDesc> imgs;
         const int eff = req.index < 1 ? 1 : req.index;
         if (eng.ListImages(req.image, imgs) != 0) {
-            // Probe 刚过 → 这里失败几乎不可能；esp_index 按 0 处理（不恢复 ESP）
-            LogWarn("ListImages failed; esp restore disabled");
+            // Probe 刚过 → 这里失败几乎不可能；按 0 处理（不恢复 ESP/不投 EA）
+            LogWarn("ListImages failed; esp/ea restore disabled");
         } else {
             for (const auto& d : imgs) {
-                if (d.name.find(L"ESP") == std::wstring::npos)
-                    continue;
-                if (espIndex == 0)
-                    espIndex = d.index;
-                if (d.index == eff) {
-                    err = Tr("子镜像「") + W2U(d.name) +
-                          Tr("」是 ESP 分区备份，不能单独还原为系统。恢复系统"
-                             "时会自动把 ESP 一并恢复；请选择系统子镜像。");
-                    LogError(err);
-                    AppendHistory("restore-rejected", req.image, req.image, 0,
-                                  "esp image selected as restore target");
-                    return 4;
+                if (d.name.find(L"ESP") != std::wstring::npos) {
+                    if (espIndex == 0)
+                        espIndex = d.index;
+                    if (d.index == eff) {
+                        err = Tr("子镜像「") + W2U(d.name) +
+                              Tr("」是 ESP 分区备份，不能单独还原为系统。恢复系统"
+                                 "时会自动把 ESP 一并恢复；请选择系统子镜像。");
+                        LogError(err);
+                        AppendHistory("restore-rejected", req.image, req.image, 0,
+                                      "esp image selected as restore target");
+                        return 4;
+                    }
+                }
+                if (d.name.find(L"ZJEA") != std::wstring::npos) {
+                    if (eaIndex == 0)
+                        eaIndex = d.index;
+                    if (d.index == eff) {
+                        err = Tr("子镜像「") + W2U(d.name) +
+                              Tr("」是扩展属性（EA）修复数据，不能单独还原为"
+                                 "系统；请选择系统子镜像。");
+                        LogError(err);
+                        AppendHistory("restore-rejected", req.image, req.image, 0,
+                                      "ea image selected as restore target");
+                        return 4;
+                    }
                 }
             }
             if (espIndex > 0)
                 LogInfo("esp subimage found in image: index=" +
                         std::to_string(espIndex));
+            if (eaIndex > 0)
+                LogInfo("ea subimage found in image: index=" +
+                        std::to_string(eaIndex));
         }
     }
     // 1) 定位目标分区与所在磁盘
@@ -1070,6 +1159,7 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
     t.imagePath = imagePath;
     t.imageIndex = req.index < 1 ? 1 : req.index;
     t.espIndex = espIndex;  // 方案 C：ESP 子镜像 index（0=镜像里没有）
+    t.eaIndex = eaIndex;    // PIT-122：EA 修复子镜像 index（0=镜像里没有）
     t.targetGuid = target.guid;
     t.targetOffset = target.offsetBytes;
     t.targetSize = target.sizeBytes;

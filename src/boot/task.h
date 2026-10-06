@@ -17,6 +17,12 @@ struct RestoreTask {
     // 救援层 apply 完主系统后把该子镜像恢复到 ESP 分区（纯增量键，不升
     // contract_version：老任务缺键 → 救援层当 0 跳过，两边互相兼容）。
     int espIndex = 0;
+    // EA 修复子镜像在镜像文件里的 index（PIT-122，2026-10-06）：0=镜像里没有。
+    // Linux 侧 wimlib apply 丢 Windows EA（PIT-120）；备份时把带 EA 的文件
+    // （路径+名字+值）打包成 eapack.dat 并入主镜像为子镜像 "ZJEA"；Windows
+    // 暂存时从镜像内容发现后写进 conf + _zjresy 日志；救援层把它连同补写器
+    // 投放进目标并安装首启钩子（纯增量键，不升 contract_version，同 esp_index）。
+    int eaIndex = 0;
     std::wstring targetGuid;     // 目标分区 GUID（MBR 下可空）
     uint64_t targetOffset = 0;
     uint64_t targetSize = 0;
