@@ -468,7 +468,7 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **调研方法（可复用）**：解出包内全部 4225 个 `.ko.xz` 的 `depends=` 建依赖图 → 模拟"白名单 + 闭包" → 对候选删除集做**反向依赖校验**（保留下来的模块是否依赖被删模块）。这一步是"不破坏兼容性"的唯一依据。
   · **关键事实**：① `fuse`、`atkbd`/`i8042`/`libps2`/`serio`/`input-core`、`fb_efi`/`fb_simple`/`framebuffer_console`/`vt` 在 Debian 内核里都是**内建**（`modules.builtin` + `/boot/config-*` 可证）→ 不需要对应模块，PS/2 键盘本来就可用；② **PIT-061 的"UEFI 黑屏"是 Alpine 内核特有的**（它 `SYSFB_SIMPLEFB=y` 顶掉内建 efifb），Debian 的 `FB_EFI=y` 直接接管 → **整条 DRM/KMS 链（含 `gpu/drm/tiny` 的 bochs/cirrus）可删**；③ `lpfc`/`qla2xxx`（在 PLAN 的"关键 31 项"里）的 `depends=` 含 `nvme-fc`/`nvmet-fc` → 必须**连带保留** `nvme-fc/nvme-fabrics/nvmet-fc/nvmet/configfs/nvme-auth/nvme-keyring`，否则破坏 31/31；④ iSCSI/FCoE offload 卡（bnx2fc/bnx2i/cxgb3i/cxgb4i/qedf/qedi/qla4xxx）会经闭包拉进 `drivers/net`+`infiniband`+`target`+`libfc` 一大串 → 删卡即删整串。
   · **实施**：`build-debian-rescue.py` 新增 `EXCLUDE_PREFIXES`（对白名单**和**闭包**同时**生效）+ `EXTRA_KEEP`（USB HID：`hid`/`hid-generic`/`usbhid`，让救援 `#` shell 能用 USB 键盘）+ **构建期断言**：① 被排除却被保留模块需要 → 直接 `raise`；② 保留模块的依赖缺失 → `raise`。fail-fast，杜绝"静默产出缺依赖的坏包"。
-  · **结果**：779 → **494** 模块；33.48 → 14.10 MB（`.ko.gz`）；initramfs 36.32 → **20.47 MB**；dist 54.17 → **≈38.5 MB**。
+  · **结果**：779 → **494** 模块；33.48 → 14.10 MB（`.ko.gz`）；initramfs 36.32 → **20.47 MB**；dist 54.17 → **≈38.5 MB**。（2026-10-06 起模块改存 Debian 原生 `.ko.xz`、initramfs 15.2MB，见 PIT-125）
   · **有意保留**（判断项，用户 2026-09-24 拍板）：`xfs/btrfs/bcachefs/f2fs`（镜像放这些分区时用得到）、`ext4`、FC HBA（维持 31/31）。
   · **附带发现（未处理）**：`kernel/drivers/ufs/` 从来不在白名单 → `ufshcd-core` 一直没进救援层（x86 Windows 上罕见，暂不加；init 里 `ldmod ufshcd-core` 一直静默降级）。
   · ✅ 2026-09-24（构建断言通过 + 产物自检：`hid`/`usbhid`/`hid-generic` 与全部关键存储/fs 模块 present，`nfs`/`cifs`/`ocfs2`/`kvm`/`ib_core`/`drm` 等 absent；**待 QEMU/VM 回归**）
@@ -752,6 +752,12 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 
 - PIT-124 **VSS 对挂载的离线 VHD 卷不可用（rc=89）→ 新增 `--no-snapshot` 冷备开关；junction 源被 wimlib 拒（rc=40）**（2026-10-06，`0.6.39`）：全链 e2e（PIT-122）需要备份一台**离线**的测试 VM 系统卷（挂载中的 VHD）：`backup --source F:/` → VSS precheck 正确拉起 vss/swprv，但快照创建失败 `rc=89 Unable to create a filesystem snapshot`（VSS 不支持这种卷）。两个绕道失败：① 建 junction（`D:\src` → `F:\`，非卷根 → 不触发 VSS）→ wimlib `rc=40 Expected a directory`（**拒 reparse point 作源**，带尾斜杠也一样）；② 无。正解：**新增 `backup --no-snapshot`**（`BackupRequest::noSnapshot`，`snapshot=(req.snapshot||volumeRoot)&&!noSnapshot`）—— PE / 离线卷 / VHD 卷上 VSS 不可用本来就是真实场景（冷备语义：卷静态、无需快照）。全链 e2e 用它完成。✅ 2026-10-06（`0.6.39`）
 
+- PIT-125 **发布体积两轮优化（55.8→40.6MB）：①exe 剥符号 ②initramfs 模块保持 `.ko.xz`（不再转 `.ko.gz`）**（2026-10-06，`0.6.40`/`0.6.41`）：
+  · **① 剥符号（`-s`，`0.6.40`）**：全部 exe 链接加 `-s` —— x64 CLI -838KB / GUI -1.1MB / EA 补写器 -495KB（四套共 ~4MB；崩溃报告只用"模块+偏移"（PIT-084），不依赖符号表）。另 `package` 现在自动清 `dist\logs`（从 dist 直接运行 exe 产生的运行期日志/诊断包，属垃圾，不再随交付分发，-6.5MB）。
+  · **② initramfs 模块格式（`0.6.41`）**：原实现是 `gzip(cpio(模块 .ko.gz))` —— **双重压缩**（模块早已 gz，外层 gzip 几乎无效）。内核配置实测 `CONFIG_MODULE_DECOMPRESS=y` + `CONFIG_MODULE_COMPRESS_XZ=y`（Debian 原生 .ko.xz，**内核原生解压**）→ 构建脚本改为**原样拷贝 `.ko.xz`**（不再 lzma 解压+重压），`modules.dep` 路径随之 `.xz`；`bootfiles/alpine/init` 的 3 处后缀处理（ldmod 的 builtin 判定、两个"全量 sweep" find 循环）加 `*.ko.xz`。**initramfs 19.5→15.2MB（-4.3MB），494 模块一个不少**；rootfs 里模块反而更小（内存占用下降），模块加载走内核原生解压（速度≈不变）。回归：QEMU drill 9/9 PASS（模块加载/ntfs3 挂载/wimlib apply/EA 投放全链）+ UEFI SB 链冒烟 PASS。
+  · **未采用（用户 2026-10-06 裁定"影响兼容性/速度的一律不做"）**：a) "模块解压存储 + xz 外层"（可再省 ~7.8MB，但模块整棵进 RAM → **+50MB 内存**，侵蚀低内存兼容余量（PIT-113：512MB 才稳、192MB OOM），且外层解压更慢）；b) 裁小众模块（VDO/Ceph/DRBD/bcache 等，属兼容覆盖面，保留全部 494）。**可再议**：外层 gzip→xz（再省 ~0.5-1MB，需改产物名/引用，收益小）。
+  · **当前体积账**：exe ~5.4MB（已剥）+ initramfs 15.2 + vmlinuz 11.6（SB 签名，不可动）+ sb 资产 3.6 + UCRT ~3（Win7 兼容）+ wimlib/grldr/补写器/skin/lang ~2 → **≈40.6MB**。
+
 ---
 
 ## 14. License 合规（SBOM，随版本更新）
@@ -769,7 +775,7 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 | Alpine wimlib 1.14.4 | `wimlib-imagex`（动态链接 libwim） | LGPLv3 | **动态链接**，随包放 `libwim.so.15`，允许用户替换 |
 | Alpine util-linux 2.40.1 | `blkid` + `libblkid`/`libuuid`/`libeconf` | GPLv2 / LGPL | 仅分发二进制 |
 | **Debian 内核** `linux-image-6.12.107+deb13-amd64` | `vmlinuz-zjrestore` | GPLv2 | 仅分发二进制（未修改，**Debian 签名**），独立聚合（PLAN §11.1） |
-| **Debian 内核模块**（同一包内的存储/文件系统子集；2026-09-24 经 EXCLUDE 裁剪）| `initramfs` 里 **494** 个 `.ko.gz` | GPLv2 | 同上（均带 Debian 签名） |
+| **Debian 内核模块**（同一包内的存储/文件系统子集；2026-09-24 经 EXCLUDE 裁剪）| `initramfs` 里 **494** 个 `.ko.xz`（2026-10-06 起保持 Debian 原生格式，见 PIT-125） | GPLv2 | 同上（均带 Debian 签名） |
 | **GRUB**（Debian `grub-efi-amd64-signed` 1+2.12+9+deb13u2）| `bootfiles/sb/grubx64.efi` | GPLv3 | 仅分发已签名二进制（未修改），独立聚合；Secure Boot 链（PLAN §11.1） |
 | shim（Debian `shim-signed` 1.51+16.1-2）| `bootfiles/sb/shimx64.efi` | **BSD-2-Clause** | 仅分发已签名二进制（未修改，**微软 CA2011+CA2023 双签**）；Secure Boot 链入口 |
 | ~~systemd-stub / UKI / efiloader~~ | 随 MOK 备选线**停止分发**（`ZJ_ENABLE_MOK_PATH=0`） | — | 仅仓库留存，`dist` 不含 |

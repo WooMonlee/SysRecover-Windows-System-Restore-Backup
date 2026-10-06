@@ -16,8 +16,9 @@ initrd 按 UEFI 规则不校验，所以**我们的用户态不用换**。
      **2026-09-24（PIT-079）再加一层 EXCLUDE_PREFIXES**：白名单里 `kernel/fs/` 是整
      目录，会把网络/集群/嵌入式文件系统全拉进来；剔除后模块 779→约 490、省 ~15.7MB。
      另补 EXTRA_KEEP = USB HID（救援 shell 的 USB 键盘；PS/2 那套是内核内建的）。
-  2. 模块是 **`.ko.xz`**，统一转成 **`.ko.gz`**（busybox modprobe 走 gzip —— 现在的
-     Ubuntu 版就是这么跑的，已验证），用 Python 自带的 `lzma`/`gzip`，不需要外部工具。
+  2. 模块**保持 Debian 原生 `.ko.xz`**（2026-10-06 起；内核 CONFIG_MODULE_DECOMPRESS=y
+     + CONFIG_MODULE_COMPRESS_XZ=y 原生解压 —— 比转 .gz 小 ~15-20%，内存里也更小；
+     旧版转 .gz 是沿用 Ubuntu 版的做法，已无必要）。用 Python 自带的 `lzma` 读依赖。
   3. `modules.dep` 依然自己生成（Debian 的包不含它）。
 
 产出（文件名不变，下游部署逻辑零改动）：
@@ -26,7 +27,6 @@ initrd 按 UEFI 规则不校验，所以**我们的用户态不用换**。
 
 用法：python tools/build-debian-rescue.py
 """
-import gzip
 import importlib.util
 import io
 import lzma
@@ -209,7 +209,10 @@ def depends_of(raw):
 
 def stage_debian_modules(zj, mod_root):
     """把 Debian 模块装进 initramfs：**按路径白名单裁剪** + 依赖闭包；
-    `.ko.xz` → `.ko.gz`（busybox modprobe 走 gzip）；自生成 modules.dep。"""
+    **保持 Debian 原生 `.ko.xz`**（2026-10-06：内核 `CONFIG_MODULE_DECOMPRESS=y`
+    + `CONFIG_MODULE_COMPRESS_XZ=y` 原生解压 xz 模块 —— 比转 .gz 体积小
+    ~15-20%，rootfs 里模块占的内存也更小；init 的 find 扫尾也兼容 .ko.xz）；
+    自生成 modules.dep。"""
     dst = os.path.join(zj.STG, 'lib', 'modules', ABI)
     os.makedirs(dst, exist_ok=True)
 
@@ -225,15 +228,14 @@ def stage_debian_modules(zj, mod_root):
     rels, deps, name2rel = [], {}, {}
 
     def write_module(rel):
-        outrel = rel[:-len('.xz')] + '.gz'
+        outrel = rel  # 保持 .ko.xz 原样（内核原生解压，不再转 .gz）
         src = os.path.join(mod_root, rel.replace('/', os.sep))
         raw = lzma.open(src, 'rb').read()
         deps[outrel] = depends_of(raw)
         name2rel[os.path.basename(rel)[:-len('.ko.xz')]] = outrel
         tgt = os.path.join(dst, outrel)
         os.makedirs(os.path.dirname(tgt), exist_ok=True)
-        with gzip.open(tgt, 'wb', compresslevel=9) as g:
-            g.write(raw)
+        shutil.copy2(src, tgt)
         zj.MODES[outrel] = 0o644
         rels.append(outrel)
 
