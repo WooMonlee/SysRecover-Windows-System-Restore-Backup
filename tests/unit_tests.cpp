@@ -16,6 +16,7 @@
 #include "boot/bcd_parse.h"
 #include "boot/bootpath.h"
 #include "boot/task.h"
+#include "boot/uefi.h"
 #include "common/i18n.h"
 #include "common/pathutil.h"
 #include "common/relocate.h"
@@ -704,4 +705,15 @@ TEST(ea_gpt_bump) {
     CHECK(g.find("Version=65538\r\n") != std::string::npos);
     std::string g2 = "[General]\r\n";
     CHECK(!ea::BumpGptIniVersion(g2));
+}
+
+// ────────────── uefi 软项判定（PIT-126：精简系统容错）──────────────
+// ESP 缺软项时：源也缺 → 精简镜像的既成事实（放行）；源有 → bcdboot 写一半（fail）。
+TEST(esp_soft_item_verdict) {
+    using sysrecover::EspSoftItemVerdict;
+    using sysrecover::SoftItemVerdict;
+    CHECK(EspSoftItemVerdict(true, true) == SoftItemVerdict::Ok);
+    CHECK(EspSoftItemVerdict(true, false) == SoftItemVerdict::Ok);
+    CHECK(EspSoftItemVerdict(false, true) == SoftItemVerdict::Fail);
+    CHECK(EspSoftItemVerdict(false, false) == SoftItemVerdict::SkipSourceMissing);
 }

@@ -296,7 +296,7 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
                 // 一键还原等）被抹掉（客户实测投诉）。同机还原时原 BCD 本就指向同
                 // 一块 C:；只有缺失/损坏时才重建（重建前导出备份）。
                 std::string vd;
-                if (VerifyEspBcd(espRoot, vd)) {
+                if (VerifyEspBcd(espRoot, winDir, vd)) {
                     LogInfo("ESP BCD already valid -> skip bcdboot (preserve "
                             "third-party boot entries): " + vd);
                 } else {
@@ -322,7 +322,7 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
                         ProgressDone("restore", "failed");
                         return 1;
                     }
-                    if (!VerifyEspBcd(espRoot, detail)) {
+                    if (!VerifyEspBcd(espRoot, winDir, detail)) {
                         err = Tr("就地还原已完成，但 ESP 引导校验未通过：") + detail +
                               Tr("\n可进入 PE 用 `SysRecover.exe repair-boot` 重试修复引导。");
                         UnmountEsp(espRoot, blog);
@@ -1267,6 +1267,31 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
         else
             LogInfo("restore task written to " + W2U(used));
     }
+    // 引导层失败 → **契约回滚**（PIT-126，用户 2026-10-06 论坛反馈）：
+    // 契约（目标根 _zjresy + exeDir restore-task.conf）在引导层**之前**写 ——
+    // 菜单绑定/暂存任务都需要它；但引导层失败 = 任务永远不会执行 → 契约必须
+    // 撤销，否则：① GUI 误判"已安装"（按钮变「删除菜单」，实为只写了两份契约）；
+    // ② 目标根留一份 action=restore 的陈旧日志，将来进救援层可能被误执行。
+    // RAII 守卫：repairBoot=true 时武装，之后**任何失败 return 都自动回滚**；
+    // 成功路径在 return 0 前 disarm。
+    bool rollbackArmed = req.repairBoot;
+    struct RollbackGuard {
+        bool* armed;
+        ~RollbackGuard() {
+            if (!*armed) return;
+            std::string rlog;
+            int n = CleanupStrayContracts(rlog);
+            DeleteMenuBinding();
+            std::wstring dd = FindDataDrive();
+            if (!dd.empty()) {
+                DeleteFileW((dd + L"ZJRESTORE\\restore-task.conf").c_str());
+                DeleteFileW((dd + L"ZJRESTORE\\restore-task.json").c_str());
+            }
+            LogWarn("boot layer failed -> staged contracts rolled back (" +
+                    std::to_string(n) + " stray removed)");
+        }
+    } rollbackGuard{&rollbackArmed};
+
     // 6) 引导层 + 单次启动（仅正常 Windows，§2 禁令3）
     // 走哪条链**看目标盘的分区风格**（MBR→BIOS/GRUB4DOS；GPT→UEFI/ESP），不看固件类型：
     // UEFI 固件 + MBR 盘的机器（CSM/Legacy 装的 Windows）上没有 ESP，必须走 BIOS 链。
@@ -1341,7 +1366,7 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
                     std::wstring(1, target.letter[0]) + L":\\Windows";
                 std::string out;
                 std::string vd;
-                if (VerifyEspBcd(espRoot, vd)) {
+                if (VerifyEspBcd(espRoot, winDir, vd)) {
                     LogInfo("ESP BCD already valid -> skip bcdboot (preserve "
                             "third-party boot entries): " + vd);
                 } else {
@@ -1362,7 +1387,7 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
                         return 1;
                     }
                     // ④ 产物断言：displayorder 非空 + 有 winload 条目 + 关键文件齐全
-                    if (!VerifyEspBcd(espRoot, detail)) {
+                    if (!VerifyEspBcd(espRoot, winDir, detail)) {
                         UnmountEsp(espRoot, blog);
                         ReleaseOpLock();
                         ProgressDone("restore", "failed");
@@ -1502,6 +1527,7 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             }
         }
     }
+    rollbackArmed = false;  // 成功：契约保留（菜单绑定 / 暂存任务）
     return 0;
 }
 
@@ -1662,7 +1688,7 @@ int RepairBoot(int disk, int part, std::string& msg) {
         LogError(msg);
         return 1;
     }
-    if (!VerifyEspBcd(espRoot, detail)) {
+    if (!VerifyEspBcd(espRoot, winDir, detail)) {
         UnmountEsp(espRoot, blog);
         msg = Tr("引导仍不完整（校验未通过）：") + detail;
         LogError(msg);

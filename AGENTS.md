@@ -758,6 +758,13 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **未采用（用户 2026-10-06 裁定"影响兼容性/速度的一律不做"）**：a) "模块解压存储 + xz 外层"（可再省 ~7.8MB，但模块整棵进 RAM → **+50MB 内存**，侵蚀低内存兼容余量（PIT-113：512MB 才稳、192MB OOM），且外层解压更慢）；b) 裁小众模块（VDO/Ceph/DRBD/bcache 等，属兼容覆盖面，保留全部 494）。**可再议**：外层 gzip→xz（再省 ~0.5-1MB，需改产物名/引用，收益小）。
   · **当前体积账**：exe ~5.4MB（已剥）+ initramfs 15.2 + vmlinuz 11.6（SB 签名，不可动）+ sb 资产 3.6 + UCRT ~3（Win7 兼容）+ wimlib/grldr/补写器/skin/lang ~2 → **≈40.6MB**。
 
+- PIT-126 **论坛反馈核实（Win11 精简版装菜单失败）+ 两个真 bug 修复：①ESP 引导校验误伤精简系统 ②引导层失败后契约不回滚（按钮假「删除菜单」）**（2026-10-06，`0.6.42`）：
+  · **反馈原文**：英文精简 Win11 + v0.6.3 装菜单报 `ESP boot verification failed (boot was NOT properly repaired; aborted before touching the target partition): …Fonts\*_boot.ttf`，且失败后按钮变成「删除菜单」。**逐字核实属实**（报错 = `Tr("ESP 引导校验未通过（未真正修好，已中止，未动目标分区）：")` 的英译 + 字体详情；且 0.6.3→0.6.41 代码顺序未变 → **当前版本同样会复现**）。
+  · **根因①（误伤精简系统）**：`VerifyEspBcd` 把 bootres/引导字体/语言资源当**硬项**；精简镜像把 `C:\Windows\Boot\{Fonts,Resources}` 裁掉了 → bcdboot 无源可拷 → ESP 缺字体 → fail-closed 中止。而机器本来就能正常开机（字体只影响 bootmgr 菜单渲染；我们的 UEFI 菜单是**固件启动项**、不经 bootmgr）→ 纯误伤。**修复**：软项**源感知** —— `VerifyEspBcd(espRoot, srcWinDir, detail)`：ESP 缺 + **源也缺** = 精简镜像既成事实 → 放行 + detail 记 `[lite: source lacks …]`；ESP 缺 + **源有** = bcdboot 写一半 → 仍 fail-closed（保住 PIT-090 的保险丝语义）。判定抽成纯逻辑 `EspSoftItemVerdict`（uefi.h inline）+ 单测。副作用：此类机器的**跳过 bcdboot 判定**也随之通过 → 不再无谓重建 BCD（连带保住第三方启动项）。
+  · **根因②（契约不回滚）**：`StageRestoreImpl` 里契约（目标根 `_zjresy` + exeDir `restore-task.conf`）在引导层**之前**写（菜单绑定/暂存任务都需要它）；引导层失败 return 时契约已落盘 → GUI `ReadMenuBinding` 误判"已安装"（按钮变「删除菜单」，用户实测）；且目标根留一份 `action=restore` 陈旧日志（将来进救援层可能被误执行）。**修复**：加 **RAII 回滚守卫**（`repairBoot` 时武装；引导层+单次启动段内**任何失败 return 都自动** `CleanupStrayContracts` + `DeleteMenuBinding` + 清数据盘副本；成功路径 `return 0` 前 disarm）。**注意**：只回滚契约，**不删**已部署的引导文件/启动项 —— 用户可能是在旧菜单基础上重装，失败时不能把旧菜单一起干掉。
+  · **验证**：单测 **40 用例/263 断言**（新增 `esp_soft_item_verdict` 四态）+ `make check` 全绿 + CLI 编译零警告。🚧 待真机/精简系统复测（本机无精简 Win11；论坛用户升级后验证）。
+  · **给受影响用户的处置**：① 失败是 **fail-closed 中止、未动目标分区**（系统没坏）；② 0.6.3 的"卡在删除菜单"是 PIT-121 的旧 bug（0.6.37 已修），升级即可；③ 手工清残留：删程序目录 `restore-task.conf|json` + 目标盘根 `_zjresy*.log`；④ 升级到 `0.6.42+` 后重装菜单应直接成功。
+
 ---
 
 ## 14. License 合规（SBOM，随版本更新）
