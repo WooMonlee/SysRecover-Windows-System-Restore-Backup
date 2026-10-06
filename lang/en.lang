@@ -336,6 +336,7 @@ wimlib 初始化失败\n=wimlib initialization failed\n
 设置固件单次启动失败: =Failed to set the firmware one-time boot: 
 诊断包已导出到桌面。\n=The diagnostics bundle was exported to the Desktop.\n
 诊断包已导出：=Diagnostics bundle exported: 
+该镜像不是 Windows 7 及以上的系统镜像（缺少 \\Windows\\system32\\winload.exe；Vista 以前系统 / 安装源/ 不完整镜像均不支持还原），已中止，未动目标分区。=This image is not a Windows 7 or later system image (missing \\Windows\\system32\\winload.exe; pre-Vista systems / install-source images / incomplete images are not supported for restore). Aborted before touching the target partition.
 请先选择保存位置=Please choose a save location first
 请先选择镜像与目标分区，再安装菜单=Select an image and a target partition first, then install the menu
 请先选择镜像文件=Please choose an image file first

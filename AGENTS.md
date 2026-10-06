@@ -779,6 +779,13 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **直接验证**：确定性布局（镜像盘挂 NVMe=枚举在前、目标挂 IDE、无目标日志）→ 日志出现 `target-reject dev=/dev/nvme0n1p1 offset-ok size-mismatch 17177772032/42948624384` → 正确选中 40GB 目标 → `found image`（在镜像盘）→ `apply rc=0` → RESTORE DONE ✓；drill 回归 PASS（正常流程不受影响）。
   · **教训**：任何"按位置猜设备"的逻辑都必须**多字段校验**（offset+size，能加 serial 更好）；`/dev/sdX` 字母不可靠（跨启动可变，勿持久化）。
 
+- PIT-129 **"不支持的系统镜像"主动拒绝（I-1 落地）：镜像必须有 `\Windows\system32\winload.exe`，否则写契约/格式化前拒绝**（2026-10-06，`0.6.44`；docs/19 批次 G 实测定稿）：
+  · **为什么**：老系统镜像（XP/2003/2000/98）与"安装源类"镜像（实测某 XP esd 连 ntoskrnl 都没有）还原后会"**格式化完才发现起不来**"（Win7+ 才有 winload.exe/BCD 体系）。批次 G 实测：XP x86/x64、2000、98、2003 全部无 winload；Win7 对照组有 ✓。
+  · **实现（双端）**：① Windows 侧 `StageRestoreImpl` 步骤 0.7：新增 `WimEngine::ImagePathExists()`（`wimlib_iterate_dir_tree`，只读元数据）探 `\Windows\System32\winload.exe`，缺失即拒绝（rc=4，未动任何东西）；② 救援层 `zjrestore-lite.sh` 在找到镜像后、**动目标分区前**同款检查（`wimlib-imagex extract` 单文件探测，带 timeout；缺 → `STEP=unsupported-image` 退出）。
+  · **四个实测坑（都踩了）**：a) **`wimlib-imagex dir` 在 solid ESD 上会卡死**（首次调用 rc=2、二次调用挂到超时）→ 弃用 `dir`，改单文件 `extract` 探测；b) **Linux 侧 wimlib 路径匹配区分大小写**（真实镜像里是 `System32` 大写 S）→ 必须**双大小写各探一次**（Windows 侧不区分）；c) **`set -u` 下 `$WIMLIB` 未定义**：变量原本在 apply 段才赋值、预检在前 → 脚本 rc=2 直接退出（已把解析提前）；d) 初版用 ntoskrnl 当"系统镜像"门槛是 **fail-open 漏洞**（安装源类镜像没有 ntoskrnl → 被当"非系统镜像"放行）→ 改为单一硬规则"必须 winload.exe"。
+  · **演练盘适配**：`drill-src` 补 `Windows\system32\winload.exe`（dummy），test.wim 重建后 drill 照常 PASS（演练素材本来就不是真系统镜像）。
+  · **验证**：XP esd 负例（无 mkntfs/无 apply + 明确报错）✓；Win7 x86 正例（precheck ok → apply rc=0 → RESTORE DONE）✓；drill 回归 PASS ✓。
+
 ---
 
 ## 14. License 合规（SBOM，随版本更新）

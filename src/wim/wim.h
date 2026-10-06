@@ -68,6 +68,14 @@ public:
                      const std::vector<std::wstring>& paths,
                      const std::wstring& destDir);
 
+    // 镜像里**是否存在某路径**（只读元数据、不解压文件数据 —— solid ESD 也快）。
+    // 用途：不支持的系统预检（I-1，2026-10-06）：Win7+ 必有
+    // `\Windows\system32\winload.exe`，Vista 以前（XP/2003/2000/98）没有 →
+    // 还原前拒绝，避免"格式化完才发现起不来"。
+    // 返回 0 = 查询成功（*exists 有效；路径不存在也是成功）；非 0 = wimlib 错误码。
+    int ImagePathExists(const std::wstring& imagePath, int index,
+                        const std::wstring& path, bool* exists);
+
     static const wchar_t* ErrorString(int code);
 
 private:

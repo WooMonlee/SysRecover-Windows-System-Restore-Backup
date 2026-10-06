@@ -651,6 +651,42 @@ fi
 STEP=image-found
 persist_log
 
+# ── 镜像内容预检（I-1，2026-10-06 实测定稿；docs/19 批次 G）──
+# **规则：镜像里必须有 \Windows\system32\winload.exe（Win7+ 的加载器）**，
+# 否则在**动目标分区之前**拒绝，杜绝"格式化完才发现起不来"。覆盖：
+#   · Vista 以前（XP/2003/2000/98）系统镜像 → 没有 winload → 拒绝 ✓
+#   · 安装源类"镜像"（如 \I386 结构；实测某 XP esd 连 ntoskrnl 都没有）→ 拒绝 ✓
+#   · 合成/局部镜像（演练盘 test.wim）→ 拒绝（演练素材已补 dummy winload.exe）
+# 实现：`extract` 单个路径探测（solid ESD 只解相关块）——
+#   ⚠️ 不能用 `dir`：实测在 solid ESD 上会**卡死**（2026-10-06）。
+#   ⚠️ Linux 侧 wimlib 路径匹配**区分大小写**（Windows 侧不区分）：真实镜像
+#      里是 `System32`（大写 S），必须**双大小写各探一次**，否则会误拒（2026-10-06 实测）。
+# 带 timeout：探测卡住/超时按"跳过"处理（fail-open，只记日志不误杀）。
+# ⚠️ WIMLIB 变量在后面的 apply 段才赋值 —— 预检在前，必须**提前解析**
+#    （set -u 下引用未定义变量会直接 rc=2 退出，2026-10-06 实测踩到）。
+WIMLIB="$(command -v wimlib-imagex 2>/dev/null)"
+[ -n "$WIMLIB" ] || WIMLIB=/tmp/zjtools/wimlib-imagex
+mkdir -p /tmp/zj_pc
+_pc_ok=0
+for _p in '/Windows/System32/winload.exe' '/Windows/system32/winload.exe'; do
+    if timeout 240 "$WIMLIB" extract "$IMG_FILE" "$IMAGE_INDEX" \
+            "$_p" --dest-dir=/tmp/zj_pc --no-acls --no-attributes \
+            > /tmp/zjpc.out 2>&1; then
+        _pc_ok=1
+        break
+    fi
+done
+if [ "$_pc_ok" = "1" ]; then
+    say "image precheck: winload.exe present (ok)"
+else
+    RESULT=FAILED; STEP=unsupported-image
+    say "  (probe out: $(tail -c 200 /tmp/zjpc.out 2>/dev/null | tr '\n' ' '))"
+    say "ERROR: image lacks \\Windows\\system32\\winload.exe -> not a Windows 7+ system image"
+    say "ERROR: (pre-Vista system / install-source image / partial image) - aborted BEFORE touching the target"
+    persist_log
+    exit 1
+fi
+
 # ── ESP 子镜像（方案 C，用户 2026-09-30 规格 / 无忧 66 楼）──
 # 主镜像里可能含名为 ESP 的子镜像（备份时勾选 --esp 并入，契约键 esp_index）。
 # apply 完主系统后用 **$IMG_FILE + $ESP_INDEX** 直接从挂载中的镜像分区恢复到

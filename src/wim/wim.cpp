@@ -558,6 +558,37 @@ int WimEngine::ImageSize(const std::wstring& imagePath, int index,
     return 0;
 }
 
+int WimEngine::ImagePathExists(const std::wstring& imagePath, int index,
+                               const std::wstring& path, bool* exists) {
+    if (exists)
+        *exists = false;
+    if (!inited_)
+        return -1;
+    WimHandle h;
+    WIMStruct* raw = nullptr;
+    int rc = wimlib_open_wim(imagePath.c_str(), 0, &raw);
+    if (rc != 0)
+        return rc;
+    h.w = raw;
+    // 只走元数据（不解压文件数据）：solid ESD 也是秒级。
+    bool found = false;
+    int irc = wimlib_iterate_dir_tree(
+        h.w, index, path.c_str(), 0,
+        [](const struct wimlib_dir_entry*, void* ud) -> int {
+            *static_cast<bool*>(ud) = true;
+            return 0;
+        },
+        &found);
+    if (irc == 0) {
+        if (exists)
+            *exists = found;
+        return 0;
+    }
+    if (irc == WIMLIB_ERR_PATH_DOES_NOT_EXIST)
+        return 0;  // 路径不存在 = 正常查询结果（*exists 保持 false）
+    return irc;
+}
+
 int WimEngine::ExtractPaths(const std::wstring& imagePath, int index,
                             const std::vector<std::wstring>& paths,
                             const std::wstring& destDir) {

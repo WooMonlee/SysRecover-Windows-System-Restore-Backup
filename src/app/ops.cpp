@@ -1012,6 +1012,29 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
                         std::to_string(eaIndex));
         }
     }
+    // 0.7) 镜像内容预检（I-1，2026-10-06 实测定稿；docs/19 批次 G）：
+    //   **规则：镜像里必须有 `\Windows\system32\winload.exe`（Win7+ 的加载器）**，
+    //   否则在**写契约/重启之前**拒绝，杜绝"格式化完才发现起不来"。覆盖：
+    //   Vista 以前（XP/2003/2000/98）系统镜像、安装源类"镜像"（实测某 XP esd
+    //   连 ntoskrnl 都没有）、合成/局部镜像（演练盘素材已补 dummy winload.exe）。
+    //   ⚠️ 救援层还有同款兜底（双保险；老契约/绕过此检查时仍安全）。
+    {
+        WimEngine eng;
+        const int eff = req.index < 1 ? 1 : req.index;
+        bool winload = false;
+        if (eng.ImagePathExists(req.image, eff,
+                                L"\\Windows\\System32\\winload.exe",
+                                &winload) == 0 &&
+            !winload) {
+            err = Tr("该镜像不是 Windows 7 及以上的系统镜像（缺少 "
+                     "\\Windows\\system32\\winload.exe；Vista 以前系统 / 安装源"
+                     "/ 不完整镜像均不支持还原），已中止，未动目标分区。");
+            LogError(err);
+            AppendHistory("restore-rejected", req.image, req.image, 0,
+                          "not a win7+ system image (no winload.exe)");
+            return 4;
+        }
+    }
     // 1) 定位目标分区与所在磁盘
     DiskInfo tdisk;
     PartitionInfo target;

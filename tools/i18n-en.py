@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：399/400 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：400/401 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n建议：以管理员身份运行（本程序要读写分区与引导）。': '\n\nAdvice: run as administrator (this program reads and writes partitions and boot data).',
@@ -340,6 +340,7 @@ EN = {
     '设置固件单次启动失败: ': 'Failed to set the firmware one-time boot: ',
     '诊断包已导出到桌面。\n': 'The diagnostics bundle was exported to the Desktop.\n',
     '诊断包已导出：': 'Diagnostics bundle exported: ',
+    '该镜像不是 Windows 7 及以上的系统镜像（缺少 \\Windows\\system32\\winload.exe；Vista 以前系统 / 安装源/ 不完整镜像均不支持还原），已中止，未动目标分区。': 'This image is not a Windows 7 or later system image (missing \\Windows\\system32\\winload.exe; pre-Vista systems / install-source images / incomplete images are not supported for restore). Aborted before touching the target partition.',
     '请先选择保存位置': 'Please choose a save location first',
     '请先选择镜像与目标分区，再安装菜单': 'Select an image and a target partition first, then install the menu',
     '请先选择镜像文件': 'Please choose an image file first',
