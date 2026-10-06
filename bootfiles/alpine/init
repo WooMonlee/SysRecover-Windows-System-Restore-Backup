@@ -264,11 +264,18 @@ scan_for_log(){
                 [ -f "$_f" ] || continue
                 _hit=1
                 _want=$(grep '^target_part_offset=' "$_f" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r')
+                _want_sz=$(grep '^target_part_size=' "$_f" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r')
                 _have=$(dev_offset_sectors "$_d")
-                if [ -n "$_want" ] && [ -n "$_have" ] && [ "$_want" = "$_have" ]; then
+                _have_sz=""
+                [ -n "$_sz" ] && _have_sz=$((_sz * 512))
+                # offset 匹配 +（双方都有 size 时）size 也要匹配：多盘首分区都在
+                # 1MiB，且 Linux 的 sd 字母会变（2026-10-06 实测），只比 offset
+                # 会把别的盘误判成目标（PIT-128）。
+                if [ -n "$_want" ] && [ -n "$_have" ] && [ "$_want" = "$_have" ] && \
+                   { [ -z "$_want_sz" ] || [ -z "$_have_sz" ] || [ "$_want_sz" = "$_have_sz" ]; }; then
                     cp "$_f" /tmp/ 2>/dev/null
                     found_log="$_f"; TARGET_DEV="$_d"
-                    say "found log: $_f (dev=$_d rem=${_rem:-0}, offset match $_want)"
+                    say "found log: $_f (dev=$_d rem=${_rem:-0}, offset match $_want size ${_have_sz:-?})"
                     [ -f "$ZJ_M/restore-task.conf" ] && cp "$ZJ_M/restore-task.conf" /tmp/ 2>/dev/null
                     break
                 fi
