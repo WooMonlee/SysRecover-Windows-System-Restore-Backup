@@ -47,11 +47,28 @@ bool IsMokEnrolled(const std::wstring& exeDir);
 //   * TargetBcdTemplateOk ：目标系统盘有没有 bcdboot 需要的 BCD-Template；
 //   * EspHasRoomForBcdboot：ESP 还剩不剩得下 bcdboot 要写的 ~9MB（要求 ≥24MB）；
 //   * VerifyEspBcd        ：bcdboot **之后**的产物断言（displayorder 非空 + 有
-//                           winload 条目 + bootmgfw/Resources/Fonts/locale 齐全）。
+//                           winload 条目 + bootmgfw/bootx64 齐全）。
+// ⚠️ 精简系统容错（2026-10-06 论坛反馈，PIT-126）：bootres/字体/语言资源是**软项**
+// —— ESP 缺时看**源**（srcWinDir，目标/本机 Windows 目录）里有没有：
+//   源也缺 = 精简镜像的既成事实（机器本来就能开机）→ 放行 + detail 记 note；
+//   源有而 ESP 没有 = bcdboot "写一半"的指纹 → 仍 fail-closed。
+// srcWinDir 传空 = 未知源（软项缺失一律放行并记 note）。
 // detail 是给日志/用户看的 UTF-8 说明（Tr() 过的面向用户部分）。
 bool TargetBcdTemplateOk(wchar_t targetLetter, std::string& detail);
 bool EspHasRoomForBcdboot(const std::wstring& espRoot, std::string& detail);
-bool VerifyEspBcd(const std::wstring& espRoot, std::string& detail);
+bool VerifyEspBcd(const std::wstring& espRoot, const std::wstring& srcWinDir,
+                  std::string& detail);
+
+// 软项（bootres/字体/语言资源）判定：纯逻辑，便于单测（PIT-126）。
+//   Ok               = ESP 有（或无需检查）
+//   SkipSourceMissing= ESP 缺 + 源缺 → 精简系统，放行
+//   Fail             = ESP 缺 + 源有 → bcdboot 写一半，fail-closed
+enum class SoftItemVerdict { Ok, SkipSourceMissing, Fail };
+inline SoftItemVerdict EspSoftItemVerdict(bool espHas, bool srcHas) {
+    if (espHas)
+        return SoftItemVerdict::Ok;
+    return srcHas ? SoftItemVerdict::Fail : SoftItemVerdict::SkipSourceMissing;
+}
 
 // ── Secure Boot 下的引导走法（PIT-063/PIT-066 对比）──────────────
 //   Grub    ：固件启动项 → shimx64.efi（微软签名）→ grubx64.efi(= **Canonical

@@ -899,7 +899,8 @@ bool EspHasRoomForBcdboot(const std::wstring& espRoot, std::string& detail) {
     return freeBytes.QuadPart >= kNeed;
 }
 
-bool VerifyEspBcd(const std::wstring& espRoot, std::string& detail) {
+bool VerifyEspBcd(const std::wstring& espRoot, const std::wstring& srcWinDir,
+                  std::string& detail) {
     // ① BCD 文件在不在
     std::wstring bcd = espRoot + L"EFI\\Microsoft\\Boot\\BCD";
     if (!PathExists(bcd)) {
@@ -920,14 +921,13 @@ bool VerifyEspBcd(const std::wstring& espRoot, std::string& detail) {
         detail = Tr("ESP 上的 BCD 不完整：") + why;
         return false;
     }
-    // ③ bcdboot "写一半"的特征文件集（docs/15 §4.5）
+    // ③ 硬项：bootmgr 实体 + 固件兜底路径（bcdboot 必写；缺 = 真坏）
     struct Item {
         const wchar_t* path;   // 相对 ESP 根
         const char* name;      // 报错用（ASCII）
     };
     const Item kItems[] = {
         {L"EFI\\Microsoft\\Boot\\bootmgfw.efi", "bootmgfw.efi"},
-        {L"EFI\\Microsoft\\Boot\\Resources\\bootres.dll", "Resources\\bootres.dll"},
         {L"EFI\\Boot\\bootx64.efi", "EFI\\Boot\\bootx64.efi"},
     };
     for (const auto& it : kItems) {
@@ -936,15 +936,53 @@ bool VerifyEspBcd(const std::wstring& espRoot, std::string& detail) {
             return false;
         }
     }
+    // ④ 软项（精简系统容错，PIT-126）：ESP 缺 → 看**源**里有没有
+    //    （源也缺 = 精简镜像的既成事实，机器本来就能开机 → 放行 + note；
+    //      源有而 ESP 没有 = bcdboot "写一半" → 仍 fail-closed）。
     std::wstring bootDir = espRoot + L"EFI\\Microsoft\\Boot";
-    if (!HasFileMatching(bootDir + L"\\Fonts", L"*_boot.ttf")) {
-        detail = Tr("ESP 上缺少引导字体（Fonts\\*_boot.ttf）");
-        return false;
+    const bool haveSrc = !srcWinDir.empty();
+    std::string notes;
+    auto checkSoft = [&](bool espHas, bool srcHas, const char* srcName,
+                         const std::string& failMsg) -> bool {
+        switch (EspSoftItemVerdict(espHas, haveSrc && srcHas)) {
+            case SoftItemVerdict::Ok:
+                return true;
+            case SoftItemVerdict::Fail:
+                detail = failMsg;
+                return false;
+            case SoftItemVerdict::SkipSourceMissing:
+                notes += std::string(" [lite: source lacks ") + srcName + "]";
+                return true;
+        }
+        return true;
+    };
+    {
+        bool espHas = PathExists(bootDir + L"\\Resources\\bootres.dll");
+        bool srcHas =
+            haveSrc && PathExists(srcWinDir + L"\\Boot\\Resources\\bootres.dll");
+        if (!checkSoft(espHas, srcHas, "Resources\\bootres.dll",
+                       Tr("ESP 上缺少引导资源：Resources\\bootres.dll")))
+            return false;
     }
-    if (!DirExists(bootDir + L"\\zh-CN") && !DirExists(bootDir + L"\\en-US")) {
-        detail = Tr("ESP 上缺少引导语言资源目录（zh-CN / en-US）");
-        return false;
+    {
+        bool espHas = HasFileMatching(bootDir + L"\\Fonts", L"*_boot.ttf");
+        bool srcHas =
+            haveSrc && HasFileMatching(srcWinDir + L"\\Boot\\Fonts", L"*_boot.ttf");
+        if (!checkSoft(espHas, srcHas, "Boot\\Fonts\\*_boot.ttf",
+                       Tr("ESP 上缺少引导字体（Fonts\\*_boot.ttf）")))
+            return false;
     }
+    {
+        bool espHas = DirExists(bootDir + L"\\zh-CN") ||
+                      DirExists(bootDir + L"\\en-US");
+        bool srcHas =
+            haveSrc && (DirExists(srcWinDir + L"\\Boot\\Resources\\zh-CN") ||
+                        DirExists(srcWinDir + L"\\Boot\\Resources\\en-US"));
+        if (!checkSoft(espHas, srcHas, "Boot\\Resources\\<lang>",
+                       Tr("ESP 上缺少引导语言资源目录（zh-CN / en-US）")))
+            return false;
+    }
+    detail = std::string("ok") + notes;
     return true;
 }
 

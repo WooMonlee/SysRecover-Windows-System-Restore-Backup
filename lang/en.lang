@@ -34,6 +34,7 @@ ESP 上的 BCD 不完整：=ESP BCD is incomplete:
 ESP 上缺少引导字体（Fonts\\*_boot.ttf）=ESP is missing the boot fonts (Fonts\\*_boot.ttf)
 ESP 上缺少引导文件：=ESP is missing boot file(s): 
 ESP 上缺少引导语言资源目录（zh-CN / en-US）=ESP is missing the boot language resource directory (zh-CN / en-US)
+ESP 上缺少引导资源：Resources\\bootres.dll=ESP is missing boot resource: Resources\\bootres.dll
 ESP 备份失败(rc\=%d): =ESP backup failed (rc\=%d): 
 ESP 引导校验未通过（未真正修好，已中止，未动目标分区）：=ESP boot verification failed (boot was NOT properly repaired; aborted before touching the target partition): 
 ESP 空间不足（=ESP is out of space (

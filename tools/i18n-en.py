@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：397/399 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：399/400 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n建议：以管理员身份运行（本程序要读写分区与引导）。': '\n\nAdvice: run as administrator (this program reads and writes partitions and boot data).',
@@ -38,6 +38,7 @@ EN = {
     'ESP 上缺少引导字体（Fonts\\*_boot.ttf）': 'ESP is missing the boot fonts (Fonts\\*_boot.ttf)',
     'ESP 上缺少引导文件：': 'ESP is missing boot file(s): ',
     'ESP 上缺少引导语言资源目录（zh-CN / en-US）': 'ESP is missing the boot language resource directory (zh-CN / en-US)',
+    'ESP 上缺少引导资源：Resources\\bootres.dll': 'ESP is missing boot resource: Resources\\bootres.dll',
     'ESP 备份失败(rc=%d): ': 'ESP backup failed (rc=%d): ',
     'ESP 引导校验未通过（未真正修好，已中止，未动目标分区）：': 'ESP boot verification failed (boot was NOT properly repaired; aborted before touching the target partition): ',
     'ESP 空间不足（': 'ESP is out of space (',
