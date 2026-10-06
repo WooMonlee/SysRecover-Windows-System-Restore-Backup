@@ -51,7 +51,7 @@ ldmod(){
     case "$1" in
         nvme-core|nvme_core) set -- "$1" io_timeout=1 ;;
     esac
-    _n="$1"; _n=${_n%.ko}; _n=${_n%.ko.gz}; _n=$(echo "$_n" | tr '_' '-')
+    _n="$1"; _n=${_n%.ko}; _n=${_n%.ko.gz}; _n=${_n%.ko.xz}; _n=$(echo "$_n" | tr '_' '-')
     _e=$(modprobe "$@" 2>&1) && return 0
     # modprobe 失败要分情况，**不能笼统当成"ok"**（问题清单 H-01）：
     #   a) 名字不在模块表里，但 `modules.builtin` 里有 → **内建**，正常；
@@ -184,8 +184,8 @@ if [ -z "$(list_parts)" ]; then
     say "no partitions seen -> sweeping ALL modules (may take a while)"
     _n=0
     for _pass in 1 2; do
-        for _k in $(find /lib/modules/"$(uname -r)"/kernel -type f \( -name '*.ko.gz' -o -name '*.ko' \) | sort); do
-            _b=$(basename "$_k"); _b=${_b%.ko.gz}; _b=${_b%.ko}
+        for _k in $(find /lib/modules/"$(uname -r)"/kernel -type f \( -name '*.ko.gz' -o -name '*.ko.xz' -o -name '*.ko' \) | sort); do
+            _b=$(basename "$_k"); _b=${_b%.ko.gz}; _b=${_b%.ko.xz}; _b=${_b%.ko}
             modprobe "$_b" 2>/dev/null
             _n=$((_n + 1))
         done
@@ -316,8 +316,8 @@ fi
 if [ -z "$found_log" ]; then
     say "no task log -> sweeping ALL modules, then rescan"
     for _pass in 1 2; do
-        for _k in $(find /lib/modules/"$(uname -r)"/kernel -type f \( -name '*.ko.gz' -o -name '*.ko' \) | sort); do
-            _b=$(basename "$_k"); _b=${_b%.ko.gz}; _b=${_b%.ko}
+        for _k in $(find /lib/modules/"$(uname -r)"/kernel -type f \( -name '*.ko.gz' -o -name '*.ko.xz' -o -name '*.ko' \) | sort); do
+            _b=$(basename "$_k"); _b=${_b%.ko.gz}; _b=${_b%.ko.xz}; _b=${_b%.ko}
             modprobe "$_b" 2>/dev/null
         done
         sleep 1
