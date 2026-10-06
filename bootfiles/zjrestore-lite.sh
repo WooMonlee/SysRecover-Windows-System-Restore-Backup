@@ -476,6 +476,12 @@ dev_offset(){
     [ -n "$_lba" ] || return 1
     echo $((_lba * 512))
 }
+# 分区字节数（sysfs size 单位=512B 扇区；GPT/MBR/EBR 逻辑盘全通用）。
+# 用途：offset 匹配的**第二判据**（多盘首分区都在 1MiB，只比 offset 会选错盘）。
+dev_size(){
+    _sz=$(cat "/sys/class/block/$(basename "$1")/size" 2>/dev/null)
+    [ -n "$_sz" ] && echo $((_sz * 512))
+}
 target_by_offset(){
     TARGET_DEV=""
     for _d in $(list_parts); do
@@ -485,8 +491,19 @@ target_by_offset(){
         if [ -z "$_off" ]; then
             say "  (skip $_d: no offset)"
         else
-            say "  probe $_d off=$_off (want $TARGET_OFFSET)"
-            [ "$_off" = "$TARGET_OFFSET" ] && { TARGET_DEV="$_d"; return 0; }
+            _sz=$(dev_size "$_d")
+            say "  probe $_d off=$_off size=${_sz:-?} (want $TARGET_OFFSET/${TARGET_SIZE:-?})"
+            if [ "$_off" = "$TARGET_OFFSET" ]; then
+                if [ -n "$TARGET_SIZE" ] && [ -n "$_sz" ] && [ "$_sz" != "$TARGET_SIZE" ]; then
+                    # 同 offset 但 size 不符 = 不是目标（2026-10-06 实测教训：两块盘
+                    # 首分区都在 1MiB，且 Linux 给两块 IDE 盘的 sd 字母会变 —— 只比
+                    # offset 会把**镜像盘**误认成目标盘；补 size 校验杜绝）
+                    say "  WARN: $_d offset matches but size=$_sz != $TARGET_SIZE -> skip"
+                    probe "target-reject dev=$_d offset-ok size-mismatch $_sz/$TARGET_SIZE"
+                    continue
+                fi
+                TARGET_DEV="$_d"; return 0
+            fi
         fi
     done
     return 1
@@ -494,9 +511,14 @@ target_by_offset(){
 TARGET_DEV="${1:-}"
 if [ -n "$TARGET_DEV" ] && [ -b "$TARGET_DEV" ] && [ -n "$TARGET_OFFSET" ]; then
     _doff=$(dev_offset "$TARGET_DEV")
+    _dsz=$(dev_size "$TARGET_DEV")
     if [ -n "$_doff" ] && [ "$_doff" != "$TARGET_OFFSET" ]; then
         say "WARN: candidate $TARGET_DEV offset=$_doff != contract $TARGET_OFFSET -> reject (stale log?)"
         probe "target-reject dev=$TARGET_DEV offset=$_doff want=$TARGET_OFFSET"
+        TARGET_DEV=""
+    elif [ -n "$TARGET_SIZE" ] && [ -n "$_dsz" ] && [ "$_dsz" != "$TARGET_SIZE" ]; then
+        say "WARN: candidate $TARGET_DEV size=$_dsz != contract $TARGET_SIZE -> reject (stale log?)"
+        probe "target-reject dev=$TARGET_DEV size=$_dsz want=$TARGET_SIZE"
         TARGET_DEV=""
     fi
 fi

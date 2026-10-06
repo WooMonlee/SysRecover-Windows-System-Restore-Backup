@@ -773,6 +773,12 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **边界/注意**：a) UEFI 目标若 **ESP 全空**（新盘）→ 依赖**暂存侧 bcdboot** 先写好（0.6.35+ "BCD 有效即跳过"，无效时会重建）；b) UEFI 目标 ESP 的 BCD 若指向**别的分区**（多系统 / 还原到非原系统分区）→ 跳过逻辑不比较目标分区，可能启动旧系统（边缘场景，暂记录）；c) 实验室 OVMF 需**空 NVRAM** 或 `\EFI\BOOT\BOOTX64.EFI` 兜底（旧 vars 会优先走失效条目 → PXE）；真机 NVRAM 里有目标机自己的条目，不受影响。
   · 实验素材：`D:\EA-lab\e2e2\`（实验室目录，不入库）。✅ 2026-10-06（`0.6.42`）
 
+- PIT-128 **目标盘误判隐患：Linux 给两块 IDE 盘的 sd 字母会变 + 多盘首分区都在 1MiB → 只比 offset 会把镜像盘当目标盘；修复 = offset 匹配必须同时校验 size（双端）**（2026-10-06，`0.6.43`，实验室意外触发）：
+  · **怎么发现的**：批量测试（docs/19 批次 A，Win10 精简镜像）时漏写目标盘 `_zjresy` 日志（实验室失误），救援层退到"按 offset 匹配"；恰好那次两块 IDE 盘（目标 40GB / 镜像 16GB，**首分区都在 1MiB**）的 **sd 字母与上次相反**（libata 异步探测顺序不保证，实测同一 QEMU 参数两次启动 sda/sdb 对调）→ 镜像盘被选成"目标"→ 镜像扫描又跳过"目标"→ 在另一块盘上找不到镜像 → 安全中止（**镜像扫描先于 mkntfs，没动任何盘** —— 顺序救了场）。
+  · **修复（双端）**：① `zjrestore-lite.sh`：新增 `dev_size()`（sysfs size×512）；`target_by_offset` 与"日志候选"校验改为 **offset 必须匹配 +（双方都有 size 时）size 也必须匹配**，不符即 `target-reject … size-mismatch` 跳过；② `bootfiles/alpine/init` 的 `scan_for_log` 同样加 `target_part_size` 校验（防旧日志把别的同 offset 分区指成目标）。
+  · **直接验证**：确定性布局（镜像盘挂 NVMe=枚举在前、目标挂 IDE、无目标日志）→ 日志出现 `target-reject dev=/dev/nvme0n1p1 offset-ok size-mismatch 17177772032/42948624384` → 正确选中 40GB 目标 → `found image`（在镜像盘）→ `apply rc=0` → RESTORE DONE ✓；drill 回归 PASS（正常流程不受影响）。
+  · **教训**：任何"按位置猜设备"的逻辑都必须**多字段校验**（offset+size，能加 serial 更好）；`/dev/sdX` 字母不可靠（跨启动可变，勿持久化）。
+
 ---
 
 ## 14. License 合规（SBOM，随版本更新）
