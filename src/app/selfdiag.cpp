@@ -16,6 +16,7 @@
 #include "../common/i18n.h"
 #include "../common/logger.h"
 #include "../common/process.h"
+#include "../common/refscan.h"
 #include "../common/relocate.h"
 #include "../common/rescue_decision.h"  // DecideRescueReport（纯逻辑，单测覆盖）
 #include "../common/selfarch.h"
@@ -826,6 +827,26 @@ int DiagReportText(std::string& out) {
                 out += buf;
             }
             RegCloseKey(bk);
+        }
+    }
+    // 悬空引用（PIT-132）：注册表引用指向"备份排除的易失目录"（Temp 等）且
+    // 文件缺失 —— 还原后必然损坏（实测：豆包便携版把右键扩展注册在 Temp →
+    // 每次右键卡死）；备份会并入修复包、目标系统首启自动清理。
+    {
+        std::vector<refscan::DanglingRef> refs =
+            refscan::ScanDanglingRefs(true);
+        int miss = 0;
+        for (auto& r : refs)
+            if (r.missingNow) miss++;
+        out += "[diag] volatile-ref: " + std::to_string(refs.size()) +
+               " (missing now=" + std::to_string(miss) + "; at-risk=" +
+               std::to_string((int)refs.size() - miss) +
+               "; first-boot auto-clean)\n";
+        for (size_t i = 0; i < refs.size() && i < 20; ++i) {
+            char d1[2048] = {};
+            WideCharToMultiByte(CP_UTF8, 0, refs[i].display.c_str(), -1, d1,
+                                sizeof(d1), nullptr, nullptr);
+            out += std::string("[diag] volatile-ref: ") + d1 + "\n";
         }
     }
     // 磁盘健康（PIT-086）：SMART 能读时打印关键属性；读不到（NVMe/RAID/USB 桥）明确写

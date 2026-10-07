@@ -800,6 +800,13 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **验证**：① 实验室全链（5509 lite 备份 → 救援还原 → 首启）：`shell_started=no (pre-logon)`、`ok=255 missing=0 failed=0`、清理全项完成、EA（`ZJTEST`）实测写回、State 正确记录新版本 ✓；② `make check` 40 用例/263 断言 + check-docs/i18n 全绿；③ QEMU 演练 PASS（`ea: gpt.ini created (version=2147427948)` → `RESTORE DONE`）；④ `make package` 双架构。
   · **教训**：凡"版本号当变更检测"的机制，要假设比较可能**只取部分位**——固定魔数（0x7FFF0001）会撞上常见残留（0x10001）；**时间基/随机基最稳**。另（复测再踩）：补写器的延迟自删（`MOVEFILE_DELAY_UNTIL_REBOOT`）会删掉**下次启动前重新部署的同路径新文件**（PIT-123 已记）——重放实验必须先把 exe/cmd 补回并注意其注册已消费。
 
+- PIT-132 **"悬空引用"根治：注册表指向备份排除目录（Temp 等）的组件还原后必坏 —— 备份扫描 + 首启自动清理**（2026-10-07，`0.6.46`；客户右键卡死的最终修复）：
+  · **背景**：客户"用我们的软件还原后右键打圈/卡死"在 EA 修复（PIT-131）后依旧（原话："一点右键就打圈；重启资源管理器后左键能用、右键不行"）。定因：**右键菜单处理器损坏** —— 豆包便携版把扩展 DLL 注册在 `HKCR\*\shellex\ContextMenuHandlers\{A5AF131F-…}` → `…\AppData\Local\Temp\DoubaoPortableTemp\…\shellext.dll`；**我们的备份排除 `\Users\*\AppData\Local\Temp*`（`exclude.cpp:35`）→ DLL 不进镜像，注册项却随注册表还原** → "有注册、无 DLL"的坏处理器 → 每次右键加载它 → 卡死。易数/DiskGenius 是**扇区/整分区级**还原（Temp 原样保留）→ 不卡 —— "只有我们卡"的差异吻合。等待链（UI 线程等 shell 工作线程）+ explorer 转储（shell32→combase 处理器加载路径阻塞）佐证。
+  · **不止右键**：启动项（Run/RunOnce）指向 Temp、COM 注册、服务、计划任务等"注册表引用指向被排除路径"都会在还原后悬空（启动项→登录报错弹窗；COM→应用异常）。
+  · **实现（通用扫描器 + 保守自愈，`src/common/refscan.{h,cpp}`）**：① 扫描 shell 扩展（7 个右键根 + 覆盖图标 + ShellExecuteHooks；**HKLM 双 WOW64 视图**——x86 补写器必须 `KEY_WOW64_64KEY` 才看得到 64 位视图，PIT-082 家族）+ 启动项（Run/RunOnce：机器双视图 + 用户 hive——备份扫已加载的 HKU，首启从磁盘加载 `Users\*\NTUSER.DAT`）；② 判定 = 路径片段落在易失目录（AppData\Local\Temp / Windows\Temp / CbsTemp / winsxs\InstallTemp / INetCache）；③ **备份时**（`ops.cpp`）：统计"易失目录引用"（`missingNow` / `at-risk` 两状态都算）→ >0 时并入 ZJEA 修复包（无 EA 也可只有补写器）；④ **首启**（补写器、登录前 SYSTEM）：`CleanAllDanglingRefs` **只删"易失目录 + 文件已缺失"**的项（存在的不动），删前落 `refs-backup.txt`（可恢复）、结果落 `refs-result.txt`；⑤ 救援脚本载荷校验放宽（**补写器必需、eapack 可选**）+ 启动 cmd 双模式（有包 `--pack`，无包直接跑）；⑥ `diag` 输出 `volatile-ref: N (missing now=…; at-risk=…)` 供支持包取证。
+  · **验证**：① 单测 `refscan_volatile_path` / `refscan_extract_exe`（`make check` **42 用例/282 断言**）；② **机内全链 e2e**（注入假引用 → utarget 机内 VSS 备份：`ref scan: 2 volatile-dir reference(s) (0 missing, 2 at-risk)` → `EA/fix pack appended (ea=255 refs=2)` → 救援还原（`applier=yes`、时间基 gpt 版本）→ 首启：**EA 255/255 + `refs: found=2 cleaned=2 failed=0 atRisk=0`**；离线核验两条注册项消失、`refs-backup.txt` 在案、EA 抽查在）；③ drill PASS；④ `make package` 双架构。
+  · 备注：用户 hive 加载尽力而为（实测 `admin` 的 NTUSER.DAT 加载 rc=32 共享冲突 → 优雅跳过并记录；主清理在机器级）；`[ExclusionException]` 路线被否（**wimlib 不扫描被排除目录的子树**，例外救不回目录内的文件，官方论坛/MS WIMGAPI 同款行为）。
+
 ---
 
 ## 14. License 合规（SBOM，随版本更新）

@@ -53,7 +53,7 @@ APP_SRC = src/disk/disk.cpp src/wim/wim.cpp src/wim/exclude.cpp \
       src/common/process.cpp src/common/logger.cpp src/common/progress.cpp \
       src/common/singleton.cpp src/common/sysinfo.cpp src/common/zip.cpp \
       src/common/selfarch.cpp src/common/crash.cpp src/common/vss.cpp src/common/i18n.cpp \
-      src/common/relocate.cpp src/common/pathutil.cpp src/common/cpucap.cpp src/common/ea.cpp src/boot/bcd.cpp src/boot/grub.cpp \
+      src/common/relocate.cpp src/common/pathutil.cpp src/common/cpucap.cpp src/common/ea.cpp src/common/refscan.cpp src/boot/bcd.cpp src/boot/grub.cpp \
       src/boot/uefi.cpp src/boot/bcd_parse.cpp src/boot/bootpath.cpp src/boot/task.cpp src/boot/bootfix.cpp \
       src/app/safety.cpp src/app/advice.cpp \
       src/app/shortcut.cpp src/app/ops.cpp src/app/selfdiag.cpp
@@ -150,18 +150,18 @@ clean:
 # 「启动脚本」在**登录前以 SYSTEM** 拉起（QEMU 全链实测），把 eapack.dat 里的
 # EA 用 NtSetEaFile 写回，随后自清理。固定用 **x86 工具链**：x86/x64 目标
 # Windows 都能跑（还原目标位数未知；32 位系统也要能用）。
-EA_APPLY_SRC = src/tools/ea_apply_main.cpp src/common/ea.cpp
+EA_APPLY_SRC = src/tools/ea_apply_main.cpp src/common/ea.cpp src/common/refscan.cpp
 EA_APPLY_X86 = D:/Prog/ProgIDE/mingw32/bin/i686-w64-mingw32-g++
 EA_APPLY_OUT = bootfiles/zj-ea-apply.exe
 ea-apply: $(EA_APPLY_OUT)
 $(EA_APPLY_OUT): $(EA_APPLY_SRC) src/common/version.h
-	$(EA_APPLY_X86) $(CXXFLAGS) $(INCLUDES) $(EA_APPLY_SRC) -o $(EA_APPLY_OUT) -static -mconsole -municode -s -lntdll
+	$(EA_APPLY_X86) $(CXXFLAGS) $(INCLUDES) $(EA_APPLY_SRC) -o $(EA_APPLY_OUT) -static -mconsole -municode -s -lntdll -ladvapi32
 
 # ---- 单元测试（零依赖，纯逻辑；不链 duilib/wimlib，跑得快） ----
 TEST_SRC   = tests/tiny_test.cpp tests/unit_tests.cpp tests/main.cpp
 TEST_UNITS = src/common/sysinfo.cpp src/wim/exclude.cpp src/boot/task.cpp src/common/zip.cpp src/app/advice.cpp \
       src/common/i18n.cpp src/common/selfarch.cpp src/common/relocate.cpp src/common/pathutil.cpp src/boot/bcd_parse.cpp src/boot/bootpath.cpp \
-      src/common/ea.cpp
+      src/common/ea.cpp src/common/refscan.cpp
 TEST_BIN   = $(OBJDIR)/tests.exe
 
 check: $(TEST_BIN)

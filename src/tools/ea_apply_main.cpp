@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "../common/ea.h"
+#include "../common/refscan.h"
 #include "../common/version.h"
 
 using namespace sysrecover;
@@ -111,26 +112,28 @@ int wmain(int argc, wchar_t** argv) {
     const std::wstring eaDir = root + L"\\ZJRESTORE\\ea";
     CreateDirectoryW(eaDir.c_str(), nullptr);
     if (pack.empty()) pack = eaDir + L"\\eapack.dat";
+    const bool havePack =
+        GetFileAttributesW(pack.c_str()) != INVALID_FILE_ATTRIBUTES;
 
     g_logPath = eaDir + L"\\ea-apply.log";
     logLine("ea-apply start build=" SYSRECOVER_VERSION);
-    logLine("pack=" + Ascii(pack));
     // 诊断：本进程在"登录前"还是"登录后"跑（Shell_TrayWnd = 任务栏）
     logLine(std::string("shell_started=") +
             (FindWindowW(L"Shell_TrayWnd", nullptr) ? "yes" : "no (pre-logon)"));
 
-    ea::ApplyStats st;
-    int rc = ea::ApplyPack(pack, root, st, logLine);
-    char sum[256];
-    snprintf(sum, sizeof(sum),
-             "result files=%llu ok=%llu missing=%llu failed=%llu lastStatus=0x%08lX",
-             st.files, st.ok, st.missing, st.failed, st.lastStatus);
-    logLine(sum);
-    if (!st.firstErrors.empty())
-        logLine(std::string("error samples:\r\n") + st.firstErrors);
-
-    // 结果一行（支持包/收集器直接读）
-    {
+    int rc = 0;
+    if (havePack) {
+        logLine("pack=" + Ascii(pack));
+        ea::ApplyStats st;
+        rc = ea::ApplyPack(pack, root, st, logLine);
+        char sum[256];
+        snprintf(sum, sizeof(sum),
+                 "result files=%llu ok=%llu missing=%llu failed=%llu lastStatus=0x%08lX",
+                 st.files, st.ok, st.missing, st.failed, st.lastStatus);
+        logLine(sum);
+        if (!st.firstErrors.empty())
+            logLine(std::string("error samples:\r\n") + st.firstErrors);
+        // 结果一行（支持包/收集器直接读）
         SYSTEMTIME stw = {};
         GetLocalTime(&stw);
         char line[256];
@@ -140,29 +143,65 @@ int wmain(int argc, wchar_t** argv) {
                            stw.wSecond, st.ok, st.missing, st.failed, rc);
         std::vector<unsigned char> one(line, line + len);
         ea::WriteBytes(eaDir + L"\\ea-result.txt", one);
+        if (rc != 0) {
+            const std::wstring attemptsPath = eaDir + L"\\attempts.txt";
+            int n = ReadAttempts(attemptsPath) + 1;
+            WriteAttempts(attemptsPath, n);
+            logLine("failed; attempt " + std::to_string(n) + "/3");
+            if (n >= 3) {
+                std::wstring failed = pack + L".failed";
+                if (MoveFileExW(pack.c_str(), failed.c_str(),
+                                MOVEFILE_REPLACE_EXISTING))
+                    logLine("give up after 3 attempts; pack renamed .failed");
+                else
+                    logLine("give up after 3 attempts; rename FAILED");
+            } else {
+                logLine("keeping files for retry on next boot");
+            }
+        }
+    } else {
+        // 无 EA 包（纯"悬空引用清理"任务）：EA 补写跳过，继续做引用清理。
+        logLine("no pack (EA apply skipped)");
     }
 
-    if (rc != 0) {
-        const std::wstring attemptsPath = eaDir + L"\\attempts.txt";
-        int n = ReadAttempts(attemptsPath) + 1;
-        WriteAttempts(attemptsPath, n);
-        logLine("failed; attempt " + std::to_string(n) + "/3");
-        if (n >= 3) {
-            std::wstring failed = pack + L".failed";
-            if (MoveFileExW(pack.c_str(), failed.c_str(),
-                            MOVEFILE_REPLACE_EXISTING))
-                logLine("give up after 3 attempts; pack renamed .failed");
-            else
-                logLine("give up after 3 attempts; rename FAILED");
+    // ── 悬空引用清理（PIT-132）──
+    // 注册表引用指向"备份排除的易失目录"（如 Temp）且文件已缺失 → 还原后必然
+    // 损坏（实测：豆包便携版右键扩展 DLL 在 Temp → 每次右键卡死）。保守规则：
+    // 只删"易失目录 + 文件缺失"的项；删前落 refs-backup.txt 供恢复。
+    {
+        logLine("refs: scan start");
+        std::string backupText;
+        refscan::CleanStats cs = refscan::CleanAllDanglingRefs(
+            logLine, backupText, root + L"\\Users");
+        char line[192];
+        snprintf(line, sizeof(line),
+                 "refs: done found=%d cleaned=%d failed=%d at-risk=%d",
+                 cs.found, cs.cleaned, cs.failed, cs.atRisk);
+        logLine(line);
+        if (!backupText.empty())
+            ea::WriteBytes(eaDir + L"\\refs-backup.txt",
+                           std::vector<unsigned char>(backupText.begin(),
+                                                      backupText.end()));
+        SYSTEMTIME stw = {};
+        GetLocalTime(&stw);
+        char rline[240];
+        int len = snprintf(rline, sizeof(rline),
+                           "time=%04d-%02d-%02d %02d:%02d:%02d found=%d cleaned=%d failed=%d atRisk=%d\r\n",
+                           stw.wYear, stw.wMonth, stw.wDay, stw.wHour, stw.wMinute,
+                           stw.wSecond, cs.found, cs.cleaned, cs.failed,
+                           cs.atRisk);
+        ea::WriteBytes(eaDir + L"\\refs-result.txt",
+                       std::vector<unsigned char>(rline, rline + len));
+    }
+
+    if (rc == 0) {
+        if (noCleanup) {
+            logLine("cleanup skipped (--no-cleanup)");
         } else {
-            logLine("keeping files for retry on next boot");
+            logLine("cleanup start");
+            ea::CleanupHookFiles(root, logLine);
+            logLine("cleanup done");
         }
-    } else if (noCleanup) {
-        logLine("cleanup skipped (--no-cleanup)");
-    } else {
-        logLine("cleanup start");
-        ea::CleanupHookFiles(root, logLine);
-        logLine("cleanup done");
     }
     logLine("ea-apply end rc=" + std::to_string(rc));
     return rc;

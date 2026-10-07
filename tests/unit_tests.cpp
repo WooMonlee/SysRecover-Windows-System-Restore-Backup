@@ -19,6 +19,7 @@
 #include "boot/uefi.h"
 #include "common/i18n.h"
 #include "common/pathutil.h"
+#include "common/refscan.h"
 #include "common/relocate.h"
 #include "common/rescue_decision.h"
 #include "common/sysinfo.h"
@@ -716,4 +717,42 @@ TEST(esp_soft_item_verdict) {
     CHECK(EspSoftItemVerdict(true, false) == SoftItemVerdict::Ok);
     CHECK(EspSoftItemVerdict(false, true) == SoftItemVerdict::Fail);
     CHECK(EspSoftItemVerdict(false, false) == SoftItemVerdict::SkipSourceMissing);
+}
+
+// ────────────── 悬空引用扫描（PIT-132：Temp 注册组件还原后必坏）──────────────
+TEST(refscan_volatile_path) {
+    using sysrecover::refscan::IsVolatilePath;
+    // 正例：备份排除清单里的易失目录（含子目录 / 大小写 / `/` / \??\ 前缀）
+    CHECK(IsVolatilePath(L"C:\\Users\\Administrator\\AppData\\Local\\Temp\\"
+                         L"DoubaoPortableTemp\\doubao_ext\\1.49.10\\shellext.dll"));
+    CHECK(IsVolatilePath(L"c:\\users\\x\\appdata\\local\\temp\\a\\b.dll"));
+    CHECK(IsVolatilePath(L"C:/Users/x/AppData/Local/Temp/a/b.dll"));
+    CHECK(IsVolatilePath(L"\\??\\C:\\Users\\x\\AppData\\Local\\Temp\\a.exe"));
+    CHECK(IsVolatilePath(L"C:\\Windows\\Temp\\setup\\x.dll"));
+    CHECK(IsVolatilePath(L"C:\\Windows\\CbsTemp\\x.exe"));
+    CHECK(IsVolatilePath(L"C:\\Windows\\winsxs\\InstallTemp\\x.dll"));
+    CHECK(IsVolatilePath(
+        L"C:\\Users\\x\\AppData\\Local\\Microsoft\\Windows\\INetCache\\a.dll"));
+    // 负例：程序目录 / AppData 其它子目录 / 根级 Temp / 仅含 temp 字样
+    CHECK(!IsVolatilePath(L"C:\\Program Files\\App\\shellext.dll"));
+    CHECK(!IsVolatilePath(
+        L"C:\\Users\\x\\AppData\\Local\\Microsoft\\Edge\\a.dll"));
+    CHECK(!IsVolatilePath(L"C:\\Temp\\a.dll"));
+    CHECK(!IsVolatilePath(L"C:\\Users\\x\\AppData\\Local\\Tempest\\a.dll"));
+    CHECK(!IsVolatilePath(L""));
+}
+
+TEST(refscan_extract_exe) {
+    using sysrecover::refscan::ExtractExecutable;
+    CHECK_EQ(ExtractExecutable(L"\"C:\\a b\\x.exe\" /arg"),
+             std::wstring(L"C:\\a b\\x.exe"));
+    CHECK_EQ(ExtractExecutable(L"C:\\a\\x.exe /arg"),
+             std::wstring(L"C:\\a\\x.exe"));
+    CHECK_EQ(ExtractExecutable(L"  C:\\a b\\x.exe /arg"),
+             std::wstring(L"C:\\a b\\x.exe"));
+    CHECK_EQ(ExtractExecutable(L"%TEMP%\\x\\a.exe"),
+             std::wstring(L"%TEMP%\\x\\a.exe"));
+    // 无 .exe：截到首个空格（记录既有语义）
+    CHECK_EQ(ExtractExecutable(L"C:\\a b\\run"), std::wstring(L"C:\\a"));
+    CHECK_EQ(ExtractExecutable(L""), std::wstring());
 }
