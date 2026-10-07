@@ -789,9 +789,16 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 - PIT-130 **`repair-boot` 机器侧回归完成 + 实验室"重启类"实验的休眠陷阱 + lite 镜像 GPO 行为修正**（2026-10-07；docs/15 §13 全过程）：
   · **回归结果**（在还原后的真实 Windows 里自动执行 `SysRecover.exe repair-boot`，0.6.44）：**UEFI 正常 ESP** ✅（`target=C: disk=0 part=4` → `bcdboot (UEFI) rc=0` → `displayorder {default}` → 校验通过 rc=0）；**UEFI + ESP 类型 GUID 被改成 Basic Data**（模拟 DiskGenius 重建分区）✅（走 `FindEspPartitionFallback`：`[WARN] ESP partition type is not EFI System; used fallback` → rc=0）；**BIOS/MBR** ✅（`bcdboot (BIOS) rc=0`）。docs/15 §12.3 两项待做全部关闭。
   · **⚠️ 实验室休眠陷阱（做"重启类"实验必读）**：5509 lite 镜像上 `system_powerdown` 触发的是**休眠**（写 6.4GB `hiberfil.sys`）→ 下一次"启动"实为**恢复会话**：**不执行任何启动脚本、无需登录**（本轮曾因此得出"GPO 脚本不执行"的**假阴性**）。**做重启类实验前必须**：删 `<系统盘>\hiberfil.sys` + 置 `HiberbootEnabled=0`（SYSTEM hive `ControlSet001\Control\Session Manager\Power`），并确认下次是真冷启动。
-  · **GPO 钩子在 lite 上"能用但时机存疑"**：Scripts CSE 实测**能执行**（BIOS 目标 `gpupdate /force` 后 / UEFI 目标冷启动**开机期**，均 `nt authority\system`，脚本 rc=0）；但 `Registry.pol` 的 `RunStartupScriptSync`/`SyncForegroundPolicy` 在 lite 上**未落注册表**（标准镜像上生效、EA e2e 曾实测登录前 `shell_started=no`）→ 脚本可能是**异步执行（登录后 ~1 分钟）而非登录前同步**。**影响 EA 修复链**（首启补写要在 explorer 前跑完）——待办：在 lite 镜像上做一次 EA 端到端**时机**验证（脚本记 `shell_started`），再决定是否给 lite 加备用钩子。
+  · **GPO 钩子在 lite 上"能用但时机存疑"**：Scripts CSE 实测**能执行**（BIOS 目标 `gpupdate /force` 后 / UEFI 目标冷启动**开机期**，均 `nt authority\system`，脚本 rc=0）；但 `Registry.pol` 的 `RunStartupScriptSync`/`SyncForegroundPolicy` 在 lite 上**未落注册表**（标准镜像上生效、EA e2e 曾实测登录前 `shell_started=no`）→ 脚本可能是**异步执行（登录后 ~1 分钟）而非登录前同步**。**影响 EA 修复链**（首启补写要在 explorer 前跑完）——**2026-10-07 已定案（见 PIT-131）**：根因是 gpt.ini 版本低字碰撞导致 gpsvc 静默跳过处理；修复后实测**登录前执行**（`shell_started=no`），无需备用钩子。
   · 次要：ESP 被 `mountvol` 挂上盘符时 `LogBaseDir()` 会把它当数据盘，把 `logs\` 写进 ESP 的 `ZJRESTORE\logs\`（轻微污染，记录备查）；`cmd.exe /c x.cmd` 注册成服务（ImagePath）在本机**未触发**（SCM 日志被 lite 精简，原因未查）——**RunOnce 通道稳定可用**。
   · 测试环境：实验室 QEMU（OVMF/SeaBIOS）+ 5509 备份还原出的真实 Windows；钩子（本地 GPO 四件套 + RunOnce）已按 PIT-123 配方部署，测后已清理（`C:\zjtest\` 保留作证据）。
+
+- PIT-131 **EA 首启补写器在"带组策略残留"的镜像上静默不执行——根因 gpt.ini 版本低字碰撞；修复 = 时间基版本**（2026-10-07，`0.6.45`；5509 lite 镜像全链实测定位，客户 EA 修复的关键加固）：
+  · **现象**：5509 系统备份（Windows 侧 `backup --no-snapshot`，EA 采集 255 文件 → ZJEA 子镜像）经救援层还原后，**首启补写器不执行**（无 ea-apply.log、EA 未写回、清理未发生）；多次重启、`gpupdate /force` 均不触发；而同一镜像经 ESD 还原的另一台机器上 `gpupdate` 后能跑——一度极难定位（曾误判为"lite 镜像 GPO 不工作"）。
+  · **根因（对比实验定死）**：镜像注册表里遗留 `...\Group Policy\State\Machine\GPO-List\0\Version = 0x00010001`（本地组策略"已处理"的常见残留），而部署的 gpt.ini 写 `0x7FFF0001` —— gpsvc 的变更检测**只比较低 16 位**（用户版本字）：两个低字都是 `0x0001` → 判"无变化"→ 跳过整个处理 → **Scripts CSE 永不执行**（PIT-123 的 65537 碰撞是同一机制的另一种撞法）。实验：State 清零（低字 0）→ 立即处理并执行 ✓；gpt.ini 改 `0x7FFF7FFF`（低字 0x7FFF）而 State 保持 0x10001 → 同样执行 ✓（且 State 被记录为新版本）。
+  · **修复**：`zjrestore-lite.sh` 的 EA gpt.ini **新版本改用时间基低字**：`2147418112 + (date +%s) % 32768`（= `0x7FFF0000 | 低字`；合并分支的 `VER+1` 天然低字不同，保留）——保证与任何残留/上次部署的版本都不同，杜绝静默跳过。
+  · **验证**：① 实验室全链（5509 lite 备份 → 救援还原 → 首启）：`shell_started=no (pre-logon)`、`ok=255 missing=0 failed=0`、清理全项完成、EA（`ZJTEST`）实测写回、State 正确记录新版本 ✓；② `make check` 40 用例/263 断言 + check-docs/i18n 全绿；③ QEMU 演练 PASS（`ea: gpt.ini created (version=2147427948)` → `RESTORE DONE`）；④ `make package` 双架构。
+  · **教训**：凡"版本号当变更检测"的机制，要假设比较可能**只取部分位**——固定魔数（0x7FFF0001）会撞上常见残留（0x10001）；**时间基/随机基最稳**。另（复测再踩）：补写器的延迟自删（`MOVEFILE_DELAY_UNTIL_REBOOT`）会删掉**下次启动前重新部署的同路径新文件**（PIT-123 已记）——重放实验必须先把 exe/cmd 补回并注意其注册已消费。
 
 ---
 
