@@ -449,6 +449,21 @@ void ScanUserRoot(const std::wstring& prefix, std::vector<DanglingRef>& out) {
         ScanRunKeys(rc, prefix + L"\\Software\\" + kRunOnceRel, out);
         ScanComServersIn(rc, out);
     }
+    // ★ 预登录磁盘 hive（ZJREF_n，非 SID 名）兜底（2026-10-07 PIT-134）：WOW64
+    //   重定向是否作用于手动挂载的 hive 取决于路径结构、不确定——显式再扫一遍
+    //   字面 `Software\Classes\Wow6432Node\`（view=64 读字面路径），保证 32 位
+    //   程序注册的壳扩展/COM 也不漏。SID 路径由上面的 view=32 遍覆盖，不重复。
+    if (prefix.rfind(L"S-1-", 0) != 0) {
+        RootCtx rc;
+        rc.h = HKEY_USERS;
+        rc.view = KEY_WOW64_64KEY;
+        rc.classesRel =
+            prefix + L"\\Software\\Classes\\Wow6432Node\\CLSID\\";
+        for (const wchar_t* s : kCtxRoots)
+            ScanCtxSubkeys(
+                rc, prefix + L"\\Software\\Classes\\Wow6432Node\\" + s, out);
+        ScanComServersIn(rc, out);
+    }
 }
 
 // 机器级一遍（指定视图）：HKLM 下 classes/overlay/hooks/run。
