@@ -786,6 +786,13 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **演练盘适配**：`drill-src` 补 `Windows\system32\winload.exe`（dummy），test.wim 重建后 drill 照常 PASS（演练素材本来就不是真系统镜像）。
   · **验证**：XP esd 负例（无 mkntfs/无 apply + 明确报错）✓；Win7 x86 正例（precheck ok → apply rc=0 → RESTORE DONE）✓；drill 回归 PASS ✓。
 
+- PIT-130 **`repair-boot` 机器侧回归完成 + 实验室"重启类"实验的休眠陷阱 + lite 镜像 GPO 行为修正**（2026-10-07；docs/15 §13 全过程）：
+  · **回归结果**（在还原后的真实 Windows 里自动执行 `SysRecover.exe repair-boot`，0.6.44）：**UEFI 正常 ESP** ✅（`target=C: disk=0 part=4` → `bcdboot (UEFI) rc=0` → `displayorder {default}` → 校验通过 rc=0）；**UEFI + ESP 类型 GUID 被改成 Basic Data**（模拟 DiskGenius 重建分区）✅（走 `FindEspPartitionFallback`：`[WARN] ESP partition type is not EFI System; used fallback` → rc=0）；**BIOS/MBR** ✅（`bcdboot (BIOS) rc=0`）。docs/15 §12.3 两项待做全部关闭。
+  · **⚠️ 实验室休眠陷阱（做"重启类"实验必读）**：5509 lite 镜像上 `system_powerdown` 触发的是**休眠**（写 6.4GB `hiberfil.sys`）→ 下一次"启动"实为**恢复会话**：**不执行任何启动脚本、无需登录**（本轮曾因此得出"GPO 脚本不执行"的**假阴性**）。**做重启类实验前必须**：删 `<系统盘>\hiberfil.sys` + 置 `HiberbootEnabled=0`（SYSTEM hive `ControlSet001\Control\Session Manager\Power`），并确认下次是真冷启动。
+  · **GPO 钩子在 lite 上"能用但时机存疑"**：Scripts CSE 实测**能执行**（BIOS 目标 `gpupdate /force` 后 / UEFI 目标冷启动**开机期**，均 `nt authority\system`，脚本 rc=0）；但 `Registry.pol` 的 `RunStartupScriptSync`/`SyncForegroundPolicy` 在 lite 上**未落注册表**（标准镜像上生效、EA e2e 曾实测登录前 `shell_started=no`）→ 脚本可能是**异步执行（登录后 ~1 分钟）而非登录前同步**。**影响 EA 修复链**（首启补写要在 explorer 前跑完）——待办：在 lite 镜像上做一次 EA 端到端**时机**验证（脚本记 `shell_started`），再决定是否给 lite 加备用钩子。
+  · 次要：ESP 被 `mountvol` 挂上盘符时 `LogBaseDir()` 会把它当数据盘，把 `logs\` 写进 ESP 的 `ZJRESTORE\logs\`（轻微污染，记录备查）；`cmd.exe /c x.cmd` 注册成服务（ImagePath）在本机**未触发**（SCM 日志被 lite 精简，原因未查）——**RunOnce 通道稳定可用**。
+  · 测试环境：实验室 QEMU（OVMF/SeaBIOS）+ 5509 备份还原出的真实 Windows；钩子（本地 GPO 四件套 + RunOnce）已按 PIT-123 配方部署，测后已清理（`C:\zjtest\` 保留作证据）。
+
 ---
 
 ## 14. License 合规（SBOM，随版本更新）

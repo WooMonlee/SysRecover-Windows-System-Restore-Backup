@@ -570,3 +570,25 @@ qemu-system-x86_64 -m 1024 -smp 2 \
 
 ---
 
+## 13. 2026-10-07 机器侧回归：`repair-boot` 实测（§12.3 补完，UEFI+BIOS 全过）
+
+> 目的：补 §12.3 的"待做（机器侧回归）"。方法：把 5509 备份用本产品还原到实验室 UEFI/GPT 与 BIOS/MBR 两块目标盘（同 PIT-127 环境），在**还原后的真实 Windows** 里部署测试钩子（RunOnce + 本地 GPO 启动脚本，PIT-123 同款文件），自动执行 `SysRecover.exe repair-boot`（0.6.44），读回结果。
+
+| 场景 | 结果 |
+|---|---|
+| UEFI/GPT：正常 ESP | ✅ `target=C: disk=0 part=4` → `bcdboot (UEFI) rc=0` → `displayorder {default}` → `引导已修复并校验通过（UEFI）` rc=0 |
+| UEFI/GPT：ESP 类型 GUID 被改成 Basic Data（模拟 DiskGenius 重建分区漏建/标错 ESP） | ✅ 走 `FindEspPartitionFallback`：`[WARN] ESP partition type is not EFI System; used fallback` → 修复+校验通过 rc=0 |
+| BIOS/MBR | ✅ `target=C: disk=0 part=1` → `bcdboot (BIOS) rc=0` → `引导已修复（BIOS）` rc=0 |
+
+**副产物 / 发现（按重要性）**：
+
+1. **GPO 启动脚本在 lite 镜像上的行为（⚠️ 开放项，影响 EA 修复链）**：2026-10-07 复查修正——**Scripts CSE 在 lite 镜像上能执行**：① BIOS 目标：`gpupdate /force` 触发后以 `nt authority\system` 执行（rc=0）；② UEFI 目标：清空结果后冷启动（RunOnce 已消费、无 gpupdate 干扰），**开机期再次以 SYSTEM 执行**（`result-gpo.txt`，guest 0:00:16→0:00:36，随后按脚本自动关机）。**但 `Registry.pol` 的同步策略始终未落注册表**（`RunStartupScriptSync`/`SyncForegroundPolicy` 多次查询 absent）→ 脚本执行时机可能是**异步（登录前后 ~1 分钟窗口）而非"登录前同步"**（标准镜像上该 pol 生效，EA e2e 曾实测 `shell_started=no`）。另：`State\...\GPO-List\0\Version` 被 gpsvc 记为 `0x10001` 而非 gpt.ini 的 `0x7FFF0001`（原因未查，不影响 CSE 执行）。**待办**：在 lite 镜像上对 EA 链做一次端到端**时机**验证（脚本里记 `shell_started`），再决定是否给 lite 加备用钩子或改同步策略写法。
+2. **实验室方法教训（重启类实验必读）**：该机的 `system_powerdown` = **休眠**（写了 6.4GB `hiberfil.sys`），后续"启动"实为**恢复会话** —— 不执行任何启动脚本、无需登录（本轮 cycle1 因此假阴性）。做"重启类"实验前必须删 `hiberfil.sys` + `HiberbootEnabled=0` **强制冷启动**。
+3. ESP 被 `mountvol` 挂上盘符时，工具的 `LogBaseDir()` 会把它当"数据盘"，把 `logs\` 写到 ESP 的 `ZJRESTORE\logs\`（本次实测 `E:\ZJRESTORE\logs`）——轻微污染，记录备查。
+4. 该镜像 shell 扩展审计有真实产出：SkyDrivePro 覆盖图标 3 条 `*** MISSING ***`（PIT-119 功能现场验证）。
+5. 测试用"服务启动器"（`cmd.exe /c script` 作为 auto 服务 ImagePath）在本机未触发执行（原因未查，SCM 日志被精简）；**RunOnce 通道稳定可用**。
+
+**实验室清理（2026-10-07 已完成）**：utarget.vhd 的 ESP 类型 GUID 已改回 `{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}` ✓；两块盘的测试钩子（本地 GPO 四件套 + utarget 的 ZJRBTEST 服务键）已删除；`C:\zjtest\`（工具 + 结果文件）保留作证据（已无任何自动执行引用）。
+
+---
+
