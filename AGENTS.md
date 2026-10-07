@@ -814,6 +814,16 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **附带（同批发现并修复）**：GUI `LoadWimImages` **成功路径原先既不改状态栏也不写日志** → 支持排查/自动化都看不出"加载过哪个镜像"（2026-10-07 GUI 静默全链实测时踩到：日志停在启动块，误判"未加载"）→ 补 `GUI image loaded: <path> (N subimage(s), first idx=M)` 一行（`src/gui/main_form.cpp`）。
   · **验证**：4Kn QEMU 全链还原 + **GUI 静默模式全链**（无弹窗→暂存 `pending-restore.txt`→自动重启→救援 `result=OK target=/dev/sda4 image=E:\images\refs2-test.wim`（ESP 黑匣子）→首启 EA 255/255 + refs 6/6 `shell_started=no`→新系统桌面）；`make check` 43 用例/286 断言 + i18n 401 keys；`make package` 双架构。实验室 GUI 自动化配方见 `docs/19` §8。
 
+- PIT-134 **悬空引用清理在客户机上失效的真根因：WOW64 视图 + 跨 hive 组合（x86 补写器 view=0 只看 32 位视图；处理器与 CLSID 分处不同 hive）**（2026-10-07，`0.6.49`；客户 20261007 支持包 + 实验室两轮复现）：
+  · **现象**：客户 0.6.47 还原成功（救援全绿 `result=OK`、系统正常进桌面）后，`diag` 仍报 `shellext ctx\{A5AF131F-…} … *** MISSING ***`（豆包失效扩展），右键卡死依旧——PIT-132 的清理"跑过但没动它"。
+  · **实验室复现（关键一步）**：VM 注入"跨 hive + 64 位视图"组合（处理器 `HKLM\SOFTWARE\Classes\*\shellex\ContextMenuHandlers\{…}`、CLSID 的 InprocServer32 在 `HKCU\Software\Classes\CLSID\{…}`，64 位写入）→ 补写器 **`found=0`**（一个都没找到）。逐层定位两个真 bug：
+    ① **用户根扫描用 view=0**：`HKCU\Software\Classes` 及类名/CLSID 树**受 WOW64 重定向**——x86 补写器的 view=0 只看到 32 位视图（Wow6432Node），**64 位程序注册的壳扩展/COM 在用户侧全部漏掉**。机器侧本来就双视图（`ScanMachineView` ×2），所以 e2e（引用全注入 HKLM）从未暴露。
+    ② **`ResolveClsid` 只在本 hive 解析**：处理器在 HKLM、CLSID 在 HKCU（便携软件常见）时，机器扫描在 HKLM 找不到 CLSID、用户扫描又找不到处理器 → **双双漏掉**；而 `diag` 用 HKCR 合并视图能看到 → "诊断标 MISSING、清理不动它"的怪象。
+  · **修复**：`ScanUserRoot` 类相关部分 64/32 双视图各扫一遍（共享部分同扫，清理端按 display 去重）；`ResolveClsid` 跨 hive + 各视图（本根→HKLM 双视图→HKCU→所有已加载用户 hive，每处都试 64/32/0）。⚠️ 中途曾漏改 `ResolveClsid` 的 HKCU/HKU 视图（仍 view=0）→ 测试第二轮 `found=1` 只清掉用户 CLSID、HKLM 处理器仍漏——**修完再验才过**。
+  · **验证（实验室 VM 两轮）**：注入组合后跑新补写器 → `refs: removed HKLM\…\ContextMenuHandlers\{…}` + `refs: removed HKU\S-1-5-…\…\CLSID\{…}\InprocServer32`、`found=2 cleaned=2 failed=0`、两条 `reg query` 均"找不到" ✓。
+  · **⚠️ 生效前提（对客户）**：补写器是**备份时打进 ZJEA 子镜像**的——**老镜像里还是旧补写器**。① **立即补救**：把 0.6.49 的 `zj-ea-apply.exe` 拷给客户管理员运行一次（无包模式只清悬空引用）→ 右键应恢复；② **根治**：用 0.6.49 **重新备份**再还原。⚠️ 测试时注意：补写器自清理的"延迟删除"会在下一轮启动删掉**同路径的新文件**（PIT-123 老坑，本轮又踩：重部署同名 exe 被删 → 换名 `zj-ea-apply2/3.exe` 才跑起来）。
+  · **附带修复**：`selfdiag` 的部署痕迹收集把 `ZJRESTORE\ea\` 加进收集子树（此前 applier 的日志/结果不在支持包里——这次排查因此少了关键证据）。`make check` 全绿；`make package` 双架构；分析全文见 `docs/16` §10。
+
 ---
 
 ## 14. License 合规（SBOM，随版本更新）
