@@ -1206,13 +1206,18 @@ if [ -n "$EA_INDEX" ]; then
                 # gpt.ini 合并：声明 Scripts/Registry 两个 CSE + 版本号递增 ——
                 # 版本必须与注册表 State\...\GPO-List\0\Version 不同，否则 gpsvc
                 # 判"无变化"跳过处理（PIT-123 实测踩过，初装写 65537 被跳）。
+                # ⚠️ PIT-131：比较只看**低 16 位**（用户版本字）——镜像残留 State
+                # 常见 0x00010001（低字 1），若 gpt.ini 也写 0x7FFF0001（低字 1）
+                # 即被当作"无变化"，Scripts CSE 永不执行（EA 修复静默失效）。
+                # 因此新版本用**时间基低字**（0x7FFF0000 + 秒数%32768），保证与
+                # 任何残留/上次部署的版本不同。
                 GINI="$EAM/Windows/System32/GroupPolicy/gpt.ini"
                 SCRPAIR='{42B5FAAE-6536-11D2-AE5A-0000F87571E3}{40B6664F-4972-11D1-A7CA-0000F87571E3}'
                 REGPAIR='{35378EAC-683F-11D2-A89A-00C04FBBCFA2}{D02B1F72-3407-48AE-BA88-E8213C6761F1}'
                 if [ -s "$GINI" ]; then
                     tr -d '\r' < "$GINI" > /tmp/zj_ea_gpt0.txt
                     VER=$(grep -o '^Version=[0-9]*' /tmp/zj_ea_gpt0.txt 2>/dev/null | head -1 | cut -d= -f2)
-                    if [ -n "$VER" ]; then NVER=$((VER + 1)); else NVER=2147418113; fi
+                    if [ -n "$VER" ]; then NVER=$((VER + 1)); else NVER=$((2147418112 + ($(date +%s) % 32768))); fi
                     HASSCR=0; HASREG=0
                     grep -qF "$SCRPAIR" /tmp/zj_ea_gpt0.txt 2>/dev/null && HASSCR=1
                     grep -qF "$REGPAIR" /tmp/zj_ea_gpt0.txt 2>/dev/null && HASREG=1
@@ -1242,9 +1247,10 @@ if [ -n "$EA_INDEX" ]; then
                     awk '{printf "%s\r\n", $0}' /tmp/zj_ea_gpt2.txt > "$GINI"
                     say "ea: gpt.ini merged (version=$NVER scripts=$HASSCR registry=$HASREG)"
                 else
-                    printf '[General]\r\ngPCMachineExtensionNames=[%s][%s]\r\nVersion=2147418113\r\n' \
-                        "$SCRPAIR" "$REGPAIR" > "$GINI"
-                    say "ea: gpt.ini created"
+                    NVER=$((2147418112 + ($(date +%s) % 32768)))
+                    printf '[General]\r\ngPCMachineExtensionNames=[%s][%s]\r\nVersion=%s\r\n' \
+                        "$SCRPAIR" "$REGPAIR" "$NVER" > "$GINI"
+                    say "ea: gpt.ini created (version=$NVER)"
                 fi
                 # Registry.pol：追加同步策略记录（已有文件剥掉片段头再 cat 追加；
                 # 用户已有记录保留 —— pol 记录可安全串接，重复记录后者生效）。
