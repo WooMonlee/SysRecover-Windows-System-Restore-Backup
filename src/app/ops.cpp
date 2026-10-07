@@ -21,6 +21,7 @@
 #include "../common/cpucap.h"
 #include "../common/process.h"
 #include "../common/progress.h"
+#include "../common/refscan.h"
 #include "../common/relocate.h"
 #include "../common/selfarch.h"
 #include "../common/singleton.h"
@@ -793,7 +794,28 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
             } else {
                 LogInfo("EA capture: " + std::to_string(eaN) +
                         " EA-bearing file(s); audit: " + W2U(auditPath));
-                // 子镜像内容：pack + 策略片段 + 补写器（x86，x86/x64 都能跑）
+            }
+            if (eaN <= 0)  // 无 EA（或失败）时不留空包：补写器将只做引用清理
+                DeleteFileW((eaTmp + L"\\eapack.dat").c_str());
+            // 悬空引用扫描（PIT-132）：注册表引用指向"会被备份排除的易失目录"
+            // （Temp 等）且文件存在 → 还原后必然缺失（实测：豆包便携版右键扩展
+            // DLL 在 Temp → 每次右键卡死）。>0 时并入修复包，首启自动清理。
+            std::vector<refscan::DanglingRef> refs =
+                refscan::ScanDanglingRefs(true);
+            if (!refs.empty()) {
+                int miss = 0;
+                for (auto& r : refs)
+                    if (r.missingNow) miss++;
+                LogInfo("ref scan: " + std::to_string(refs.size()) +
+                        " volatile-dir reference(s) (" + std::to_string(miss) +
+                        " missing now, " +
+                        std::to_string((int)refs.size() - miss) +
+                        " at-risk) -> first-boot auto-clean");
+                for (size_t i = 0; i < refs.size() && i < 10; ++i)
+                    LogInfo("ref scan: " + W2U(refs[i].display));
+            }
+            if (eaN > 0 || !refs.empty()) {
+                // 子镜像内容：pack（有 EA 时）+ 策略片段 + 补写器（x86，x86/x64 都能跑）
                 bool okFiles = ea::WriteBytes(eaTmp + L"\\zj-regpol.bin",
                                               ea::BuildSyncPolFragment());
                 std::wstring applier = AppDir() + L"\\bootfiles\\zj-ea-apply.exe";
@@ -815,8 +837,9 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
                                 std::to_string(earc) +
                                 " (main image continues without EA fix)");
                     } else {
-                        LogInfo("EA pack appended as subimage ZJEA (" +
-                                std::to_string(eaN) + " file(s))");
+                        LogInfo("EA/fix pack appended as subimage ZJEA (ea=" +
+                                std::to_string(eaN) + " refs=" +
+                                std::to_string(refs.size()) + ")");
                     }
                 }
             }

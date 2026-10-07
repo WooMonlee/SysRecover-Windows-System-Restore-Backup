@@ -1165,17 +1165,22 @@ if [ -n "$EA_INDEX" ]; then
     EAD=/tmp/zj_ea
     mkdir -p "$EAD"
     if "$WIMLIB" apply "$IMG_FILE" "$EA_INDEX" "$EAD" > /tmp/ea.out 2>&1; then
-        if [ -s "$EAD/eapack.dat" ] && [ -s "$EAD/zj-ea-apply.exe" ]; then
-            say "ea payload extracted: pack=$(wc -c < "$EAD/eapack.dat" | tr -d ' ')B applier=yes"
+        # PIT-132：载荷 = 补写器（必需）+ eapack.dat（可选：无 EA 的
+        # "悬空引用清理"任务只有补写器）。
+        if [ -s "$EAD/zj-ea-apply.exe" ]; then
+            _pkb="none"
+            [ -s "$EAD/eapack.dat" ] && _pkb="$(wc -c < "$EAD/eapack.dat" | tr -d ' ')B"
+            say "ea payload extracted: pack=$_pkb applier=yes"
             EAM=/tmp/zj_ea_m
             mkdir -p "$EAM"
             if mnt_dev "$TARGET_DEV" "$EAM"; then
                 mkdir -p "$EAM/ZJRESTORE/ea" \
                          "$EAM/Windows/System32/GroupPolicy/Machine/Scripts/Startup"
-                cp "$EAD/eapack.dat" "$EAM/ZJRESTORE/ea/" 2>/dev/null
+                [ -s "$EAD/eapack.dat" ] && cp "$EAD/eapack.dat" "$EAM/ZJRESTORE/ea/" 2>/dev/null
                 cp "$EAD/zj-ea-apply.exe" "$EAM/ZJRESTORE/ea/" 2>/dev/null
-                # 启动脚本：包不在（已修复/已放弃/删除）→ 秒退；否则调补写器
-                printf '@echo off\r\nif not exist "%%SystemDrive%%\\ZJRESTORE\\ea\\eapack.dat" goto :eof\r\n"%%SystemDrive%%\\ZJRESTORE\\ea\\zj-ea-apply.exe" --pack "%%SystemDrive%%\\ZJRESTORE\\ea\\eapack.dat"\r\n' \
+                # 启动脚本：补写器不在（已修复/已放弃/删除）→ 秒退；有包带 --pack，
+                # 无包（纯引用清理）直接跑。
+                printf '@echo off\r\nif not exist "%%SystemDrive%%\\ZJRESTORE\\ea\\zj-ea-apply.exe" goto :eof\r\nif exist "%%SystemDrive%%\\ZJRESTORE\\ea\\eapack.dat" goto :withpack\r\n"%%SystemDrive%%\\ZJRESTORE\\ea\\zj-ea-apply.exe"\r\ngoto :eof\r\n:withpack\r\n"%%SystemDrive%%\\ZJRESTORE\\ea\\zj-ea-apply.exe" --pack "%%SystemDrive%%\\ZJRESTORE\\ea\\eapack.dat"\r\n' \
                     > "$EAM/Windows/System32/GroupPolicy/Machine/Scripts/Startup/zj-ea-restore.cmd"
                 # scripts.ini 合并：[Startup] 段追加我们的条目（保留用户已有条目）。
                 # 统一 CRLF→LF 处理再转回，避免 \r 混进插入行（busybox awk 对 \r
@@ -1271,7 +1276,6 @@ if [ -n "$EA_INDEX" ]; then
                 sync
                 # 落盘复核（失败要在日志里显形，不静默）
                 _eaok=1
-                [ -s "$EAM/ZJRESTORE/ea/eapack.dat" ] || _eaok=0
                 [ -s "$EAM/ZJRESTORE/ea/zj-ea-apply.exe" ] || _eaok=0
                 [ -s "$EAM/Windows/System32/GroupPolicy/Machine/Scripts/Startup/zj-ea-restore.cmd" ] || _eaok=0
                 [ -s "$EAM/Windows/System32/GroupPolicy/Machine/Scripts/scripts.ini" ] || _eaok=0
