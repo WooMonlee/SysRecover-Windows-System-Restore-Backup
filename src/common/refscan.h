@@ -27,12 +27,15 @@ struct DanglingRef {
     std::wstring display;    // 供日志/备份：如 HKLM\...\Run!xxx -> C:\...\Temp\a.exe
     HKEY hroot = nullptr;    // 删除用根（HKLM/HKEY_USERS）
     REGSAM view = 0;         // 打开根时附加视图（KEY_WOW64_*；0=进程默认）
-    std::wstring subKey;     // 相对 hroot 的键路径（子键形态时=被删子键全路径）
-    std::wstring valueName;  // 值形态：值名；空 = 子键形态（删整棵子键）
+    std::wstring subKey;     // 相对 hroot 的键路径（wholeKey 时=被删子键全路径；
+                             // isTask 时=任务相对名，如 L"Vendor\\Task"）
+    std::wstring valueName;  // 值形态：值名（空=默认值）
     std::wstring filePath;   // 解析出的目标文件（已展开环境变量、去引号）
     // 文件当前状态：true=已缺失（首启清理对象）；false=存在但在易失目录
     // （备份视角：还原后必然缺失 → 也要打进修复包）。
     bool missingNow = false;
+    bool wholeKey = false;   // true=删整棵 subKey（shell 扩展/COM 服务器子键）
+    bool isTask = false;     // true=计划任务（用 schtasks 删除）
 };
 
 struct CleanStats {
@@ -52,6 +55,9 @@ bool IsVolatilePath(const std::wstring& path);
 // 从命令行取可执行文件路径：先剥引号；无引号时截到首个 ".exe"（容忍路径
 // 中的空格），没有 ".exe" 则截到首个空格。不做环境变量展开（调用方做）。
 std::wstring ExtractExecutable(const std::wstring& command);
+
+// 从计划任务 XML（UTF-16 宽串）提取所有 <Command> 路径（纯逻辑，单测）。
+std::vector<std::wstring> ExtractTaskCommands(const std::wstring& xml);
 
 // ── 扫描 ────────────────────────────────────────────────────────────────
 // 扫描本机悬空引用（机器级双视图；includeLoadedUserHives=true 时也扫

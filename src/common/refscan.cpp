@@ -113,24 +113,17 @@ HKEY OpenWithView(HKEY root, const std::wstring& sub, REGSAM view,
     return k;
 }
 
-// CLSID → InprocServer32 默认值（去引号/截 .dll/展开环境变量）。找不到空。
-std::wstring ResolveClsid(const RootCtx& rc, const wchar_t* clsid) {
-    if (!clsid || !clsid[0]) return {};
-    std::wstring c = clsid;
-    if (c[0] != L'{') c = L"{" + c + L"}";
-    HKEY k = OpenWithView(rc.h, rc.classesRel + c + L"\\InprocServer32",
-                          rc.view, KEY_READ);
-    if (!k) return {};
-    wchar_t p[1024] = {};
-    DWORD cb = sizeof(p) - 2, t = 0;
-    RegQueryValueExW(k, nullptr, nullptr, &t, (LPBYTE)p, &cb);
-    RegCloseKey(k);
-    std::wstring d = p;
+// 注册表"路径值"清理：去引号；无引号时截到首个 .dll/.exe（容忍路径空格）；
+// 最后展开环境变量。空串返回空。
+std::wstring CleanPathValue(const std::wstring& raw) {
+    std::wstring d = raw;
     if (!d.empty() && d[0] == L'"') {
         size_t e = d.find(L'"', 1);
         if (e != std::wstring::npos) d = d.substr(1, e - 1);
     } else {
-        size_t ex = Lower(d).find(L".dll");
+        std::wstring low = Lower(d);
+        size_t ex = low.find(L".dll");
+        if (ex == std::wstring::npos) ex = low.find(L".exe");
         if (ex != std::wstring::npos) {
             d = d.substr(0, ex + 4);
         } else {
@@ -142,11 +135,27 @@ std::wstring ResolveClsid(const RootCtx& rc, const wchar_t* clsid) {
     return Expand(d);
 }
 
+// CLSID → InprocServer32 默认值。找不到空。
+std::wstring ResolveClsid(const RootCtx& rc, const wchar_t* clsid) {
+    if (!clsid || !clsid[0]) return {};
+    std::wstring c = clsid;
+    if (c[0] != L'{') c = L"{" + c + L"}";
+    HKEY k = OpenWithView(rc.h, rc.classesRel + c + L"\\InprocServer32",
+                          rc.view, KEY_READ);
+    if (!k) return {};
+    wchar_t p[1024] = {};
+    DWORD cb = sizeof(p) - 2, t = 0;
+    RegQueryValueExW(k, nullptr, nullptr, &t, (LPBYTE)p, &cb);
+    RegCloseKey(k);
+    return CleanPathValue(p);
+}
+
 // 收录"指向易失目录"的引用（两种状态都收：missingNow 标记区分）——
 // 备份视角：存在也收（还原后必失）；首启清理视角：只动 missingNow 的。
 void PushIfDangling(std::vector<DanglingRef>& out, const RootCtx& rc,
                     const std::wstring& fullSub, const std::wstring& valueName,
-                    const std::wstring& file) {
+                    const std::wstring& file, bool wholeKey = false,
+                    bool isTask = false) {
     if (file.empty()) return;
     if (!IsVolatilePath(file)) return;
     DanglingRef r;
@@ -156,9 +165,15 @@ void PushIfDangling(std::vector<DanglingRef>& out, const RootCtx& rc,
     r.valueName = valueName;
     r.filePath = file;
     r.missingNow = FileMissing(file);
-    r.display = std::wstring(RootName(rc.h)) + L"\\" + fullSub;
-    if (!valueName.empty()) r.display += L"!" + valueName;
-    r.display += L" -> " + file;
+    r.wholeKey = wholeKey;
+    r.isTask = isTask;
+    if (isTask) {
+        r.display = L"task " + fullSub + L" -> " + file;
+    } else {
+        r.display = std::wstring(RootName(rc.h)) + L"\\" + fullSub;
+        if (!valueName.empty()) r.display += L"!" + valueName;
+        r.display += L" -> " + file;
+    }
     r.display += r.missingNow ? L"  [missing]" : L"  [at-risk]";
     out.push_back(r);
 }
@@ -183,9 +198,150 @@ void ScanCtxSubkeys(const RootCtx& rc, const std::wstring& rel,
         RegCloseKey(h);
         const wchar_t* cls = (name[0] == L'{') ? name : clsid;
         PushIfDangling(out, rc, rel + L"\\" + name, L"",
-                       ResolveClsid(rc, cls));
+                       ResolveClsid(rc, cls), /*wholeKey=*/true);
     }
     RegCloseKey(k);
+}
+
+// COM 服务器（CLSID 下 InprocServer32 / LocalServer32 默认值）指向易失目录。
+// rc.classesRel 已指向 <...>\Classes\CLSID\；枚举其下每个 CLSID。
+void ScanComServersIn(const RootCtx& rc, std::vector<DanglingRef>& out) {
+    std::wstring parent = rc.classesRel;
+    while (!parent.empty() && parent.back() == L'\\') parent.pop_back();
+    HKEY k = OpenWithView(rc.h, parent, rc.view, KEY_READ);
+    if (!k) return;
+    static const wchar_t* kServers[] = {L"InprocServer32", L"LocalServer32"};
+    for (DWORD i = 0;; ++i) {
+        wchar_t name[256] = {};
+        DWORD nl = 255;
+        if (RegEnumKeyExW(k, i, name, &nl, nullptr, nullptr, nullptr, nullptr) !=
+            ERROR_SUCCESS)
+            break;
+        for (const wchar_t* srv : kServers) {
+            HKEY h = nullptr;
+            if (RegOpenKeyExW(k, (std::wstring(name) + L"\\" + srv).c_str(), 0,
+                              KEY_READ | rc.view, &h) != ERROR_SUCCESS)
+                continue;
+            wchar_t p[1024] = {};
+            DWORD cb = sizeof(p) - 2, t = 0;
+            RegQueryValueExW(h, nullptr, nullptr, &t, (LPBYTE)p, &cb);
+            RegCloseKey(h);
+            PushIfDangling(out, rc, parent + L"\\" + name + L"\\" + srv, L"",
+                           CleanPathValue(p), /*wholeKey=*/true);
+        }
+    }
+    RegCloseKey(k);
+}
+
+// 服务 ImagePath 指向易失目录（HKLM\SYSTEM 不分视图，单遍）。
+void ScanServices(std::vector<DanglingRef>& out) {
+    RootCtx rc;
+    rc.h = HKEY_LOCAL_MACHINE;
+    rc.view = 0;
+    const std::wstring base = L"SYSTEM\\CurrentControlSet\\Services";
+    HKEY k = OpenWithView(rc.h, base, 0, KEY_READ);
+    if (!k) return;
+    for (DWORD i = 0;; ++i) {
+        wchar_t name[256] = {};
+        DWORD nl = 255;
+        if (RegEnumKeyExW(k, i, name, &nl, nullptr, nullptr, nullptr, nullptr) !=
+            ERROR_SUCCESS)
+            break;
+        HKEY h = nullptr;
+        if (RegOpenKeyExW(k, name, 0, KEY_READ, &h) != ERROR_SUCCESS) continue;
+        wchar_t p[1024] = {};
+        DWORD cb = sizeof(p) - 2, t = 0;
+        LONG q = RegQueryValueExW(h, L"ImagePath", nullptr, &t, (LPBYTE)p, &cb);
+        RegCloseKey(h);
+        if (q != ERROR_SUCCESS) continue;
+        PushIfDangling(out, rc, base + L"\\" + name, L"ImagePath",
+                       CleanPathValue(p));
+    }
+    RegCloseKey(k);
+}
+
+// 计划任务：System32\Tasks 下 XML 的 <Command> 指向易失目录。
+void ScanTasksDir(const std::wstring& root, const std::wstring& dir, int depth,
+                  std::vector<DanglingRef>& out) {
+    if (depth < 0) return;
+    WIN32_FIND_DATAW fd = {};
+    HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L".."))
+            continue;
+        std::wstring full = dir + L"\\" + fd.cFileName;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            ScanTasksDir(root, full, depth - 1, out);
+            continue;
+        }
+        HANDLE f = CreateFileW(full.c_str(), GENERIC_READ,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (f == INVALID_HANDLE_VALUE) continue;
+        DWORD sz = GetFileSize(f, nullptr);
+        std::vector<char> buf;
+        if (sz > 0 && sz <= 2 * 1024 * 1024) {
+            buf.resize(sz);
+            DWORD rd = 0;
+            if (ReadFile(f, buf.data(), sz, &rd, nullptr))
+                buf.resize(rd);
+            else
+                buf.clear();
+        }
+        CloseHandle(f);
+        if (buf.size() < 4) continue;
+        std::wstring xml;
+        size_t off = 0;
+        if ((unsigned char)buf[0] == 0xFF && (unsigned char)buf[1] == 0xFE)
+            off = 2;
+        size_t n = (buf.size() - off) / 2;
+        xml.resize(n);
+        memcpy(&xml[0], buf.data() + off, n * 2);
+        std::vector<std::wstring> cmds = ExtractTaskCommands(xml);
+        if (cmds.empty()) continue;
+        std::wstring rel = full.substr(root.size() + 1);
+        RootCtx rc;  // 字段未用（isTask 特判），仅为满足签名
+        for (auto& c : cmds)
+            PushIfDangling(out, rc, rel, L"", CleanPathValue(c), false, true);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+}
+
+void ScanTasks(std::vector<DanglingRef>& out) {
+    wchar_t sys[MAX_PATH] = {};
+    GetSystemDirectoryW(sys, MAX_PATH);
+    std::wstring dir = std::wstring(sys) + L"\\Tasks";
+    ScanTasksDir(dir, dir, 3, out);
+}
+
+// schtasks /Delete（TaskCache 与 XML 一并处理）
+bool RemoveTask(const std::wstring& rel, std::wstring& err) {
+    wchar_t sys[MAX_PATH] = {};
+    GetSystemDirectoryW(sys, MAX_PATH);
+    std::wstring cmdline =
+        L"\"" + std::wstring(sys) + L"\\schtasks.exe\" /Delete /TN \"" + rel +
+        L"\" /F";
+    std::vector<wchar_t> mut(cmdline.begin(), cmdline.end());
+    mut.push_back(0);
+    STARTUPINFOW si = {};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi = {};
+    if (!CreateProcessW(nullptr, mut.data(), nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        err = L"schtasks CreateProcess failed";
+        return false;
+    }
+    WaitForSingleObject(pi.hProcess, 30000);
+    DWORD rc = 1;
+    GetExitCodeProcess(pi.hProcess, &rc);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    if (rc != 0) {
+        err = L"schtasks rc=" + std::to_wstring(rc);
+        return false;
+    }
+    return true;
 }
 
 // 值形态（值名=CLSID，数据=描述；如 ShellExecuteHooks）
@@ -240,6 +396,7 @@ void ScanUserRoot(const std::wstring& prefix, std::vector<DanglingRef>& out) {
     ScanExtValues(rc, prefix + L"\\Software\\" + kHooksRel, out);
     ScanRunKeys(rc, prefix + L"\\Software\\" + kRunRel, out);
     ScanRunKeys(rc, prefix + L"\\Software\\" + kRunOnceRel, out);
+    ScanComServersIn(rc, out);
 }
 
 // 机器级一遍（指定视图）：HKLM 下 classes/overlay/hooks/run。
@@ -254,6 +411,7 @@ void ScanMachineView(REGSAM view, std::vector<DanglingRef>& out) {
     ScanExtValues(rc, std::wstring(L"SOFTWARE\\") + kHooksRel, out);
     ScanRunKeys(rc, std::wstring(L"SOFTWARE\\") + kRunRel, out);
     ScanRunKeys(rc, std::wstring(L"SOFTWARE\\") + kRunOnceRel, out);
+    ScanComServersIn(rc, out);
 }
 
 bool EnablePrivilege(const wchar_t* name) {
@@ -312,11 +470,30 @@ std::wstring ExtractExecutable(const std::wstring& command) {
     return sp == std::wstring::npos ? rest : rest.substr(0, sp);
 }
 
+std::vector<std::wstring> ExtractTaskCommands(const std::wstring& xml) {
+    std::vector<std::wstring> out;
+    const std::wstring open = L"<Command>";
+    const std::wstring close = L"</Command>";
+    size_t pos = 0;
+    while (true) {
+        size_t a = xml.find(open, pos);
+        if (a == std::wstring::npos) break;
+        size_t b = xml.find(close, a + open.size());
+        if (b == std::wstring::npos) break;
+        std::wstring cmd = xml.substr(a + open.size(), b - a - open.size());
+        if (!cmd.empty()) out.push_back(cmd);
+        pos = b + close.size();
+    }
+    return out;
+}
+
 std::vector<DanglingRef> ScanDanglingRefs(bool includeLoadedUserHives) {
     std::vector<DanglingRef> out;
     Views v = GetViews();
     ScanMachineView(v.v64, out);
     if (v.dual) ScanMachineView(v.v32, out);
+    ScanServices(out);  // HKLM\SYSTEM 不分视图
+    ScanTasks(out);
     if (includeLoadedUserHives) {
         for (DWORD i = 0;; ++i) {
             wchar_t name[256] = {};
@@ -333,7 +510,8 @@ std::vector<DanglingRef> ScanDanglingRefs(bool includeLoadedUserHives) {
 }
 
 bool RemoveRef(const DanglingRef& r, std::wstring& err) {
-    if (r.valueName.empty()) {
+    if (r.isTask) return RemoveTask(r.subKey, err);
+    if (r.wholeKey) {
         size_t pos = r.subKey.find_last_of(L'\\');
         std::wstring parent =
             pos == std::wstring::npos ? std::wstring() : r.subKey.substr(0, pos);
@@ -357,7 +535,8 @@ bool RemoveRef(const DanglingRef& r, std::wstring& err) {
         err = L"open key failed";
         return false;
     }
-    LONG rc = RegDeleteValueW(k, r.valueName.c_str());
+    LONG rc = RegDeleteValueW(k, r.valueName.empty() ? nullptr
+                                                     : r.valueName.c_str());
     RegCloseKey(k);
     if (rc != ERROR_SUCCESS) {
         err = L"RegDeleteValue rc=" + std::to_wstring(rc);

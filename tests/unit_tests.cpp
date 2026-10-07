@@ -756,3 +756,19 @@ TEST(refscan_extract_exe) {
     CHECK_EQ(ExtractExecutable(L"C:\\a b\\run"), std::wstring(L"C:\\a"));
     CHECK_EQ(ExtractExecutable(L""), std::wstring());
 }
+
+TEST(refscan_task_commands) {
+    using sysrecover::refscan::ExtractTaskCommands;
+    std::wstring xml =
+        L"<?xml version=\"1.0\"?><Task><Actions><Exec><Command>"
+        L"C:\\Users\\x\\AppData\\Local\\Temp\\a\\up.exe</Command>"
+        L"<Arguments>--silent</Arguments></Exec>"
+        L"<Exec><Command>C:\\Program Files\\b\\b.exe</Command></Exec>"
+        L"</Actions></Task>";
+    auto cmds = ExtractTaskCommands(xml);
+    CHECK_EQ(cmds.size(), (size_t)2);
+    CHECK_EQ(cmds[0],
+             std::wstring(L"C:\\Users\\x\\AppData\\Local\\Temp\\a\\up.exe"));
+    CHECK_EQ(cmds[1], std::wstring(L"C:\\Program Files\\b\\b.exe"));
+    CHECK_EQ(ExtractTaskCommands(L"no commands here").size(), (size_t)0);
+}
