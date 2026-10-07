@@ -1022,6 +1022,16 @@ fi
 #   2) 格式化前备份的原 PBR —— 仅在原 PBR 是 NTFS 且不是 mkntfs 自带代码时可用
 #      （否则会自我复制非引导代码，开机黑屏光标闪，PIT-050）
 if [ "$REPAIR_BOOT" = "1" ]; then
+    # 4Kn 检测（PIT-133）：逻辑扇区 >512 的盘，微软不支持 BIOS 引导（4Kn 要求
+    # UEFI）。下面的 PBR 移植按 512 字节扇区布局，4Kn+MBR 组合必然无法 BIOS
+    # 引导 —— 明确警告（GPT/UEFI 路径不碰 PBR，不受影响）。
+    if [ "$PT_TYPE" != "gpt" ]; then
+        _dname=$(basename "$TARGET_DEV" | sed 's/p\?[0-9]*$//')
+        _lbs=$(cat "/sys/class/block/$_dname/queue/logical_block_size" 2>/dev/null)
+        if [ -n "$_lbs" ] && [ "$_lbs" -gt 512 ] 2>/dev/null; then
+            say "WARN: target is 4Kn (logical sector=$_lbs): Windows does not support BIOS boot from 4Kn; on a BIOS/MBR machine the restored system will not boot (4Kn requires UEFI/GPT)"
+        fi
+    fi
     if [ "$PT_TYPE" = "gpt" ]; then
         # UEFI/GPT：引导在 ESP 上（UEFI 固件 → \EFI\Microsoft\Boot\bootmgfw.efi →
         # ESP 的 BCD → 本目标分区的 winload.efi）。ESP 全程不动，所以**不需要**

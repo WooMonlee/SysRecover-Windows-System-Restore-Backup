@@ -808,6 +808,12 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · 备注：用户 hive 加载尽力而为（实测 `admin` 的 NTUSER.DAT 加载 rc=32 共享冲突 → 优雅跳过并记录；主清理在机器级）；`[ExclusionException]` 路线被否（**wimlib 不扫描被排除目录的子树**，例外救不回目录内的文件，官方论坛/MS WIMGAPI 同款行为）。
   · **扩展（`0.6.47`，同 PIT-132）**：扫描范围再加三类 —— ① **COM 注册**（`HKLM\SOFTWARE\Classes\CLSID\*\InprocServer32|LocalServer32` 默认值，**双 WOW64 视图**；删除 = 删整棵服务器子键）；② **服务 ImagePath**（`HKLM\SYSTEM\CurrentControlSet\Services\*`，不分视图单遍；删除 = 删 ImagePath 值）；③ **计划任务**（`System32\Tasks` 下 XML 的 `<Command>`，含子目录深度 ≤3；删除 = `schtasks /Delete /TN <相对名> /F`，登录前实测可用）。**e2e（6 类引用一次全测）**：注入 shell 扩展/Run/COM×2/服务/任务 → 备份 `ref scan: 6 (0 missing, 6 at-risk)` → `EA/fix pack (ea=255 refs=6)` → 救援还原 → 首启 `refs: found=6 cleaned=6 failed=0` + 离线核验 5 处注册表全消失、任务文件已删 ✓。**扫描耗时**：真机 `diag` 实测全扫描 **~1s**（含 ~2 万 CLSID ×2 视图）；QEMU TCG 下约 23s（一次性、登录前）。单测加 `refscan_task_commands`（`make check` 43 用例/286 断言）。
 
+- PIT-133 **4Kn（4K 原生扇区）目标盘实测：还原管线全通；4Kn+BIOS 组合微软不支持 → 救援打 WARN 不阻断；顺带补上 GUI 加载镜像的日志**（2026-10-07，`0.6.48`）：
+  · **实测（QEMU 造 `logical_block_size=4096,physical_block_size=4096` 目标盘，完整救援还原）**：`offset+size` 校验（按字节）✓、`mkntfs` 按 4096B 逻辑扇区格式化 ✓、wimlib block apply ✓、bootfix/PBR 写入 ✓、`RESTORE DONE` ✓ —— **原先担心的"512 假设"实际都不需要改**（脚本的 `dd` 按字节偏移；`--partition-start` 由 mkntfs 按 LBA 自算；引导区 blob 是文件内容与扇区大小无关）。**结论：管线本身对 4Kn 透明。**
+  · **⚠️ 但 4Kn 必须 UEFI 引导**（微软要求；4Kn+BIOS 组合不受支持）→ `zjrestore-lite.sh` 对 4Kn 目标打 `WARN: target is 4Kn (logical sector=…): Windows does not support BIOS boot from 4Kn; on a BIOS/MBR machine the restored system will not boot (4Kn requires UEFI/GPT)`（**不阻断**——数据已按正确语义写完，引导问题属组合限制）。
+  · **附带（同批发现并修复）**：GUI `LoadWimImages` **成功路径原先既不改状态栏也不写日志** → 支持排查/自动化都看不出"加载过哪个镜像"（2026-10-07 GUI 静默全链实测时踩到：日志停在启动块，误判"未加载"）→ 补 `GUI image loaded: <path> (N subimage(s), first idx=M)` 一行（`src/gui/main_form.cpp`）。
+  · **验证**：4Kn QEMU 全链还原 + **GUI 静默模式全链**（无弹窗→暂存 `pending-restore.txt`→自动重启→救援 `result=OK target=/dev/sda4 image=E:\images\refs2-test.wim`（ESP 黑匣子）→首启 EA 255/255 + refs 6/6 `shell_started=no`→新系统桌面）；`make check` 43 用例/286 断言 + i18n 401 keys；`make package` 双架构。实验室 GUI 自动化配方见 `docs/19` §8。
+
 ---
 
 ## 14. License 合规（SBOM，随版本更新）
