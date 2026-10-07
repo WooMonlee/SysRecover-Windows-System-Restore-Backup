@@ -1226,6 +1226,11 @@ void CMainForm::LoadWimImages(const std::wstring& path) {
     if (pCombo->GetCount() > 0) pCombo->SelectItem(0);
     m_selImageIndex = m_imgIdx.empty() ? 1 : m_imgIdx[0];
     m_imageOk = true;
+    // 成功路径原先既不改状态栏、也不写日志 → 支持排查时看不出"加载过哪个镜像"，
+    // 自动化测试也无法从日志判断加载成功（2026-10-07 实测）。补一行日志。
+    LogInfo("GUI image loaded: " + W2U(path) + " (" +
+            std::to_string(images.size()) + " subimage(s), first idx=" +
+            std::to_string(m_selImageIndex) + ")");
     UpdateMainAction();
 }
 
