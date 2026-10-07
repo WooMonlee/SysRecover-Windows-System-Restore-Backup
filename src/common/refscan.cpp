@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
+#include <set>
 
 namespace sysrecover {
 namespace refscan {
@@ -135,19 +136,62 @@ std::wstring CleanPathValue(const std::wstring& raw) {
     return Expand(d);
 }
 
-// CLSID → InprocServer32 默认值。找不到空。
-std::wstring ResolveClsid(const RootCtx& rc, const wchar_t* clsid) {
-    if (!clsid || !clsid[0]) return {};
-    std::wstring c = clsid;
-    if (c[0] != L'{') c = L"{" + c + L"}";
-    HKEY k = OpenWithView(rc.h, rc.classesRel + c + L"\\InprocServer32",
-                          rc.view, KEY_READ);
+// 单个 (root, classesRel, view) 下的 CLSID → InprocServer32 默认值。
+std::wstring TryClsidIn(HKEY root, const std::wstring& classesRel, REGSAM view,
+                        const std::wstring& c) {
+    HKEY k = OpenWithView(root, classesRel + c + L"\\InprocServer32", view,
+                          KEY_READ);
     if (!k) return {};
     wchar_t p[1024] = {};
     DWORD cb = sizeof(p) - 2, t = 0;
     RegQueryValueExW(k, nullptr, nullptr, &t, (LPBYTE)p, &cb);
     RegCloseKey(k);
     return CleanPathValue(p);
+}
+
+// CLSID → InprocServer32 默认值。找不到空。
+// ★ 跨 hive 解析（2026-10-07 客户实测）：右键处理器（*\shellex\…）与其
+//   CLSID 的 InprocServer32 可能分处不同 hive（便携软件常见：一处 HKLM、
+//   一处 HKCU）。只在本根解析会双双漏掉——diag 用 HKCR 合并视图却能看到
+//   → "诊断标 MISSING、清理却不动它"的怪象（PIT-134）。
+// 顺序：本根/本视图 → HKLM 双视图 → HKCU → 所有已加载用户 hive。
+std::wstring ResolveClsid(const RootCtx& rc, const wchar_t* clsid) {
+    if (!clsid || !clsid[0]) return {};
+    std::wstring c = clsid;
+    if (c[0] != L'{') c = L"{" + c + L"}";
+    std::wstring p = TryClsidIn(rc.h, rc.classesRel, rc.view, c);
+    if (!p.empty()) return p;
+    p = TryClsidIn(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Classes\\CLSID\\",
+                   KEY_WOW64_64KEY, c);
+    if (!p.empty()) return p;
+    p = TryClsidIn(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Classes\\CLSID\\",
+                   KEY_WOW64_32KEY, c);
+    if (!p.empty()) return p;
+    // HKCU/HKU 同样要过 64/32 两个视图（x86 补写器 view=0 只看 32 位视图，
+    // 64 位程序注册的 CLSID 就在 64 位视图里——2026-10-07 实测 found=0 的坑）。
+    for (REGSAM view : {REGSAM(KEY_WOW64_64KEY), REGSAM(KEY_WOW64_32KEY),
+                        REGSAM(0)}) {
+        p = TryClsidIn(HKEY_CURRENT_USER, L"Software\\Classes\\CLSID\\", view,
+                       c);
+        if (!p.empty()) return p;
+    }
+    for (DWORD i = 0;; ++i) {
+        wchar_t name[256] = {};
+        DWORD nl = 255;
+        if (RegEnumKeyExW(HKEY_USERS, i, name, &nl, nullptr, nullptr, nullptr,
+                          nullptr) != ERROR_SUCCESS)
+            break;
+        size_t len = wcslen(name);
+        if (len >= 8 && !_wcsicmp(name + len - 8, L"_Classes")) continue;
+        for (REGSAM view : {REGSAM(KEY_WOW64_64KEY), REGSAM(KEY_WOW64_32KEY),
+                            REGSAM(0)}) {
+            p = TryClsidIn(HKEY_USERS,
+                           std::wstring(name) + L"\\Software\\Classes\\CLSID\\",
+                           view, c);
+            if (!p.empty()) return p;
+        }
+    }
+    return {};
 }
 
 // 收录"指向易失目录"的引用（两种状态都收：missingNow 标记区分）——
@@ -384,19 +428,27 @@ void ScanRunKeys(const RootCtx& rc, const std::wstring& rel,
 }
 
 // 一个"用户根"（prefix 如 L"S-1-5-21-..." 或 L"ZJREF_1"）——HKCU 等价结构。
-// 注意：HKCU\Software\Classes 不分 32/64 视图，无需视图参数。
+// ★ 视图修正（2026-10-07 PIT-134，客户豆包实测）：`HKCU\Software\Classes` 及
+//   其下的类名/CLSID 树**受 WOW64 重定向**——x86 补写器用 view=0 只能看到
+//   32 位视图（Wow6432Node），64 位程序注册的壳扩展/COM 全部漏掉（实测
+//   applier 跑完 found=0，而 64 位视图里明明有）。机器侧本来就扫双视图，
+//   所以 e2e（引用全注入 HKLM）没暴露；用户侧必须同样 64/32 各扫一遍。
+//   共享部分（Explorer 覆盖图标/ShellExecuteHooks/Run）也一并双视图，重复
+//   项由清理端的去重兜住（同一键两次命中→第二次直接跳过）。
 void ScanUserRoot(const std::wstring& prefix, std::vector<DanglingRef>& out) {
-    RootCtx rc;
-    rc.h = HKEY_USERS;
-    rc.view = 0;
-    rc.classesRel = prefix + L"\\Software\\Classes\\CLSID\\";
-    for (const wchar_t* s : kCtxRoots)
-        ScanCtxSubkeys(rc, prefix + L"\\Software\\Classes\\" + s, out);
-    ScanCtxSubkeys(rc, prefix + L"\\Software\\" + kOverlayRel, out);
-    ScanExtValues(rc, prefix + L"\\Software\\" + kHooksRel, out);
-    ScanRunKeys(rc, prefix + L"\\Software\\" + kRunRel, out);
-    ScanRunKeys(rc, prefix + L"\\Software\\" + kRunOnceRel, out);
-    ScanComServersIn(rc, out);
+    for (REGSAM view : {REGSAM(KEY_WOW64_64KEY), REGSAM(KEY_WOW64_32KEY)}) {
+        RootCtx rc;
+        rc.h = HKEY_USERS;
+        rc.view = view;
+        rc.classesRel = prefix + L"\\Software\\Classes\\CLSID\\";
+        for (const wchar_t* s : kCtxRoots)
+            ScanCtxSubkeys(rc, prefix + L"\\Software\\Classes\\" + s, out);
+        ScanCtxSubkeys(rc, prefix + L"\\Software\\" + kOverlayRel, out);
+        ScanExtValues(rc, prefix + L"\\Software\\" + kHooksRel, out);
+        ScanRunKeys(rc, prefix + L"\\Software\\" + kRunRel, out);
+        ScanRunKeys(rc, prefix + L"\\Software\\" + kRunOnceRel, out);
+        ScanComServersIn(rc, out);
+    }
 }
 
 // 机器级一遍（指定视图）：HKLM 下 classes/overlay/hooks/run。
@@ -552,8 +604,10 @@ CleanStats CleanAllDanglingRefs(
     auto emit = [&](const std::string& s) {
         if (log) log(s);
     };
+    std::set<std::wstring> seen;  // 双视图重复命中同一键：第二次直接跳过
     auto cleanList = [&](std::vector<DanglingRef>& refs) {
         for (auto& r : refs) {
+            if (!seen.insert(r.display).second) continue;
             st.found++;
             if (!r.missingNow) {
                 // 文件还在（如卷级还原保留了易失目录）→ 引用有效，不动。

@@ -191,7 +191,7 @@ int CollectOneDrive(wchar_t letter, const std::wstring& dstBase) {
         _wcsicmp(zjr.c_str(), sysrecover::LogBaseDir().c_str()) != 0) {
         std::wstring zdst = dst + L"\\ZJRESTORE";
         CreateDirectoryW(zdst.c_str(), nullptr);
-        for (const wchar_t* sub : {L"bootfix", L"scripts", L"logs"})
+        for (const wchar_t* sub : {L"bootfix", L"scripts", L"logs", L"ea"})
             n += CopySmallTree(zjr + L"\\" + sub, zdst + L"\\" + sub, 0);
         // 救援构建戳（A6）：核对盘上救援是哪一版
         std::wstring rb = zjr + L"\\rescue-build.txt";
