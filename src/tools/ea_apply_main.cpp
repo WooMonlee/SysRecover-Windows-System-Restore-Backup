@@ -164,6 +164,26 @@ int wmain(int argc, wchar_t** argv) {
         logLine("no pack (EA apply skipped)");
     }
 
+    // ── 非微软重解析点写回（PIT-136，用户 2026-10-08 规格）──
+    // 备份时打包（reppack.dat，主镜像已排除该文件）；本进程（SYSTEM，登录前）
+    // 用原生 FSCTL_SET_REPARSE_POINT 写回 —— Linux 侧 wimlib 写不了这类文件
+    // （libntfs-3g 已知 bug），Windows 原生 API 则任何 tag 都能设。
+    {
+        const std::wstring repPack = eaDir + L"\\reppack.dat";
+        if (GetFileAttributesW(repPack.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            logLine("reppack: applying");
+            unsigned long long rok = 0, rbad = 0;
+            int rrc = ea::ApplyRepack(repPack, root, &rok, &rbad, logLine);
+            char rsum[128];
+            snprintf(rsum, sizeof(rsum),
+                     "reppack: done ok=%llu failed=%llu rc=%d", rok, rbad,
+                     rrc);
+            logLine(rsum);
+        } else {
+            logLine("reppack: none");
+        }
+    }
+
     // ── 悬空引用清理（PIT-132）──
     // 注册表引用指向"备份排除的易失目录"（如 Temp）且文件已缺失 → 还原后必然
     // 损坏（实测：豆包便携版右键扩展 DLL 在 Temp → 每次右键卡死）。保守规则：

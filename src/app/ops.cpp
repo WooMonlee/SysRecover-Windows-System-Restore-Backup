@@ -808,6 +808,19 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
             }
             if (eaN <= 0)  // 无 EA（或失败）时不留空包：补写器将只做引用清理
                 DeleteFileW((eaTmp + L"\\eapack.dat").c_str());
+            // 非微软重解析点打包（PIT-136，用户 2026-10-08 规格）：Linux 侧
+            // wimlib 写不了这类文件（libntfs-3g bug）→ 主镜像已排除（见上），
+            // 这里把"内容+reparse 原始数据+属性"打包，首启补写器原生写回。
+            std::string repErr;
+            int repN =
+                ea::CaptureReparse(root, eaTmp + L"\\reppack.dat", repErr);
+            if (repN > 0)
+                LogInfo("reparse pack: " + std::to_string(repN) +
+                        " non-Microsoft reparse file(s) packed for first-boot "
+                        "restore" +
+                        (repErr.empty() ? "" : " (" + repErr + ")"));
+            else if (repN < 0)
+                LogWarn("reparse pack failed: " + repErr);
             // 悬空引用扫描（PIT-132）：注册表引用指向"会被备份排除的易失目录"
             // （Temp 等）且文件存在 → 还原后必然缺失（实测：豆包便携版右键扩展
             // DLL 在 Temp → 每次右键卡死）。>0 时并入修复包，首启自动清理。
@@ -825,8 +838,9 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
                 for (size_t i = 0; i < refs.size() && i < 10; ++i)
                     LogInfo("ref scan: " + W2U(refs[i].display));
             }
-            if (eaN > 0 || !refs.empty()) {
-                // 子镜像内容：pack（有 EA 时）+ 策略片段 + 补写器（x86，x86/x64 都能跑）
+            if (eaN > 0 || !refs.empty() || repN > 0) {
+                // 子镜像内容：pack（有 EA 时）+ reppack（有非微软 reparse 时）+
+                // 策略片段 + 补写器（x86，x86/x64 都能跑）
                 bool okFiles = ea::WriteBytes(eaTmp + L"\\zj-regpol.bin",
                                               ea::BuildSyncPolFragment());
                 std::wstring applier = AppDir() + L"\\bootfiles\\zj-ea-apply.exe";
