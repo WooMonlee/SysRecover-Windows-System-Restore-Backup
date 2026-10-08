@@ -830,6 +830,12 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **③ 同机问题 1 的"三个 UEFI 启动项"**：截图三个 `UEFI: Windows Boot Manager` 均为客户自己装的 PE/易数条目（**我们的条目描述是 `SysRecover`、直指内核不走 bootmgfw，不在其中**）；**我们从不改固件默认（BootOrder[0]）**——条目挂 BootOrder 末尾、单次启动走 BootNext；"每次还原完默认第 1 项"是固件自身顺序。桌面快捷变少 = 用旧镜像的必然结果（镜像之后装的软件不在）。
   · **④ "用旧镜像还原后右键仍卡"**：镜像里打包的是**旧版补写器**（PIT-134 的 WOW64 视图 bug）→ 修复对老镜像不生效；处置：新补写器跑一次 或 0.6.50+ 重新备份。
 
+- PIT-137 **黑匣子归并：Windows 每次启动"收完即清"，救援层不再每分区乱放**（2026-10-08，`0.6.53`，用户规格）：
+  · **背景**：失败还原的黑匣子按 PIT-111 设计"多面落盘"（每个可挂载分区根都写）——客户逐盘可见的"垃圾文件"观感差；且清理只在"日志导出成功后"发生。
+  · **① Windows 侧（每次运行收完即清）**：CLI/GUI 启动路径在 `CollectDeployArtifacts`（已收集 `ZJRESTORE-logs` 兜底窝 + ESP 日志 + 各盘根黑匣子）之后调用 `CleanupStrayLogs()` —— **黑匣子进 `logs\collected\`，各盘根散件立即清掉**。安全边界不变：**契约 `restore-task.*`/`_zjresy*` 与引导文件（grldr/menu.lst/bootfix）绝不动**；只清固定盘；活动日志根（LogBaseDir）自身不删；暂存待还原的流程不受影响（那些文件在暂存时本就不存在）。
+  · **② 救援层（只写固定三处）**：失败路径与 `zz-blackbox` 模式**不再 `bb_sweep` 全盘扫**，改为 `bb_home_drop`（兜底窝 `<数据盘>\ZJRESTORE-logs\`，没有就现认领一个非目标分区；控制台文本仍收进日志）+ `bb_esp_drop`（UEFI 的 `\EFI\ZJRESTORE\logs\`，格式化也幸存）；软件目录由 `persist_log` 写。`bb_sweep` 退役（函数保留不调用）。单分区极端场景的保护面与原来等价（目标盘本来就会被格式化）。
+  · **验证**：救援脚本 `bash -n` 语法过；`make check` 45 用例/304 断言 + check-docs/i18n 全绿；initramfs 重建（494 模块）。🚧 待 QEMU 失败演练回归（造坏 conf → 失败 → 检查只落"兜底窝+ESP"、各盘根干净）。
+
 ---
 
 ## 14. License 合规（SBOM，随版本更新）
