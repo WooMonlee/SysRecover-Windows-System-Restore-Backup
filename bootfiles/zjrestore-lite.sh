@@ -426,6 +426,37 @@ bb_esp_drop(){
         umount /tmp/zj_bb 2>/dev/null
     fi
 }
+# 兜底日志窝落盘（PIT-137，用户 2026-10-08 规格："以后只写一个固定地方，
+# 不要每个分区乱放"）：固定三处 —— ①软件目录（persist_log 已写）②兜底窝
+# <数据盘>\ZJRESTORE-logs\（此刻没有就现认领一个非目标分区）③ESP 的
+# \EFI\ZJRESTORE\logs\（UEFI，格式化也幸存）。Windows 侧每次启动会把这些
+# 收集进 logs\collected 并清掉源头。
+bb_home_drop(){
+    # 屏幕内容（控制台文本）也收进日志（只做一次；无文件可写时的唯一线索）
+    if [ ! -f /tmp/zj-vcs.done ]; then
+        : > /tmp/zj-vcs.done
+        dump_console
+    fi
+    if [ -z "$BB_HOME" ]; then
+        for _d in $(list_parts); do
+            [ -b "$_d" ] || continue
+            case "$_d" in *loop*|*ram*|*sr*|*cdrom*) continue ;; esac
+            [ "$_d" = "$TARGET_DEV" ] && continue
+            is_mounted "$_d" && continue
+            mkdir -p /tmp/zj_home2
+            if mnt_dev "$_d" /tmp/zj_home2; then
+                if mkdir -p /tmp/zj_home2/ZJRESTORE-logs 2>/dev/null; then
+                    BB_HOME=/tmp/zj_home2/ZJRESTORE-logs
+                    say "fallback log home (late): $_d -> ZJRESTORE-logs/"
+                    break
+                fi
+                umount /tmp/zj_home2 2>/dev/null
+            fi
+        done
+    fi
+    [ -n "$BB_HOME" ] && bb_drop "$BB_HOME" && say "blackbox: log -> $BB_HOME (fallback home)"
+    return 0
+}
 bb_final(){
     if [ "$RESULT" = "OK" ]; then
         persist_log
@@ -435,7 +466,9 @@ bb_final(){
         # 这里）——"从记录中评估"（用户 2026-10-05 规格）。
         say_dmesg
         persist_log
-        bb_sweep
+        # PIT-137：只写"兜底窝 + ESP"（不再扫每个分区根乱放）
+        bb_home_drop
+        bb_esp_drop
     fi
     stop_log_mirror
 }
@@ -447,8 +480,10 @@ if [ "$ZZ_BLACKBOX" = "1" ]; then
     STEP="${2:-interrupted}"
     say "blackbox sweep start (reason=$STEP)"
     trap - EXIT
-    bb_sweep
-    say "blackbox sweep done ($(wc -l < "$BB_DONE" 2>/dev/null | tr -d ' ') surface(s))"
+    # PIT-137：只写"兜底窝 + ESP"（不再扫每个分区根乱放）
+    bb_home_drop
+    bb_esp_drop
+    say "blackbox sweep done (home+ESP)"
     exit 0
 fi
 
