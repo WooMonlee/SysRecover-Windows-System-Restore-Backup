@@ -72,6 +72,19 @@ bool ReadBytes(const std::wstring& path, std::vector<unsigned char>& out);
 int CaptureVolume(const std::wstring& root, const std::wstring& packPath,
                   const std::wstring& auditPath, std::string& err);
 
+// ── 非微软重解析点（PIT-135，2026-10-08）────────────────────────────
+// Linux 侧 wimlib（NTFS-3G 块模式）**无法设置非微软（ISV）重解析点**——
+// libntfs-3g 已知 bug（wimlib NEWS 原文："remains broken in NTFS-3G mode due
+// to a libntfs-3g bug"）；实测 Intel ipfsrv.dptf（自定义 tag）令整个 apply
+// rc=58 中止、目标分区只剩半成品（客户 20261008 三盘机）。Windows 侧（PE 就地
+// 还原）无此问题。判定：tag 的 bit31（0x80000000）为 0 = 非微软（微软 tag 均置位）。
+bool IsNonMsReparseTag(unsigned long tag);
+// 快速遍历 root，收集带非微软重解析点的文件（相对路径，如
+// \Windows\...\ipfsrv.dptf）；备份时并入排除清单，避免 Linux 还原必失败。
+// 不打开文件（只 FindFirstFile 读 dwReserved0），比 EA 扫描快。返回个数（cap 上限）。
+int FindNonMsReparse(const std::wstring& root, std::vector<std::wstring>& out,
+                     size_t cap = 64);
+
 // ── EA 补写（首启补写器用）────────────────────────────────────────
 // 构造 NtSetEaFile 用的 FILE_FULL_EA_INFORMATION 完整缓冲区（含最外层头）。
 // 纯逻辑，可单测（校验布局/长度）。

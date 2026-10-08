@@ -593,6 +593,18 @@ TEST(rescue_report_decision) {
 }
 
 // ────────────── ea（EA 打包 / 组策略文件助手，PIT-122）──────────────
+// PIT-135：非微软重解析点判定（bit31=0；微软 tag 均置位）——Linux 侧 apply
+// 无法设置非微软 reparse（libntfs-3g bug），备份时须排除。
+TEST(ea_non_ms_reparse_tag) {
+    CHECK(ea::IsNonMsReparseTag(0x00000001));   // 假想 ISV tag
+    CHECK(ea::IsNonMsReparseTag(0x40000002));   // bit30 置位但 bit31=0
+    CHECK(!ea::IsNonMsReparseTag(0x80000017));  // WOF（微软）
+    CHECK(!ea::IsNonMsReparseTag(0xA0000003));  // junction（微软）
+    CHECK(!ea::IsNonMsReparseTag(0xA000000C));  // symlink（微软）
+    CHECK(!ea::IsNonMsReparseTag(0x8000001B));  // APPEXECLINK（微软）
+    CHECK(!ea::IsNonMsReparseTag(0x00000000));  // 0 = 无 tag，不算
+}
+
 TEST(ea_pack_roundtrip) {
     std::vector<ea::FileEntry> in;
     ea::FileEntry a;
