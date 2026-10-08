@@ -688,7 +688,18 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
         err = Tr("wimlib 初始化失败");
         return 1;
     }
-    std::wstring cfg = EnsureExclusionConfig(source);
+    // 非微软重解析点检出（PIT-135，2026-10-08）：Linux 侧 wimlib（NTFS-3G 块
+    // 模式）无法设置非微软 reparse（libntfs-3g 已知 bug，wimlib NEWS 明说）——
+    // 实测 Intel ipfsrv.dptf 令整个 apply rc=58 中止、目标分区只剩半成品。
+    // 备份时排除（并留日志），否则重启类还原必然失败。
+    std::vector<std::wstring> badRep;
+    int badN = ea::FindNonMsReparse(source, badRep);
+    if (badN > 0)
+        LogWarn("reparse: " + std::to_string(badN) +
+                " non-Microsoft reparse file(s) excluded (Linux apply cannot "
+                "set them, PIT-135); first: " + W2U(badRep[0]));
+    std::wstring cfg =
+        EnsureExclusionConfig(source, badN > 0 ? &badRep : nullptr);
     if (cfg.empty())
         LogError("排除配置生成失败，热备可能因易失文件报 rc=88（PIT-009）");
     else

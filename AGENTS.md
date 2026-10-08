@@ -824,6 +824,12 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **⚠️ 生效前提（对客户）**：补写器是**备份时打进 ZJEA 子镜像**的——**老镜像里还是旧补写器**。① **立即补救**：把 0.6.49 的 `zj-ea-apply.exe` 拷给客户管理员运行一次（无包模式只清悬空引用）→ 右键应恢复；② **根治**：用 0.6.49 **重新备份**再还原。⚠️ 测试时注意：补写器自清理的"延迟删除"会在下一轮启动删掉**同路径的新文件**（PIT-123 老坑，本轮又踩：重部署同名 exe 被删 → 换名 `zj-ea-apply2/3.exe` 才跑起来）。
   · **附带修复**：`selfdiag` 的部署痕迹收集把 `ZJRESTORE\ea\` 加进收集子树（此前 applier 的日志/结果不在支持包里——这次排查因此少了关键证据）。`make check` 全绿；`make package` 双架构；分析全文见 `docs/16` §10。
 
+- PIT-135 **客户 20261008 两问题：①非微软重解析点令 Linux apply 必 rc=58 中止（备份端自动排除）②黑匣子 .out 三件套不在清理清单（失败后残留所有分区根）**（2026-10-08，`0.6.51`）：
+  · **① 三盘机（Dell ChengMing 3900，= PIT-112 同机）**：暂存还原 → 救援 `mkntfs` 后 apply **8 秒**即 `rc=58 Failed to set reparse data on "/Windows/ServiceProfiles/LocalService/AppData/Local/Intel/ipfsrv/ipfsrv.dptf": Invalid argument` → 整个还原中止、**目标 C: 只剩半成品（系统被格式化后无法启动**，客户随后在 PE 里导出支持包）。根因：**Linux 侧 wimlib（NTFS-3G 块模式）无法设置"非微软（ISV 自定义）重解析点"**——wimlib NEWS 原文 *"remains broken in NTFS-3G mode due to a libntfs-3g bug"*；wimlib 论坛同文件（`ipfsrv.dptf`）两例**无解**；**Windows 侧（PE 就地还原）无此问题**。**修复（备份端预防，`0.6.51`）**：`ea::FindNonMsReparse`（快速遍历、只读 `dwReserved0`；判定 = tag bit31 为 0）→ `EnsureExclusionConfig(source, &badRep)` 追加排除 + WARN 日志；单测 `ea_non_ms_reparse_tag`。**对客户的处置**：**PE 里"就地还原"**（Windows 侧 wimlib 能设该 reparse）立即恢复；或用 0.6.51 **重新备份**后暂存还原。**回滚 0.6.3 无用**（同一 wimlib 限制，非回归）。
+  · **② "所有分区根垃圾文件"**：失败还原的黑匣子按设计多面落盘（PIT-111），但 `CleanupStrayLogs` 只删三件套 + `zjrestore-boot.log`——**`ZJRESTORE-apply.out / mkntfs.out / esp.out` 不在清单** → 客户导出支持包后仍逐盘残留（实测截图 + RAR：每盘根恰好只剩这两个文件）→ **修复：清理清单与收集清单都加 .out 三件套**。
+  · **③ 同机问题 1 的"三个 UEFI 启动项"**：截图三个 `UEFI: Windows Boot Manager` 均为客户自己装的 PE/易数条目（**我们的条目描述是 `SysRecover`、直指内核不走 bootmgfw，不在其中**）；**我们从不改固件默认（BootOrder[0]）**——条目挂 BootOrder 末尾、单次启动走 BootNext；"每次还原完默认第 1 项"是固件自身顺序。桌面快捷变少 = 用旧镜像的必然结果（镜像之后装的软件不在）。
+  · **④ "用旧镜像还原后右键仍卡"**：镜像里打包的是**旧版补写器**（PIT-134 的 WOW64 视图 bug）→ 修复对老镜像不生效；处置：新补写器跑一次 或 0.6.50+ 重新备份。
+
 ---
 
 ## 14. License 合规（SBOM，随版本更新）

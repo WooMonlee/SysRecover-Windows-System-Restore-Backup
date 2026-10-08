@@ -424,6 +424,51 @@ bool ReadBytes(const std::wstring& path, std::vector<unsigned char>& out) {
     return ReadWithRetry(path, out);
 }
 
+bool IsNonMsReparseTag(unsigned long tag) {
+    // 微软 tag 的 bit31 恒置位（symlink 0xA000000C / junction 0xA0000003 /
+    // WOF 0x80000017 / APPEXECLINK 0x8000001B …）；ISV 自定义 tag 不置位。
+    return tag != 0 && (tag & 0x80000000UL) == 0;
+}
+
+int FindNonMsReparse(const std::wstring& rootIn,
+                     std::vector<std::wstring>& out, size_t cap) {
+    std::wstring root = rootIn;
+    while (!root.empty() && (root.back() == L'/' || root.back() == L'\\'))
+        root.pop_back();
+    if (root.empty()) return 0;
+    std::vector<std::wstring> stack;
+    stack.push_back(root);
+    int n = 0;
+    while (!stack.empty()) {
+        std::wstring dir = stack.back();
+        stack.pop_back();
+        WIN32_FIND_DATAW fd;
+        HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L".."))
+                continue;
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
+                    stack.push_back(dir + L"\\" + fd.cFileName);
+                continue;
+            }
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
+                continue;
+            if (!IsNonMsReparseTag(fd.dwReserved0)) continue;
+            if ((size_t)n >= cap) {
+                FindClose(h);
+                return n;
+            }
+            std::wstring p = dir + L"\\" + fd.cFileName;
+            out.push_back(p.substr(root.size()));  // 保留 "\..." 前缀
+            ++n;
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    return n;
+}
+
 int CaptureVolume(const std::wstring& rootIn, const std::wstring& packPath,
                   const std::wstring& auditPath, std::string& err) {
     std::wstring root = rootIn;

@@ -18,6 +18,10 @@ std::string BuildExclusionContent(
 
 // 生成"默认排除 + 源内已存在的云同步目录"配置文件，返回临时 ini 路径。
 // 失败返回空串（此时捕获将不带排除项）。
-std::wstring EnsureExclusionConfig(const std::wstring& sourceRoot);
+// extraRel（可空）：追加排除的相对路径（已含前导反斜杠），如非微软重解析点
+// 文件（PIT-135）——不排除则 Linux 侧 apply 必 rc=58 中止。
+std::wstring EnsureExclusionConfig(const std::wstring& sourceRoot,
+                                   const std::vector<std::wstring>* extraRel =
+                                       nullptr);
 
 }  // namespace sysrecover

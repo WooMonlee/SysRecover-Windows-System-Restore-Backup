@@ -156,11 +156,18 @@ int CollectOneDrive(wchar_t letter, const std::wstring& dstBase) {
     std::wstring dst = dstBase + L"\\" + std::wstring(1, letter) + identity;
 
     // 1) 盘根上我们放的文件（BIOS 链 + 契约 + 引导期日志 + 黑匣子三件套）
-    const wchar_t* names[] = {L"grldr",         L"grldr.mbr",
-                              L"menu.lst",       L"restore-task.conf",
-                              L"restore-task.json", L"zjrestore-boot.log",
-                              L"ZJRESTORE-last.log", L"ZJRESTORE-probe.txt",
-                              L"ZJRESTORE-status.txt"};
+    const wchar_t* names[] = {L"grldr",
+                              L"grldr.mbr",
+                              L"menu.lst",
+                              L"restore-task.conf",
+                              L"restore-task.json",
+                              L"zjrestore-boot.log",
+                              L"ZJRESTORE-last.log",
+                              L"ZJRESTORE-probe.txt",
+                              L"ZJRESTORE-status.txt",
+                              L"ZJRESTORE-apply.out",
+                              L"ZJRESTORE-mkntfs.out",
+                              L"ZJRESTORE-esp.out"};
     for (const wchar_t* nm : names) {
         std::wstring s = root + nm;
         if (GetFileAttributesW(s.c_str()) == INVALID_FILE_ATTRIBUTES)
@@ -1021,9 +1028,13 @@ int CleanupStrayLogs() {
         if (GetDriveTypeW(rootBuf) != DRIVE_FIXED)
             continue;
         std::wstring root = rootBuf;
+        // PIT-135（2026-10-08 客户实测）：.out 三件套（apply/mkntfs/esp）此前
+        // 不在清理清单 → 失败还原后所有分区根都残留（客户逐盘可见的"垃圾文件"）。
         for (const wchar_t* nm :
              {L"ZJRESTORE-last.log", L"ZJRESTORE-probe.txt",
-              L"ZJRESTORE-status.txt", L"zjrestore-boot.log"}) {
+              L"ZJRESTORE-status.txt", L"zjrestore-boot.log",
+              L"ZJRESTORE-apply.out", L"ZJRESTORE-mkntfs.out",
+              L"ZJRESTORE-esp.out"}) {
             std::wstring p = root + nm;
             SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_NORMAL);
             if (DeleteFileW(p.c_str()))

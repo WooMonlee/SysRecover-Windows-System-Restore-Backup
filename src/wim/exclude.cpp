@@ -90,7 +90,8 @@ std::string BuildExclusionContent(
     return content;
 }
 
-std::wstring EnsureExclusionConfig(const std::wstring& sourceRoot) {
+std::wstring EnsureExclusionConfig(const std::wstring& sourceRoot,
+                                   const std::vector<std::wstring>* extraRel) {
     std::wstring root = sourceRoot;
     while (!root.empty() && (root.back() == L'\\' || root.back() == L'/'))
         root.pop_back();
@@ -99,6 +100,22 @@ std::wstring EnsureExclusionConfig(const std::wstring& sourceRoot) {
         if (DirExists(root + L"\\" + folder))
             present.push_back(folder);
     std::string content = BuildExclusionContent(present);
+    // 追加额外排除（PIT-135：非微软重解析点文件——Linux apply 无法设置，
+    // 不排除会令整个还原 rc=58 中止；Windows 侧本可处理，但重启类还原必走
+    // Linux，故两害相权排除并留日志）。
+    if (extraRel) {
+        for (const std::wstring& rel : *extraRel) {
+            if (rel.empty()) continue;
+            int n = WideCharToMultiByte(CP_UTF8, 0, rel.c_str(), -1, nullptr, 0,
+                                        nullptr, nullptr);
+            if (n <= 1) continue;
+            std::string u8(n - 1, 0);
+            WideCharToMultiByte(CP_UTF8, 0, rel.c_str(), -1, u8.data(), n,
+                                nullptr, nullptr);
+            std::string line = u8 + "\n";
+            if (content.find(line) == std::string::npos) content += line;
+        }
+    }
 
     wchar_t tmpDir[MAX_PATH] = {};
     if (GetTempPathW(MAX_PATH, tmpDir) == 0)
