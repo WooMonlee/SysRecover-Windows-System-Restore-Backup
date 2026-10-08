@@ -162,6 +162,9 @@ void CMainForm::InitWindow() {
     // 并收集各盘上我们留下的部署文件 —— 用户排错只需发 logs 文件夹。
     sysrecover::WriteDiagFiles(logsDir);
     sysrecover::CollectDeployArtifacts(logsDir + L"\\collected", 0);
+    // PIT-137（用户 2026-10-08 规格）：每次运行"收完即清"——黑匣子已进
+    // logs\collected，各盘根的散件立即清掉（不再到处乱放）。契约/引导文件不动。
+    sysrecover::CleanupStrayLogs();
     LogInfo("GUI InitWindow");
     // 支持把 .esd/.wim 直接拖进窗口（第一步的输入框）。原生 EDIT 子窗口由
     // CSkinEditUI 转投到这里（见 ui_skin.cpp::EnsureDropTarget），窗口空白处
