@@ -85,6 +85,29 @@ bool IsNonMsReparseTag(unsigned long tag);
 int FindNonMsReparse(const std::wstring& root, std::vector<std::wstring>& out,
                      size_t cap = 64);
 
+// ── 非微软重解析点打包 + 首启写回（PIT-136，用户 2026-10-08 规格）──────
+// 与 EA 同思路：Linux 写不了 → 备份时把"文件内容 + reparse 原始数据 + 属性/
+// 时间"打包（主镜像里排除），首启补写器用原生 FSCTL_SET_REPARSE_POINT 写回，
+// **完全保真**（优于单纯排除丢文件）。
+struct ReparseEntry {
+    std::wstring relPath;                // 相对卷根，含前导反斜杠
+    unsigned long attrs = 0;
+    unsigned long long mtime = 0;        // FILETIME（写回用 SetFileTime）
+    std::vector<unsigned char> content;  // 未命名数据流（通常空）
+    std::vector<unsigned char> reparse;  // 原始 REPARSE_DATA_BUFFER
+};
+std::vector<unsigned char> BuildRepack(const std::vector<ReparseEntry>& in);
+bool ParseRepack(const std::vector<unsigned char>& bytes,
+                 std::vector<ReparseEntry>& out);
+// 遍历 root 采集非微软 reparse 文件 → 写 packPath（ZJRP1）。返回个数（0 无；
+// -1 写失败）；超上限/取不到的跳过数进 err。
+int CaptureReparse(const std::wstring& root, const std::wstring& packPath,
+                   std::string& err);
+// 读 pack 写回 root（首启补写器用；SYSTEM 权限）。返回 0 全成功 / 1 有失败。
+int ApplyRepack(const std::wstring& packPath, const std::wstring& root,
+                unsigned long long* ok, unsigned long long* failed,
+                const std::function<void(const std::string&)>& logLine);
+
 // ── EA 补写（首启补写器用）────────────────────────────────────────
 // 构造 NtSetEaFile 用的 FILE_FULL_EA_INFORMATION 完整缓冲区（含最外层头）。
 // 纯逻辑，可单测（校验布局/长度）。

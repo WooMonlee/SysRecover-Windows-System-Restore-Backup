@@ -9,6 +9,7 @@
 
 #define _WIN32_WINNT 0x0601
 #include <windows.h>
+#include <winioctl.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -469,6 +470,247 @@ int FindNonMsReparse(const std::wstring& rootIn,
     return n;
 }
 
+// ── 非微软重解析点打包/写回（PIT-136）──────────────────────────────
+namespace {
+std::string W2A(const std::wstring& w) {
+    std::string s;
+    for (wchar_t c : w) s += (c < 128) ? (char)c : '?';
+    return s;
+}
+}  // namespace
+
+std::vector<unsigned char> BuildRepack(const std::vector<ReparseEntry>& in) {
+    std::vector<unsigned char> out;
+    auto put = [&](const void* p, size_t n) {
+        const unsigned char* b = (const unsigned char*)p;
+        out.insert(out.end(), b, b + n);
+    };
+    auto u32 = [&](unsigned long v) { put(&v, 4); };
+    put("ZJRP1", 4);
+    u32((unsigned long)in.size());
+    for (const auto& e : in) {
+        u32((unsigned long)(e.relPath.size() * 2));
+        put(e.relPath.data(), e.relPath.size() * 2);
+        u32(e.attrs);
+        put(&e.mtime, 8);
+        u32((unsigned long)e.content.size());
+        if (!e.content.empty()) put(e.content.data(), e.content.size());
+        u32((unsigned long)e.reparse.size());
+        if (!e.reparse.empty()) put(e.reparse.data(), e.reparse.size());
+    }
+    return out;
+}
+
+bool ParseRepack(const std::vector<unsigned char>& bytes,
+                 std::vector<ReparseEntry>& out) {
+    if (bytes.size() < 8 || memcmp(bytes.data(), "ZJRP1", 4) != 0) return false;
+    unsigned long n = 0;
+    memcpy(&n, bytes.data() + 4, 4);
+    size_t o = 8;
+    auto need = [&](size_t k) { return o + k <= bytes.size(); };
+    for (unsigned long i = 0; i < n; ++i) {
+        if (!need(4)) return false;
+        unsigned long pl = 0;
+        memcpy(&pl, bytes.data() + o, 4);
+        o += 4;
+        if (pl % 2 || !need((size_t)pl + 4 + 8 + 4)) return false;
+        ReparseEntry e;
+        e.relPath.assign((const wchar_t*)(bytes.data() + o), pl / 2);
+        o += pl;
+        memcpy(&e.attrs, bytes.data() + o, 4);
+        o += 4;
+        memcpy(&e.mtime, bytes.data() + o, 8);
+        o += 8;
+        unsigned long cl = 0;
+        memcpy(&cl, bytes.data() + o, 4);
+        o += 4;
+        if (!need((size_t)cl + 4)) return false;
+        e.content.assign(bytes.data() + o, bytes.data() + o + cl);
+        o += cl;
+        unsigned long rl = 0;
+        memcpy(&rl, bytes.data() + o, 4);
+        o += 4;
+        if (!need(rl)) return false;
+        e.reparse.assign(bytes.data() + o, bytes.data() + o + rl);
+        o += rl;
+        out.push_back(std::move(e));
+    }
+    return true;
+}
+
+int CaptureReparse(const std::wstring& rootIn, const std::wstring& packPath,
+                   std::string& err) {
+    std::wstring root = rootIn;
+    while (!root.empty() && (root.back() == L'/' || root.back() == L'\\'))
+        root.pop_back();
+    if (root.empty()) {
+        err = "empty root";
+        return -1;
+    }
+    std::vector<ReparseEntry> entries;
+    std::vector<std::wstring> stack;
+    stack.push_back(root);
+    unsigned long long skipped = 0;
+    while (!stack.empty()) {
+        std::wstring dir = stack.back();
+        stack.pop_back();
+        WIN32_FIND_DATAW fd;
+        HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L".."))
+                continue;
+            std::wstring p = dir + L"\\" + fd.cFileName;
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
+                    stack.push_back(p);
+                continue;
+            }
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
+                continue;
+            if (!IsNonMsReparseTag(fd.dwReserved0)) continue;
+            if (entries.size() >= 64) {
+                ++skipped;
+                continue;
+            }
+            HANDLE f = CreateFileW(p.c_str(), GENERIC_READ,
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                       FILE_SHARE_DELETE,
+                                   nullptr, OPEN_EXISTING,
+                                   FILE_FLAG_OPEN_REPARSE_POINT |
+                                       FILE_FLAG_BACKUP_SEMANTICS,
+                                   nullptr);
+            if (f == INVALID_HANDLE_VALUE) {
+                ++skipped;
+                continue;
+            }
+            ReparseEntry e;
+            e.relPath = p.substr(root.size());
+            e.attrs = fd.dwFileAttributes;
+            FILETIME ft = {};
+            if (GetFileTime(f, nullptr, nullptr, &ft))
+                e.mtime = ((unsigned long long)ft.dwHighDateTime << 32) |
+                          ft.dwLowDateTime;
+            {
+                std::vector<unsigned char> buf(64 * 1024);
+                DWORD ret = 0;
+                if (DeviceIoControl(f, FSCTL_GET_REPARSE_POINT, nullptr, 0,
+                                    buf.data(), (DWORD)buf.size(), &ret,
+                                    nullptr))
+                    e.reparse.assign(buf.data(), buf.data() + ret);
+            }
+            DWORD sz = GetFileSize(f, nullptr);
+            if (sz != INVALID_FILE_SIZE && sz > 0 && sz <= (16u << 20)) {
+                e.content.resize(sz);
+                DWORD rd = 0;
+                if (!ReadFile(f, e.content.data(), sz, &rd, nullptr))
+                    e.content.clear();
+                else
+                    e.content.resize(rd);
+            }
+            CloseHandle(f);
+            if (e.reparse.empty()) {  // 取不到 reparse 数据就别装坏的
+                ++skipped;
+                continue;
+            }
+            entries.push_back(std::move(e));
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    if (skipped)
+        err = "skipped " + std::to_string(skipped) + " (cap/io)";
+    if (entries.empty()) return 0;
+    if (!WriteBytes(packPath, BuildRepack(entries))) {
+        err = "write pack failed";
+        return -1;
+    }
+    return (int)entries.size();
+}
+
+int ApplyRepack(const std::wstring& packPath, const std::wstring& rootIn,
+                unsigned long long* ok, unsigned long long* failed,
+                const std::function<void(const std::string&)>& logLine) {
+    auto log = [&](const std::string& s) {
+        if (logLine) logLine(s);
+    };
+    std::vector<unsigned char> bytes;
+    if (!ReadBytes(packPath, bytes)) {
+        log("reppack: read failed");
+        return -1;
+    }
+    std::vector<ReparseEntry> entries;
+    if (!ParseRepack(bytes, entries)) {
+        log("reppack: parse failed");
+        return -1;
+    }
+    std::wstring root = rootIn;
+    while (!root.empty() && (root.back() == L'/' || root.back() == L'\\'))
+        root.pop_back();
+    unsigned long long okN = 0, badN = 0;
+    for (auto& e : entries) {
+        std::wstring full = root + e.relPath;
+        size_t pos = full.find_last_of(L'\\');
+        if (pos != std::wstring::npos) {
+            std::wstring parent = full.substr(0, pos);
+            std::wstring cur;
+            for (size_t i = 0; i < parent.size(); ++i) {
+                cur += parent[i];
+                if (parent[i] == L'\\' && cur.size() > 3)
+                    CreateDirectoryW(cur.c_str(), nullptr);
+            }
+            CreateDirectoryW(parent.c_str(), nullptr);
+        }
+        bool okOne = false;
+        HANDLE f = CreateFileW(full.c_str(), GENERIC_WRITE, 0, nullptr,
+                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (f != INVALID_HANDLE_VALUE) {
+            DWORD wr = 0;
+            okOne = e.content.empty() ||
+                    WriteFile(f, e.content.data(), (DWORD)e.content.size(), &wr,
+                              nullptr) != 0;
+            CloseHandle(f);
+        }
+        if (okOne) {
+            HANDLE f2 = CreateFileW(full.c_str(), GENERIC_WRITE,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                    OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT,
+                                    nullptr);
+            DWORD ret = 0;
+            if (f2 == INVALID_HANDLE_VALUE ||
+                !DeviceIoControl(f2, FSCTL_SET_REPARSE_POINT,
+                                 (LPVOID)e.reparse.data(),
+                                 (DWORD)e.reparse.size(), nullptr, 0, &ret,
+                                 nullptr))
+                okOne = false;
+            if (f2 != INVALID_HANDLE_VALUE) CloseHandle(f2);
+        }
+        if (okOne) {
+            if (e.attrs) SetFileAttributesW(full.c_str(), e.attrs);
+            if (e.mtime) {
+                FILETIME ft;
+                ft.dwLowDateTime = (DWORD)(e.mtime & 0xFFFFFFFF);
+                ft.dwHighDateTime = (DWORD)(e.mtime >> 32);
+                HANDLE f3 = CreateFileW(full.c_str(), FILE_WRITE_ATTRIBUTES,
+                                        FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                        nullptr, OPEN_EXISTING,
+                                        FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+                if (f3 != INVALID_HANDLE_VALUE) {
+                    SetFileTime(f3, nullptr, nullptr, &ft);
+                    CloseHandle(f3);
+                }
+            }
+            ++okN;
+            log("reppack: restored " + W2A(e.relPath));
+        } else {
+            ++badN;
+            log("reppack: FAILED " + W2A(e.relPath));
+        }
+    }
+    if (ok) *ok = okN;
+    if (failed) *failed = badN;
+    return badN ? 1 : 0;
+}
+
 int CaptureVolume(const std::wstring& rootIn, const std::wstring& packPath,
                   const std::wstring& auditPath, std::string& err) {
     std::wstring root = rootIn;
@@ -753,6 +995,13 @@ void CleanupHookFiles(const std::wstring& rootIn,
     // 4) 删除 pack（立即）与 cmd/自身（延迟到重启前，规避正在执行的文件句柄）
     log(DeleteFileW(pack.c_str()) ? "cleanup: eapack.dat deleted"
                                   : "cleanup: eapack.dat delete FAILED");
+    // PIT-136：reppack.dat 同清（与 eapack 一致；失败保留重试）
+    {
+        const std::wstring rp = root + L"\\ZJRESTORE\\ea\\reppack.dat";
+        if (GetFileAttributesW(rp.c_str()) != INVALID_FILE_ATTRIBUTES)
+            log(DeleteFileW(rp.c_str()) ? "cleanup: reppack.dat deleted"
+                                        : "cleanup: reppack.dat delete FAILED");
+    }
     if (!MoveFileExW(cmd.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT)) {
         log("cleanup: cmd delayed-delete FAILED err=" +
             std::to_string(GetLastError()));

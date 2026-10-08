@@ -605,6 +605,44 @@ TEST(ea_non_ms_reparse_tag) {
     CHECK(!ea::IsNonMsReparseTag(0x00000000));  // 0 = 无 tag，不算
 }
 
+// PIT-136：reppack 打包/解析往返（内容 + reparse 原始数据二进制安全；截断/坏
+// magic 必须拒绝——写回端拿坏包会装出坏文件）。
+TEST(ea_repack_roundtrip) {
+    std::vector<ea::ReparseEntry> in;
+    ea::ReparseEntry a;
+    a.relPath =
+        L"\\Windows\\ServiceProfiles\\LocalService\\AppData\\Local\\Intel\\"
+        L"ipfsrv\\ipfsrv.dptf";
+    a.attrs = 0x20;
+    a.mtime = 0x01DA123456789ABCull;
+    a.content = {0x01, 0x02, 0x03};
+    a.reparse = {0xA0, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0xDE, 0xAD};
+    in.push_back(a);
+    ea::ReparseEntry b;
+    b.relPath = L"\\x.dat";
+    b.reparse = {0x00};
+    in.push_back(b);
+    auto bytes = ea::BuildRepack(in);
+    std::vector<ea::ReparseEntry> out;
+    CHECK(ea::ParseRepack(bytes, out));
+    CHECK_EQ((int)out.size(), 2);
+    CHECK(out[0].relPath == a.relPath);
+    CHECK(out[0].attrs == a.attrs);
+    CHECK(out[0].mtime == a.mtime);
+    CHECK(out[0].content == a.content);
+    CHECK(out[0].reparse == a.reparse);
+    CHECK(out[1].relPath == b.relPath);
+    CHECK(out[1].content.empty());
+    auto cut = bytes;
+    cut.resize(cut.size() - 3);
+    std::vector<ea::ReparseEntry> out2;
+    CHECK(!ea::ParseRepack(cut, out2));
+    auto bad = bytes;
+    bad[0] = 'X';
+    std::vector<ea::ReparseEntry> out3;
+    CHECK(!ea::ParseRepack(bad, out3));
+}
+
 TEST(ea_pack_roundtrip) {
     std::vector<ea::FileEntry> in;
     ea::FileEntry a;

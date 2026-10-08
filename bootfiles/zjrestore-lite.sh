@@ -1187,6 +1187,7 @@ if [ -n "$EA_INDEX" ]; then
                 mkdir -p "$EAM/ZJRESTORE/ea" \
                          "$EAM/Windows/System32/GroupPolicy/Machine/Scripts/Startup"
                 [ -s "$EAD/eapack.dat" ] && cp "$EAD/eapack.dat" "$EAM/ZJRESTORE/ea/" 2>/dev/null
+                [ -s "$EAD/reppack.dat" ] && cp "$EAD/reppack.dat" "$EAM/ZJRESTORE/ea/" 2>/dev/null
                 cp "$EAD/zj-ea-apply.exe" "$EAM/ZJRESTORE/ea/" 2>/dev/null
                 # 启动脚本：补写器不在（已修复/已放弃/删除）→ 秒退；有包带 --pack，
                 # 无包（纯引用清理）直接跑。
