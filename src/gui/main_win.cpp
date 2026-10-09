@@ -9,6 +9,7 @@
 #include "../common/process.h"   // MsSinceProcessStart
 #include "../common/selfarch.h"  // 位数自举：32 位程序在 64 位系统上换成 x64\同名
 #include "../common/relocate.h"  // 运行目录搬迁（光盘/U盘：复制到本地固定分区）
+#include "../app/swapleft.h"     // A 引擎残留检测与分流（0.7）
 using sysrecover::Tr;
 #include "confirm_dlg.h"
 #include "instance_dlg.h"
@@ -166,6 +167,50 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
                     ::MessageBoxW(nullptr, emsg.c_str(), Tr(L"九转还原"),
                                   MB_OK | MB_ICONWARNING);
                 }
+            }
+        }
+    }
+
+    // ── A 引擎残留分流（0.7，用户 2026-10-09 规格；决策表 docs/23 §5）──────
+    //   Delete → 后台删（不卡开窗）；Reuse/Redo → 只记日志（还原时接着处理）；
+    //   AskUndo → 弹框询问（默认「保留不动」= 安全项；撤销 = 把旧系统搬回根）。
+    {
+        for (const auto& it : sysrecover::ScanSwapLeftovers()) {
+            const sysrecover::SwapLeftVerdict v =
+                sysrecover::DecideSwapLeftover(it);
+            const std::string tagN =
+                std::string(1, (char)it.drive) + ": " +
+                (it.isNew ? "~new" : "~old");
+            if (v.action == sysrecover::SwapLeftAction::Delete) {
+                sysrecover::LogInfo("swap leftover: " + tagN + " -> delete (" +
+                                    v.reason + ")");
+                sysrecover::DeleteSwapLeftoverAsync(it);
+            } else if (v.action == sysrecover::SwapLeftAction::AskUndo) {
+                const std::wstring tagW =
+                    std::wstring(1, it.drive) + L": " +
+                    (it.isNew ? L"~new" : L"~old");
+                std::wstring msg = Tr(L"发现中断残留：") + tagW + L"\n" +
+                                   Tr(L"撤销 = 把旧系统搬回根目录并删除 ~old；") +
+                                   L"\n" +
+                                   Tr(L"保留 = 下次运行再问（还原前会被拦截）。");
+                if (CConfirmDlg::Ask2(nullptr, Tr(L"检测到还原残留"), msg,
+                                      Tr(L"保留不动"), Tr(L"撤销恢复"),
+                                      /*defaultIsRight=*/false) == 1) {
+                    std::string det;
+                    if (!sysrecover::UndoSwapLeftover(it.drive, det)) {
+                        ::MessageBoxW(
+                            nullptr,
+                            (Tr(L"撤销未完全成功（") + U2W8(det) +
+                             Tr(L"），详情见日志。")).c_str(),
+                            Tr(L"九转还原"), MB_OK | MB_ICONWARNING);
+                    }
+                } else {
+                    sysrecover::LogInfo("swap leftover kept by user: " + tagN +
+                                        " (" + v.reason + ")");
+                }
+            } else {
+                sysrecover::LogInfo("swap leftover: " + tagN + " -> " +
+                                    v.reason);
             }
         }
     }

@@ -10,6 +10,8 @@
 #   · 解压失败/中断（含断电）→ 标记缺失 → 拒绝交换；孤儿 ~new 由下次
 #     Windows 启动检测并清理（提示用户换镜像重试）；**不做断点续解**（首版）。
 #   · 交换自身中断 → 半新半旧（P0 记录、P1 事务化；见 docs/23 L3）。
+#   · 目标上已有 ~old（上次交换中断/用户选了保留）→ 拒绝交换（exit 3），
+#     由下次 Windows 启动的残留询问处理（docs/23 §5）。
 #
 # 特殊顶层项（docs/23 L2/D3）：回收站/系统卷信息/页文件删除旧（新树自带或
 #   系统首启重建），不进 ~old。
@@ -30,6 +32,13 @@ if [ ! -f "$M/~new/.zj-done" ]; then
     exit 2
 fi
 say "marker ok: $(cat "$M/~new/.zj-done" 2>/dev/null | tr -d '\r\n')"
+
+# ── L1：目标上已有 ~old → 拒绝交换（上次中断/用户保留；交给 Windows 侧询问）──
+if [ -d "$M/~old" ]; then
+    say "ERROR: leftover ~old present -> refuse swap (exit 3); handle it on next Windows start"
+    umount "$M" 2>/dev/null
+    exit 3
+fi
 
 # ── 旧顶层项 → ~old（特殊项删旧）──
 mkdir -p "$M/~old" || { say "mkdir ~old FAILED"; umount "$M" 2>/dev/null; exit 1; }

@@ -1,8 +1,8 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：401/405 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：403/416 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n建议：以管理员身份运行（本程序要读写分区与引导）。': '\n\nAdvice: run as administrator (this program reads and writes partitions and boot data).',
@@ -51,10 +51,11 @@ EN = {
     'ON (需签名引导)': 'ON (signed boot required)',
     'Server 数据中心版': 'Server Datacenter',
     'Server 标准版': 'Server Standard',
-    'SysRecover 九转还原 · 命令行\n\n用法: SysRecover.exe <命令> [选项]      （`SysRecover.exe help <命令>` 看单项）\n\n命令:\n  list                        列出磁盘/分区/文件系统/盘符/ESP/系统标记\n  diag [--zip [--out <zip>]]  自检（固件/Secure Boot/启动项/wimlib）；--zip 导出诊断包\n  support [--out <zip>]       一键收集诊断资料（各盘日志+explorer转储+事件日志）打包\n  images --file <镜像>        列出镜像里的子镜像（含大小/描述）\n  backup --dest <文件> [--source <目录>] [--compress fast|maximum|recovery]\n         [--name <名>] [--append] [--verify] [--esp] [--no-snapshot] [--yes]\n  restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--yes]\n  verify --image <文件>       校验镜像完整性\n  repair-boot [--disk N --part M]   修复引导（ESP 的 BCD/bootmgfw；引导坏了不用重装）\n  extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]\n                              从镜像里取单个/一组文件（支持通配符）\n  history                     列出操作历史（logs/history.jsonl）\n  shortcut --target <exe> [--args <...>] [--name <名>]   建快捷方式\n  version                     显示版本\n  help [命令]                 本帮助\n  --lang <zh|en>              指定界面语言（如: SysRecover.exe --lang en help 用英文）\n\n退出码: 0 成功 / 1 通用失败 / 2 参数错 / 3 需管理员 / 4 危险目标被拒 / 5 镜像校验失败 / 6 取消\n注意: 还原系统盘会重启进救援层，镜像必须放在**本地分区**（救援层访问不到网络）。\n': 'SysRecover · Command Line\n\nUsage: SysRecover.exe <command> [options]      (`SysRecover.exe help <command>` for details)\n\nCommands:\n  list                        List disks/partitions/filesystems/drive letters/ESP/system flags\n  diag [--zip [--out <zip>]]  Self-check (firmware/Secure Boot/boot entries/wimlib); --zip exports a diagnostic bundle\n  support [--out <zip>]       Collect diagnostics (logs + explorer dump + event logs) into a zip\n  images --file <image>       List sub-images in the image (size/description)\n  backup --dest <file> [--source <dir>] [--compress fast|maximum|recovery]\n         [--name <name>] [--append] [--verify] [--esp] [--no-snapshot] [--yes]\n  restore --image <file> --disk N --part M [--index N] [--no-repair-boot] [--yes]\n  verify --image <file>       Verify image integrity\n  repair-boot [--disk N --part M]   Repair boot files (BCD/bootmgfw on ESP; no reinstall needed)\n  extract --file <image> --path <path> [--path ...] --dest <dir> [--index N]\n                              Extract single/group of files (wildcards supported)\n  history                     List operation history (logs/history.jsonl)\n  shortcut --target <exe> [--args <...>] [--name <name>]   Create a shortcut\n  version                     Show version\n  help [command]              This help\n  --lang <zh|en>              Set UI language (e.g. SysRecover.exe --lang en help for English)\n\nExit codes: 0 success / 1 generic failure / 2 bad arguments / 3 admin required / 4 dangerous target rejected / 5 image verification failed / 6 cancelled\nNote: restoring the system drive reboots into the rescue layer; the image must be on a LOCAL partition (the rescue layer has no network access).\n',
+    'SysRecover 九转还原 · 命令行\n\n用法: SysRecover.exe <命令> [选项]      （`SysRecover.exe help <命令>` 看单项）\n\n命令:\n  list                        列出磁盘/分区/文件系统/盘符/ESP/系统标记\n  diag [--zip [--out <zip>]]  自检（固件/Secure Boot/启动项/wimlib）；--zip 导出诊断包\n  support [--out <zip>]       一键收集诊断资料（各盘日志+explorer转储+事件日志）打包\n  images --file <镜像>        列出镜像里的子镜像（含大小/描述）\n  backup --dest <文件> [--source <目录>] [--compress fast|maximum|recovery]\n         [--name <名>] [--append] [--verify] [--esp] [--no-snapshot] [--yes]\n  restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--engine block|swap] [--yes]\n  verify --image <文件>       校验镜像完整性\n  repair-boot [--disk N --part M]   修复引导（ESP 的 BCD/bootmgfw；引导坏了不用重装）\n  extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]\n                              从镜像里取单个/一组文件（支持通配符）\n  history                     列出操作历史（logs/history.jsonl）\n  shortcut --target <exe> [--args <...>] [--name <名>]   建快捷方式\n  version                     显示版本\n  help [命令]                 本帮助\n  --lang <zh|en>              指定界面语言（如: SysRecover.exe --lang en help 用英文）\n\n退出码: 0 成功 / 1 通用失败 / 2 参数错 / 3 需管理员 / 4 危险目标被拒 / 5 镜像校验失败 / 6 取消\n注意: 还原系统盘会重启进救援层，镜像必须放在**本地分区**（救援层访问不到网络）。\n': 'SysRecover · Command Line\n\nUsage: SysRecover.exe <command> [options]      (`SysRecover.exe help <command>` for details)\n\nCommands:\n  list                        List disks/partitions/filesystems/drive letters/ESP/system flags\n  diag [--zip [--out <zip>]]  Self-check (firmware/Secure Boot/boot entries/wimlib); --zip exports a diagnostic bundle\n  support [--out <zip>]       Collect diagnostics (logs + explorer dump + event logs) into a zip\n  images --file <image>       List sub-images in the image (size/description)\n  backup --dest <file> [--source <dir>] [--compress fast|maximum|recovery]\n         [--name <name>] [--append] [--verify] [--esp] [--no-snapshot] [--yes]\n  restore --image <file> --disk N --part M [--index N] [--no-repair-boot] [--engine block|swap] [--yes]\n  verify --image <file>       Verify image integrity\n  repair-boot [--disk N --part M]   Repair boot files (BCD/bootmgfw on ESP; no reinstall needed)\n  extract --file <image> --path <path> [--path ...] --dest <dir> [--index N]\n                              Extract single/group of files (wildcards supported)\n  history                     List operation history (logs/history.jsonl)\n  shortcut --target <exe> [--args <...>] [--name <name>]   Create a shortcut\n  version                     Show version\n  help [command]              This help\n  --lang <zh|en>              Set UI language (e.g. SysRecover.exe --lang en help for English)\n\nExit codes: 0 success / 1 generic failure / 2 bad arguments / 3 admin required / 4 dangerous target rejected / 5 image verification failed / 6 cancelled\nNote: restoring the system drive reboots into the rescue layer; the image must be on a LOCAL partition (the rescue layer has no network access).\n',
     'UEFI 机器未找到可用的 ESP 引导分区，无法部署引导层。\n常见原因：DiskGenius 重建分区时漏建 ESP，或把 ESP 标成了 Basic Data（应改为 EFI System 类型）。\n当前分区表：\n': 'UEFI machine: no usable ESP boot partition found; cannot deploy the boot layer.\nCommon causes: partitions were rebuilt (e.g. by DiskGenius) without an ESP, or the ESP was marked as Basic Data (it should be EFI System).\nCurrent partition table:\n',
     'WIM/ESD 镜像': 'WIM/ESD images',
     '[diag] WARN: 本机固件只信任 CA2023，而我们的救援环境用 CA2011 签名 → 可能起不来（见 PLAN.md §11 备选 B/C）\n': '[diag] WARN: this firmware trusts only CA2023 while our rescue environment is signed with CA2011 -> it may not boot (see PLAN.md section 11, options B/C)\n',
+    '[残留] %s 保留不动（非交互式运行）：%s\n': '[leftover] %s kept (non-interactive): %s\n',
     'backup --dest <文件> [--source <目录>] [--compress fast|maximum|recovery]\n       [--name <名>] [--append] [--verify] [--esp] [--no-snapshot] [--yes]\n  --source 写盘符根（`C:` 或 `C:/` 都行）即自动走 VSS 热备；\n  --compress 决定体积/速度；--verify 写完立即校验；--append 追加为同一 WIM 的新子镜像；\n  --esp 把 ESP 分区并入同一镜像（子镜像名 ESP，还原系统时自动恢复回 ESP）；\n  --no-snapshot 冷备（PE/离线卷/VHD 卷上 VSS 不可用时用）；\n  本机没有 ESP 时自动跳过（不算失败）。': 'backup --dest <file> [--source <dir>] [--compress fast|maximum|recovery]\n       [--name <name>] [--append] [--verify] [--esp] [--no-snapshot] [--yes]\n  --source pointing at a volume root (`C:` or `C:/`) uses VSS hot backup automatically;\n  --compress controls size/speed; --verify verifies right after writing; --append appends a new sub-image to the same WIM;\n  --esp merges the ESP partition into the same image (sub-image name ESP; restored automatically when restoring the system);\n  --no-snapshot cold backup (use when VSS is unavailable: PE / offline volumes / mounted VHD volumes);\n  skipped automatically (not a failure) when this machine has no ESP.',
     'bcdedit 读取 ESP 上的 BCD 失败（rc=': 'bcdedit failed to read the BCD on the ESP (rc=',
     'diag [--zip [--out <zip>]]\n  自检（管理员/固件/Secure Boot/启动项/wimlib）。\n  --zip 导出诊断包（diag 文本 + logs/ + 契约文件），排错时直接发回。': 'diag [--zip [--out <zip>]]\n  Self-check (admin/firmware/Secure Boot/boot entries/wimlib).\n  --zip exports a diagnostics bundle (diag text + logs/ + contract files) to send back when debugging.',
@@ -64,7 +65,7 @@ EN = {
     'images --file <镜像>\n  列出镜像里的子镜像：<index> - <名称>（<大小>）。': 'images --file <image>\n  List the images inside an image file: <index> - <name> (<size>).',
     'list\n  列出磁盘/分区/文件系统/盘符/ESP 与系统标记。': 'list\n  List disks/partitions/filesystems/letters/ESP and system flags.',
     'repair-boot [--disk N --part M]\n  修复引导（ESP 上的 BCD/bootmgfw）：给**引导坏了的机器**用，不必重装。\n  不给 --disk/--part 时自动找系统盘；流程 = bcdboot + 产物校验（docs/15）。': 'repair-boot [--disk N --part M]\n  Repair boot (BCD/bootmgfw on the ESP): for a machine that will not boot, without reinstalling.\n  Without --disk/--part the system disk is found automatically; the flow is bcdboot + artifact verification (docs/15).',
-    'restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--yes]\n  目标是正在运行的系统盘 → 暂存并重启进救援层；否则就地还原（不重启）。\n  用 `list` 先确认磁盘号/分区号；镜像必须在**本地分区**。': 'restore --image <file> --disk N --part M [--index N] [--no-repair-boot] [--yes]\n  Targeting the running system disk -> staged, then reboot into the rescue layer; otherwise restore in place (no reboot).\n  Use `list` first to confirm the disk/partition numbers; the image must be on a **local partition**.',
+    'restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--engine block|swap] [--yes]\n  目标是正在运行的系统盘 → 暂存并重启进救援层；否则就地还原（不重启）。\n  用 `list` 先确认磁盘号/分区号；镜像必须在**本地分区**。': 'restore --image <file> --disk N --part M [--index N] [--no-repair-boot] [--engine block|swap] [--yes]\n  Targeting the running system disk -> staged, then reboot into the rescue layer; otherwise restore in place (no reboot).\n  Use `list` first to confirm the disk/partition numbers; the image must be on a **local partition**.',
     'shortcut --target <exe> [--args <...>] [--name <名>]\n  在桌面建快捷方式。': 'shortcut --target <exe> [--args <...>] [--name <name>]\n  Create a shortcut on the desktop.',
     'support [--out <zip>]\n  一键收集诊断资料：各盘日志 + explorer 转储 + 事件日志 → 打包成一个 zip\n  （不给 --out 时输出到桌面 SysRecover-logs-<时间>.zip）。': 'support [--out <zip>]\n  Collect diagnostics in one go: logs from all drives + explorer dumps + event logs -> one zip\n  (without --out it writes SysRecover-logs-<time>.zip on the Desktop).',
     'verify --image <文件>\n  校验镜像完整性（成功 0，失败 5）。': 'verify --image <file>\n  Verify image integrity (0 on success, 5 on failure).',
@@ -108,6 +109,8 @@ EN = {
     '企业版 LTSC': 'Enterprise LTSC',
     '使用之前的程序': 'Keep the Existing Instance',
     '使用现在新程序': 'Use This New Instance',
+    '保留 = 下次运行再问（还原前会被拦截）。': 'Keep = asked again next run (restore is blocked until handled).',
+    '保留不动': 'Keep As Is',
     '修复引导失败（bcdboot rc=': 'Boot repair failed (bcdboot rc=',
     '写入': 'Writing',
     '写入 ESP 引导失败（bcdboot rc=': 'Failed to write the ESP boot files (bcdboot rc=',
@@ -122,6 +125,7 @@ EN = {
     '即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n该分区上的所有数据将被覆盖！%ls\n原因：%ls；将暂存任务并在重启后执行。': 'The image will be restored to drive %ls: (disk %u partition %u).\nAll data on this partition will be overwritten!%ls\nReason: %ls; the task will be staged and run after the reboot.',
     '即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n该分区上的所有数据将被覆盖！%ls\n目标分区当前未被占用，将立即就地还原，不需要重启。': 'The image will be restored to drive %ls: (disk %u partition %u).\nAll data on this partition will be overwritten!%ls\nThe target partition is not in use, so it will be restored in place right away, with no reboot.',
     '卷影复制服务(VSS)': 'Volume Shadow Copy Service (VSS)',
+    '发现中断残留：': 'Interrupted leftover found: ',
     '取开始菜单目录失败\n': 'Failed to get the Start Menu folder\n',
     '取桌面目录失败\n': 'Failed to get the Desktop folder\n',
     '取消': 'Cancel',
@@ -234,6 +238,9 @@ EN = {
     '提取失败：%ls\n': 'Extraction failed: %ls\n',
     '搜索': 'Search',
     '搜集还原日志与诊断信息并打包到桌面（含 explorer 转储、事件日志）': 'Collect restore logs and diagnostics and package them to the Desktop (includes explorer dumps and event logs)',
+    '撤销 = 把旧系统搬回根目录并删除 ~old；': 'Undo = move the old system back to the root and delete ~old;',
+    '撤销恢复': 'Undo Restore',
+    '撤销未完全成功（': 'Undo did not fully succeed (',
     '教育版': 'Education',
     '文件→系统': 'Restore',
     '文件对话框创建失败': 'Failed to create the file dialog',
@@ -273,6 +280,8 @@ EN = {
     '格式：': 'Fmt:',
     '检测到本机有 BitLocker 加密的卷：': 'This machine has BitLocker-encrypted volumes: ',
     '检测到程序在光盘或U盘上运行，': 'The program is running from a CD or USB drive;',
+    '检测到还原残留': 'Restore Leftover Detected',
+    '检测到还原残留 %s：%s\n  y = 撤销（把旧系统搬回根目录），其它键 = 保留不动\n选择 [y/N]: ': 'Detected restore leftover %s: %s\n  y = undo (move the old system back to the root); any other key = keep as is\nChoice [y/N]: ',
     '正在修复引导（bcdboot + 产物校验）……': 'Repairing boot (bcdboot + artifact verification)...',
     '正在备份...': 'Backing up...',
     '正在安装启动还原菜单（写入契约 + 部署救援环境）...': 'Installing the boot restore menu (writing the task contract + deploying the rescue environment)...',
@@ -299,6 +308,7 @@ EN = {
     '目标文件已存在，覆盖需加 --yes 确认（追加请用 --append）\n': 'The target file already exists; add --yes to overwrite (use --append to add to it)\n',
     '目标是正在运行的系统盘': 'The target is the running system disk',
     '目标是正在运行的系统盘（必须重启后脱机还原）': 'The target is the running system disk (it must be restored offline after a reboot)',
+    '目标盘存在未处理的 ~old 残留，A 引擎还原已中止（重新运行程序会再次询问如何处理）': 'The target drive still has an unhandled ~old leftover; the A-engine restore was aborted (run the program again to be asked).',
     '目标系统缺少引导模板（': 'The target system is missing the boot template (',
     '目标镜像文件已存在，覆盖？': 'The target image file already exists. Overwrite it?',
     '知道了': 'Got it',
@@ -403,6 +413,7 @@ EN = {
     '），无法生成引导。请换用完整系统镜像。': '), so boot files cannot be generated. Use a complete system image.',
     '），无法生成引导。请换用完整系统镜像或修复该文件。': '), so boot files cannot be generated. Use a complete system image, or repair that file.',
     '），正在重启...': '), rebooting...',
+    '），详情见日志。': '); see the log for details.',
     '）：': '): ',
     '）：bcdboot 无法生成引导。多见于第三方精简/万能镜像，请换用完整系统镜像。': '): bcdboot cannot generate boot files. This is common with trimmed/universal images; use a complete system image.',
     '）：请先在 Windows 里点「删除启动还原」清掉 \\EFI\\ZJRESTORE\\ 旧版残留，或用 diskpart 扩大 ESP。': '): first click "Remove boot install" in Windows to delete the old \\EFI\\ZJRESTORE\\ leftovers, or enlarge the ESP with diskpart.',
