@@ -1,6 +1,7 @@
 // 备份/还原共享操作层实现。语义对齐 CLI（Phase 2-4 已验证）与旧 C# 编排器。
 #include "../common/i18n.h"
 #include "ops.h"
+#include "swapleft.h"
 
 #include <windows.h>
 
@@ -1177,6 +1178,18 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             err = Tr("目标分区无盘符，A 引擎无法解压");
             return 4;
         }
+        WaitSwapCleanup(target.letter[0]);  // 等启动期后台残留清理收尾
+        // fail-closed：目标盘还有未处理的 ~old（用户选「保留不动」/清理未跑）
+        // → 不动盘、中止；重新运行程序会再次询问（docs/23 §5）。
+        {
+            DWORD a = GetFileAttributesW((target.letter + L"\\~old").c_str());
+            if (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY)) {
+                err = Tr("目标盘存在未处理的 ~old 残留，A 引擎还原已中止"
+                         "（重新运行程序会再次询问如何处理）");
+                LogError(err);
+                return 4;
+            }
+        }
         unsigned long long content = 0;
         {
             WimEngine lw;
@@ -1187,6 +1200,37 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
                     if (im.index == want) content = im.sizeBytes;
             }
         }
+        if (progress) progress(1, "extract");
+        //「刚发生的接着处理」：近期完整 ~new 且 content 与所选镜像一致 → 复用
+        // （免重解压）；过期/不完整/镜像已换 → 丢弃重解（docs/23 §5 决策表）。
+        bool reuse = false;
+        std::wstring newDir = target.letter + L":\\~new";
+        {
+            DWORD a = GetFileAttributesW(newDir.c_str());
+            if (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY)) {
+                SwapLeftInfo ni;
+                if (ProbeSwapNew(target.letter[0], ni)) {
+                    SwapLeftVerdict v = DecideSwapLeftover(ni);
+                    if (v.action == SwapLeftAction::Reuse && content > 0 &&
+                        ni.markerContent == content) {
+                        reuse = true;
+                        LogInfo(
+                            "A-engine: reuse existing ~new (content matches "
+                            "selected image)");
+                    } else {
+                        LogInfo("A-engine: discard leftover ~new (" + v.reason +
+                                (v.action == SwapLeftAction::Reuse
+                                     ? "; content mismatch, redo extract"
+                                     : "") +
+                                ")");
+                        DeleteTreeRec(newDir);
+                    }
+                } else {
+                    DeleteTreeRec(newDir);  // 探测竞态 → 保守删除
+                }
+            }
+        }
+        if (!reuse) {
         SwapSpaceEstimate se;
         if (!EstimateSwapSpace(target, content, se) || !se.enough) {
             char buf[256];
@@ -1199,9 +1243,6 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             LogError(err);
             return 1;
         }
-        std::wstring newDir = target.letter + L":\\~new";
-        DeleteTreeRec(newDir);  // 上次残留/孤儿（无标记即不可信）
-        if (progress) progress(1, "extract");
         LogInfo("A-engine: extract to " + W2U(newDir) + " (content " +
                 std::to_string(content) + " bytes)");
         WimEngine we;
@@ -1239,6 +1280,7 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             }
         }
         LogInfo("A-engine: ~new ready (with .zj-done marker)");
+        }  // if (!reuse)
     }
     if (!AcquireOpLock()) {
         err = Tr("已有备份/还原实例在运行");

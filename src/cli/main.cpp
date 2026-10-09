@@ -18,6 +18,7 @@
 #include "../app/safety.h"
 #include "../app/selfdiag.h"
 #include "../app/shortcut.h"
+#include "../app/swapleft.h"
 #include "../boot/bcd.h"
 #include "../boot/grub.h"
 #include "../boot/task.h"
@@ -664,7 +665,7 @@ const CmdHelp* CmdHelpTable(size_t* n) {
     {"backup",
      Tr("backup --dest <文件> [--source <目录>] [--compress fast|maximum|recovery]\n" "       [--name <名>] [--append] [--verify] [--esp] [--no-snapshot] [--yes]\n" "  --source 写盘符根（`C:` 或 `C:/` 都行）即自动走 VSS 热备；\n" "  --compress 决定体积/速度；--verify 写完立即校验；--append 追加为同一 WIM 的新子镜像；\n" "  --esp 把 ESP 分区并入同一镜像（子镜像名 ESP，还原系统时自动恢复回 ESP）；\n" "  --no-snapshot 冷备（PE/离线卷/VHD 卷上 VSS 不可用时用）；\n" "  本机没有 ESP 时自动跳过（不算失败）。")},
     {"restore",
-     Tr("restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--yes]\n" "  目标是正在运行的系统盘 → 暂存并重启进救援层；否则就地还原（不重启）。\n" "  用 `list` 先确认磁盘号/分区号；镜像必须在**本地分区**。")},
+     Tr("restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--engine block|swap] [--yes]\n" "  目标是正在运行的系统盘 → 暂存并重启进救援层；否则就地还原（不重启）。\n" "  用 `list` 先确认磁盘号/分区号；镜像必须在**本地分区**。")},
     {"verify", Tr("verify --image <文件>\n  校验镜像完整性（成功 0，失败 5）。")},
     {"repair-boot",
      Tr("repair-boot [--disk N --part M]\n" "  修复引导（ESP 上的 BCD/bootmgfw）：给**引导坏了的机器**用，不必重装。\n" "  不给 --disk/--part 时自动找系统盘；流程 = bcdboot + 产物校验（docs/15）。")},
@@ -680,7 +681,7 @@ const CmdHelp* CmdHelpTable(size_t* n) {
 
 void PrintAllUsage() {
     std::printf(
-        Tr("SysRecover 九转还原 · 命令行\n" "\n" "用法: SysRecover.exe <命令> [选项]      （`SysRecover.exe help <命令>` 看单项）\n" "\n" "命令:\n"         "  list                        列出磁盘/分区/文件系统/盘符/ESP/系统标记\n" "  diag [--zip [--out <zip>]]  自检（固件/Secure Boot/启动项/wimlib）；--zip 导出诊断包\n" "  support [--out <zip>]       一键收集诊断资料（各盘日志+explorer转储+事件日志）打包\n" "  images --file <镜像>        列出镜像里的子镜像（含大小/描述）\n"         "  backup --dest <文件> [--source <目录>] [--compress fast|maximum|recovery]\n" "         [--name <名>] [--append] [--verify] [--esp] [--no-snapshot] [--yes]\n" "  restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--yes]\n" "  verify --image <文件>       校验镜像完整性\n"
+        Tr("SysRecover 九转还原 · 命令行\n" "\n" "用法: SysRecover.exe <命令> [选项]      （`SysRecover.exe help <命令>` 看单项）\n" "\n" "命令:\n"         "  list                        列出磁盘/分区/文件系统/盘符/ESP/系统标记\n" "  diag [--zip [--out <zip>]]  自检（固件/Secure Boot/启动项/wimlib）；--zip 导出诊断包\n" "  support [--out <zip>]       一键收集诊断资料（各盘日志+explorer转储+事件日志）打包\n" "  images --file <镜像>        列出镜像里的子镜像（含大小/描述）\n"         "  backup --dest <文件> [--source <目录>] [--compress fast|maximum|recovery]\n" "         [--name <名>] [--append] [--verify] [--esp] [--no-snapshot] [--yes]\n"          "  restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--engine block|swap] [--yes]\n" "  verify --image <文件>       校验镜像完整性\n"
         "  repair-boot [--disk N --part M]   修复引导（ESP 的 BCD/bootmgfw；引导坏了不用重装）\n"
         "  extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]\n" "                              从镜像里取单个/一组文件（支持通配符）\n" "  history                     列出操作历史（logs/history.jsonl）\n" "  shortcut --target <exe> [--args <...>] [--name <名>]   建快捷方式\n" "  version                     显示版本\n" "  help [命令]                 本帮助\n" "  --lang <zh|en>              指定界面语言（如: SysRecover.exe --lang en help 用英文）\n" "\n" "退出码: 0 成功 / 1 通用失败 / 2 参数错 / 3 需管理员 / 4 危险目标被拒 / 5 镜像校验失败 / 6 取消\n" "注意: 还原系统盘会重启进救援层，镜像必须放在**本地分区**（救援层访问不到网络）。\n"));
 }
@@ -792,7 +793,60 @@ int main() {
         std::wstring notice = sysrecover::CheckLastRescueFailure();
         if (!notice.empty())
             std::fprintf(stderr, "%s\n", W2U8(notice).c_str());
-    }    SetConsoleCtrlHandler(OnCtrl, TRUE);  // Ctrl+C → 干净取消（备份/还原应用）
+    }
+    // A 引擎残留分流（0.7，用户 2026-10-09 规格；决策表 docs/23 §5）：
+    //   Delete → 立即删；Reuse/Redo → 只记日志（还原 swap 分支再接着处理）；
+    //   AskUndo → 询问（--yes 直接撤销；stdin 非控制台 → 保留不动并警告）。
+    {
+        const bool yesFlag = Has(args, "--yes") || Has(args, "-y");
+        bool hasConsole = false;
+        {
+            DWORD mode = 0;
+            hasConsole = GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &mode);
+        }
+        for (const auto& it : sysrecover::ScanSwapLeftovers()) {
+            const sysrecover::SwapLeftVerdict v =
+                sysrecover::DecideSwapLeftover(it);
+            const std::string tag =
+                std::string(it.isNew ? "~new" : "~old") +
+                std::string(" on ") + (char)it.drive + ":";
+            if (v.action == sysrecover::SwapLeftAction::Delete) {
+                sysrecover::LogInfo("swap leftover: " + tag +
+                                    " -> delete (" + v.reason + ")");
+                sysrecover::DeleteSwapLeftover(it);
+            } else if (v.action == sysrecover::SwapLeftAction::AskUndo) {
+                bool undo = false;
+                if (yesFlag) {
+                    undo = true;
+                } else if (hasConsole) {
+                    std::fprintf(stderr,
+                                 Tr("检测到还原残留 %s：%s\n"
+                                    "  y = 撤销（把旧系统搬回根目录），其它键 = 保留不动\n"
+                                    "选择 [y/N]: "),
+                                 tag.c_str(), v.reason.c_str());
+                    char line[32] = {0};
+                    if (std::fgets(line, sizeof(line), stdin))
+                        undo = (line[0] == 'y' || line[0] == 'Y');
+                } else {
+                    std::fprintf(stderr,
+                                 Tr("[残留] %s 保留不动（非交互式运行）：%s\n"),
+                                 tag.c_str(), v.reason.c_str());
+                    sysrecover::LogInfo("swap leftover kept (non-interactive): " +
+                                        tag + " (" + v.reason + ")");
+                }
+                if (undo) {
+                    std::string det;
+                    sysrecover::UndoSwapLeftover(it.drive, det);
+                } else {
+                    sysrecover::LogInfo("swap leftover kept by user: " + tag +
+                                        " (" + v.reason + ")");
+                }
+            } else {
+                sysrecover::LogInfo("swap leftover: " + tag + " -> " + v.reason);
+            }
+        }
+    }
+    SetConsoleCtrlHandler(OnCtrl, TRUE);  // Ctrl+C → 干净取消（备份/还原应用）
     std::string cmdline = "cmd:";
     for (const auto& a : args) {
         cmdline += " ";

@@ -56,7 +56,8 @@ APP_SRC = src/disk/disk.cpp src/wim/wim.cpp src/wim/exclude.cpp \
       src/common/relocate.cpp src/common/pathutil.cpp src/common/cpucap.cpp src/common/ea.cpp src/common/refscan.cpp src/boot/bcd.cpp src/boot/grub.cpp \
       src/boot/uefi.cpp src/boot/bcd_parse.cpp src/boot/bootpath.cpp src/boot/task.cpp src/boot/bootfix.cpp \
       src/app/safety.cpp src/app/advice.cpp \
-      src/app/shortcut.cpp src/app/ops.cpp src/app/selfdiag.cpp
+      src/app/shortcut.cpp src/app/ops.cpp src/app/selfdiag.cpp \
+      src/app/swapleft.cpp
 APP_OBJS = $(patsubst src/%.cpp,$(OBJDIR)/app/%.o,$(APP_SRC))
 APP_LIB  = $(OBJDIR)/libapp.a
 
