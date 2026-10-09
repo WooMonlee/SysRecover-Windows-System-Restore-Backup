@@ -1782,8 +1782,46 @@ int RepairBoot(int disk, int part, std::string& msg) {
         }
     }
     UnmountEsp(espRoot, blog);
-    msg = Tr("引导已修复并校验通过（UEFI）。");
+    msg = Tr("引导已修复并校验通过（UEFI）\n");
     return 0;
+}
+
+// ── A 引擎空间预检（用户 2026-10-09 规格，docs/22 §1.1）────────────────
+bool EstimateSwapSpace(const PartitionInfo& target,
+                       unsigned long long imageContentBytes,
+                       SwapSpaceEstimate& out) {
+    out = SwapSpaceEstimate{};
+    out.content = imageContentBytes;
+    if (target.letter.empty())
+        return false;
+    std::wstring root = target.letter + L":\\";
+    auto fsz = [&](const wchar_t* name) -> unsigned long long {
+        WIN32_FILE_ATTRIBUTE_DATA fad = {};
+        if (!GetFileAttributesExW((root + name).c_str(), GetFileExInfoStandard,
+                                  &fad))
+            return 0;
+        ULARGE_INTEGER u;
+        u.HighPart = fad.nFileSizeHigh;
+        u.LowPart = fad.nFileSizeLow;
+        return u.QuadPart;
+    };
+    out.pagefile = fsz(L"pagefile.sys");
+    out.swapfile = fsz(L"swapfile.sys");
+    out.hiberfil = fsz(L"hiberfil.sys");
+    out.slack = imageContentBytes / 10 + (2ull << 30);  // 内容×10% + 2GB
+    out.required =
+        out.content + out.pagefile + out.swapfile + out.hiberfil + out.slack;
+    ULARGE_INTEGER freeAvail = {}, total = {}, totalFree = {};
+    if (GetDiskFreeSpaceExW(root.c_str(), &freeAvail, &total, &totalFree))
+        out.freeBytes = freeAvail.QuadPart;
+    else
+        out.certain = false;
+    out.enough = out.freeBytes >= out.required;
+    // 不够（或读不到空闲）→ 不确定：上层弹一次让用户确认（用户规格：
+    // "够 → 直接开始；不确定的让用户自己确认"）。
+    if (!out.enough)
+        out.certain = false;
+    return true;
 }
 
 }  // namespace sysrecover
