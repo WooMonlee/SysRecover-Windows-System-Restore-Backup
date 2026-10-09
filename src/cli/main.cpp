@@ -400,9 +400,15 @@ int CmdExtract(const std::vector<std::string>& a) {
     for (size_t i = 0; i + 1 < a.size(); ++i)
         if (a[i] == "--path")
             paths.push_back(ToWide(a[i + 1]));
-    if (file.empty() || dest.empty() || paths.empty()) {
+    // --all（0.7 A 引擎解压器，docs/21/22）：整镜像提取到 --dest 目录 —— 走
+    // Windows 侧 wimlib（flags=0，目录模式），reparse/EA/ACL/时间戳全原生保真。
+    // 与 --path 互斥；用于"Windows 原生解压 + Linux 仅改名交换"的新还原架构。
+    bool all = false;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (a[i] == "--all") all = true;
+    if (file.empty() || dest.empty() || (!all && paths.empty())) {
         std::printf(
-            Tr("用法: SysRecover.exe extract --file <镜像> [--index N] " "--path <镜像内路径> [--path ...] --dest <输出目录>\n" "  路径用 Windows 风格、以 \\ 开头，支持通配符，例如：\n" "    --path \"\\Windows\\win.ini\"\n" "    --path \"\\Users\\*\\Desktop\\*.txt\"\n"));
+            Tr("用法: SysRecover.exe extract --file <镜像> [--index N] " "--path <镜像内路径> [--path ...] --dest <输出目录>\n" "     或: SysRecover.exe extract --file <镜像> [--index N] --all --dest <输出目录>\n" "  --path 用 Windows 风格、以 \\ 开头，支持通配符，例如：\n" "    --path \"\\Windows\\win.ini\"\n" "    --path \"\\Users\\*\\Desktop\\*.txt\"\n" "  --all：提取整个子镜像（Windows 原生元数据全保真；与 --path 互斥）\n"));
         return 2;
     }
     // 输出目录：不存在就建（父目录需已存在）。**盘符根（`X:\`）视为已存在** ——
@@ -424,12 +430,17 @@ int CmdExtract(const std::vector<std::string>& a) {
         std::printf(Tr("wimlib 初始化失败\n"));
         return 1;
     }
-    int rc = engine.ExtractPaths(ToWide(file), index, paths, ToWide(dest));
+    int rc = all ? engine.Apply(ToWide(file), index, ToWide(dest), {})
+                 : engine.ExtractPaths(ToWide(file), index, paths,
+                                       ToWide(dest));
     if (rc != 0) {
         std::printf(Tr("提取失败：%ls\n"), sysrecover::WimEngine::ErrorString(rc));
         return 1;
     }
-    std::printf(Tr("已提取 %zu 个路径到 %s\n"), paths.size(), dest.c_str());
+    if (all)
+        std::printf(Tr("已整镜像提取到 %s\n"), dest.c_str());
+    else
+        std::printf(Tr("已提取 %zu 个路径到 %s\n"), paths.size(), dest.c_str());
     return 0;
 }
 

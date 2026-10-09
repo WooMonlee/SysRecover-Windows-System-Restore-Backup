@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：400/401 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：400/402 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n建议：以管理员身份运行（本程序要读写分区与引导）。': '\n\nAdvice: run as administrator (this program reads and writes partitions and boot data).',
@@ -188,6 +188,7 @@ EN = {
     '已导出诊断包（%d 个文件）：%ls\n': 'Diagnostics bundle exported (%d files): %ls\n',
     '已导出诊断包：%s\n': 'Diagnostics bundle exported: %s\n',
     '已提取 %zu 个路径到 %s\n': 'Extracted %zu path(s) to %s\n',
+    '已整镜像提取到 %s\n': 'Extracted whole image to %s\n',
     '已暂存还原任务，重启后由引导层执行。\n': 'The restore task has been staged; the boot layer will run it after a reboot.\n',
     '已有备份/还原实例在运行': 'A backup/restore instance is already running',
     '已有备份/还原实例在运行，本次退出\n': 'A backup/restore instance is already running; exiting now\n',
@@ -282,7 +283,7 @@ EN = {
     '浏览系统镜像': 'Browse Image',
     '清除引导': 'Clear',
     '清除引导项未完全成功': 'Clearing the Boot Entry Was Not Fully Successful',
-    '用法: SysRecover.exe extract --file <镜像> [--index N] --path <镜像内路径> [--path ...] --dest <输出目录>\n  路径用 Windows 风格、以 \\ 开头，支持通配符，例如：\n    --path "\\Windows\\win.ini"\n    --path "\\Users\\*\\Desktop\\*.txt"\n': 'Usage: SysRecover.exe extract --file <image> [--index N] --path <path-in-image> [--path ...] --dest <output dir>\n  Paths use Windows style and start with \\; wildcards are supported, for example:\n    --path "\\Windows\\win.ini"\n    --path "\\Users\\*\\Desktop\\*.txt"\n',
+    '用法: SysRecover.exe extract --file <镜像> [--index N] --path <镜像内路径> [--path ...] --dest <输出目录>\n     或: SysRecover.exe extract --file <镜像> [--index N] --all --dest <输出目录>\n  --path 用 Windows 风格、以 \\ 开头，支持通配符，例如：\n    --path "\\Windows\\win.ini"\n    --path "\\Users\\*\\Desktop\\*.txt"\n  --all：提取整个子镜像（Windows 原生元数据全保真；与 --path 互斥）\n': 'Usage: SysRecover.exe extract --file <image> [--index N] --path <path-in-image> [--path ...] --dest <output dir>\n     or: SysRecover.exe extract --file <image> [--index N] --all --dest <output dir>\n  --path uses Windows style starting with \\; wildcards are supported, e.g.:\n    --path "\\Windows\\win.ini"\n    --path "\\Users\\*\\Desktop\\*.txt"\n  --all: extract the entire sub-image (native Windows metadata, fully faithful; mutually exclusive with --path)\n',
     '留在原处': 'Stay Here',
     '盘符•系统类型': 'Drive•OS',
     '目标分区当前被占用': 'The target partition is currently in use',
