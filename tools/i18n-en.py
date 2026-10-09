@@ -1,8 +1,8 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：400/402 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：401/405 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n建议：以管理员身份运行（本程序要读写分区与引导）。': '\n\nAdvice: run as administrator (this program reads and writes partitions and boot data).',
@@ -30,6 +30,8 @@ EN = {
     ': 盘': ': drive',
     ': 盘）': ': drive)',
     ':\\）': ':\\)',
+    'A 引擎空间不足：需要约 %.1f GB（内容+页文件+余量），目标盘可用 %.1f GB。请清理磁盘后重试。': 'A-engine: not enough free space: about %.1f GB required (content + page/swap/hiber files + margin), %.1f GB available on the target. Free up space and retry.',
+    'A 引擎解压失败(rc=%d): ': 'A-engine extraction failed (rc=%d): ',
     'BitLocker 提醒': 'BitLocker notice',
     'CPU 不限制': 'No CPU limit',
     'CPU 限制：%d%%': 'CPU limit: %d%%',
@@ -201,7 +203,7 @@ EN = {
     '开始恢复': 'Start Restore',
     '开始还原': 'Start Restore',
     '引导仍不完整（校验未通过）：': 'Boot is still incomplete (verification failed): ',
-    '引导已修复并校验通过（UEFI）。': 'Boot repaired and verified (UEFI).',
+    '引导已修复并校验通过（UEFI）\n': 'Boot files repaired and verified (UEFI)\n',
     '引导已修复（BIOS）。': 'Boot repaired (BIOS).',
     '当前以 32 位程序运行在 64 位 Windows 上。\r\nwimlib 的卷影快照不支持 WOW64 模式，热备份必然失败（rc=89）。\r\n请改用安装目录 x64\\ 下的 64 位程序后重试。': 'This is a 32-bit program running on 64-bit Windows.\r\nwimlib volume shadow snapshots are not supported in WOW64 mode, so a hot backup is guaranteed to fail (rc=89).\r\nPlease use the 64-bit program under the install directory x64\\ and try again.',
     '当前在安全模式，是否退出并重启？': 'Currently in Safe Mode. Exit and reboot?',
@@ -287,6 +289,7 @@ EN = {
     '留在原处': 'Stay Here',
     '盘符•系统类型': 'Drive•OS',
     '目标分区当前被占用': 'The target partition is currently in use',
+    '目标分区无盘符，A 引擎无法解压': 'The target partition has no drive letter; the A-engine cannot extract',
     '目标分区无盘符，无法写恢复日志（Linux 侧将无法定位目标）': 'The target partition has no drive letter, so the restore log cannot be written (the Linux side will not be able to locate the target)',
     '目标分区无盘符，无法直接应用\n': 'The target partition has no drive letter; cannot apply directly\n',
     '目标分区未被占用': 'The target partition is not in use',

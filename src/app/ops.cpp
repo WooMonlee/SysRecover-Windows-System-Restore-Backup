@@ -1169,6 +1169,77 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             return 1;
         }
     }
+    // ── A 引擎（0.7，docs/21/22/23）：Windows 原生解压到 <目标>:\~new ──
+    // 必须在写契约/部署引导之前完成：解压成功才继续。失败/中断 → 报错、不碰
+    // 旧系统、清理 ~new（L1 定案：让用户换镜像重试；断电由下次启动清孤儿）。
+    if (req.engine == "swap") {
+        if (target.letter.empty()) {
+            err = Tr("目标分区无盘符，A 引擎无法解压");
+            return 4;
+        }
+        unsigned long long content = 0;
+        {
+            WimEngine lw;
+            std::vector<ImageDesc> imgs;
+            if (lw.ok() && lw.ListImages(imagePath, imgs) == 0) {
+                int want = req.index < 1 ? 1 : req.index;
+                for (const auto& im : imgs)
+                    if (im.index == want) content = im.sizeBytes;
+            }
+        }
+        SwapSpaceEstimate se;
+        if (!EstimateSwapSpace(target, content, se) || !se.enough) {
+            char buf[256];
+            snprintf(buf, sizeof(buf),
+                     Tr("A 引擎空间不足：需要约 %.1f GB（内容+页文件+余量），"
+                        "目标盘可用 %.1f GB。请清理磁盘后重试。"),
+                     se.required / 1073741824.0, se.freeBytes / 1073741824.0);
+            err = buf;
+            if (adv) *adv = ADV_SPACE;
+            LogError(err);
+            return 1;
+        }
+        std::wstring newDir = target.letter + L":\\~new";
+        DeleteTreeRec(newDir);  // 上次残留/孤儿（无标记即不可信）
+        if (progress) progress(1, "extract");
+        LogInfo("A-engine: extract to " + W2U(newDir) + " (content " +
+                std::to_string(content) + " bytes)");
+        WimEngine we;
+        if (!we.ok()) {
+            err = Tr("wimlib 初始化失败");
+            return 1;
+        }
+        int erc = we.Apply(imagePath, req.index < 1 ? 1 : req.index, newDir,
+                           progress);
+        if (erc != 0) {
+            DeleteTreeRec(newDir);
+            char b2[160];
+            snprintf(b2, sizeof(b2), Tr("A 引擎解压失败(rc=%d): "), erc);
+            err = b2;
+            err += W2U(WimEngine::ErrorString(erc));
+            LogError(err);
+            return 1;
+        }
+        {   // 完成标记：zjswap.sh 先验后动；无标记 = 不完整 → 拒绝交换
+            SYSTEMTIME stw = {};
+            GetLocalTime(&stw);
+            char line[160];
+            int len = snprintf(
+                line, sizeof(line),
+                "content=%llu time=%04d-%02d-%02d %02d:%02d:%02d\n", content,
+                stw.wYear, stw.wMonth, stw.wDay, stw.wHour, stw.wMinute,
+                stw.wSecond);
+            HANDLE h = CreateFileW((newDir + L"\\.zj-done").c_str(),
+                                   GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                                   FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (h != INVALID_HANDLE_VALUE) {
+                DWORD wr = 0;
+                WriteFile(h, line, (DWORD)len, &wr, nullptr);
+                CloseHandle(h);
+            }
+        }
+        LogInfo("A-engine: ~new ready (with .zj-done marker)");
+    }
     if (!AcquireOpLock()) {
         err = Tr("已有备份/还原实例在运行");
         return 1;
@@ -1247,6 +1318,7 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
     t.targetFs = target.fs;
     t.targetVolLabel = target.label;
     t.softwarePath = ExePath();
+    t.engine = req.engine;  // 0.7：""/block=B 引擎；swap=A 引擎（docs/23）
     // 诊断日志目录（PIT-059）：优先软件目录本身；软件在目标盘（会被格式化）
     // 或只读介质上时，回退到数据盘 <数据盘>\ZJRESTORE（建好，保留给排错用）。
     {

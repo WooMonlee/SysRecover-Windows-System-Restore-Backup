@@ -273,6 +273,8 @@ int CmdRestore(const std::vector<std::string>& a) {
     req.part = part;
     req.index = index;
     req.repairBoot = repairBoot;
+    // 0.7（docs/23）：--engine swap = A 引擎（Windows 原生解压 + Linux 仅改名交换）
+    req.engine = Opt(a, "--engine");
     std::string err;
     bool needReboot = true;
     // BitLocker 提醒（同 GUI 规格）：有加密卷就醒目提示（脚本场景不阻塞，只提示）
