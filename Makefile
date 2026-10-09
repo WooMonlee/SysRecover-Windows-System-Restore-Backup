@@ -156,40 +156,14 @@ EA_APPLY_OUT = bootfiles/zj-ea-apply.exe
 ea-apply: $(EA_APPLY_OUT)
 $(EA_APPLY_OUT): $(EA_APPLY_SRC) src/common/version.h
 	$(EA_APPLY_X86) $(CXXFLAGS) $(INCLUDES) $(EA_APPLY_SRC) -o $(EA_APPLY_OUT) -static -mconsole -municode -s -lntdll -ladvapi32
-
-# ---- 单元测试（零依赖，纯逻辑；不链 duilib/wimlib，跑得快） ----
-TEST_SRC   = tests/tiny_test.cpp tests/unit_tests.cpp tests/main.cpp
-TEST_UNITS = src/common/sysinfo.cpp src/wim/exclude.cpp src/boot/task.cpp src/common/zip.cpp src/app/advice.cpp \
-      src/common/i18n.cpp src/common/selfarch.cpp src/common/relocate.cpp src/common/pathutil.cpp src/boot/bcd_parse.cpp src/boot/bootpath.cpp \
-      src/common/ea.cpp src/common/refscan.cpp
-TEST_BIN   = $(OBJDIR)/tests.exe
-
-check: $(TEST_BIN)
-	$(TEST_BIN)
-	$(PYTHON) tests/test_version.py
+# ---- 一致性门禁（测试线已封存 2026-10-09）----
+# 单元测试/冒烟/崩溃探针**全部移入 graveyard\**：旧架构的测试对新架构（Windows
+# 解压 + Linux 改名交换）无意义，将随新软件重做（见 docs/20、docs/21）。
+# 此处只保留开发工作流门禁（文档指针/国际化/宽度）。
+check:
 	$(PYTHON) tools/check-docs.py
 	$(PYTHON) tools/check-i18n.py
 	$(PYTHON) tools/check-widths.py
-
-$(TEST_BIN): $(TEST_SRC) $(TEST_UNITS) src/common/rescue_decision.h src/common/version.h | $(OBJDIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) $(TEST_SRC) $(TEST_UNITS) -o $(TEST_BIN) -static -mconsole -ladvapi32 -lole32 -luuid -lntdll
-
-# ---- 崩溃处理回归探针（**会故意崩溃**；验证 dump + 可读文本真能落盘）----
-# 单独目标（不进 make check —— 它会真的崩）。产物在 tests\crash-out\（gitignore）。
-CRASH_PROBE = $(OBJDIR)/crash_probe.exe
-crash-test: $(CRASH_PROBE)
-	-$(CRASH_PROBE) tests\crash-out
-	@if exist tests\crash-out\logs\crash\crash-*.dmp (echo CRASH DUMP: OK) else (echo CRASH DUMP: MISSING && exit 1)
-
-$(CRASH_PROBE): tests/crash_probe.cpp src/common/crash.cpp src/common/version.h | $(OBJDIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/crash_probe.cpp src/common/crash.cpp -o $(CRASH_PROBE) -static -mconsole
-
-# ---- 冒烟（QEMU；每条 2~3 分钟，**不进 make check**）----
-# 前置：本机有 QEMU + OVMF（路径写死在 tools\vmtest\*.ps1 里）。清单见 docs/07。
-smoke:
-	powershell -ExecutionPolicy Bypass -File tools\vmtest\bios-smoke.ps1
-	powershell -ExecutionPolicy Bypass -File tools\vmtest\uefi-smoke.ps1
-	powershell -ExecutionPolicy Bypass -File tools\vmtest\uefi-ubuntu-smoke.ps1
 
 # ---- ★ 发布包：根目录 = x86 整套（入口）；x64/ = x64 整套；与位数无关的资源放根目录 ----
 # 需要**两套工具链**：x64 走 PATH 上的 g++（请先把 mingw64\bin 加到 PATH），x86 走绝对路径。
