@@ -34,6 +34,9 @@ struct RestoreRequest {
     int part = 0;        // 目标分区号（1-based）
     int index = 1;       // 子镜像（1-based）
     bool repairBoot = true;
+    // 还原引擎（0.7，docs/21/22/23）：""/"block" = B 引擎（Linux apply）；
+    // "swap" = A 引擎（Windows 原生解压到 <目标>:\~new + Linux 仅改名交换）。
+    std::string engine;
 };
 
 // 备份。覆盖确认由调用方负责（CLI --yes / GUI 对话框）。

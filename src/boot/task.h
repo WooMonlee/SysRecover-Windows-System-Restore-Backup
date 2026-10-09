@@ -32,6 +32,9 @@ struct RestoreTask {
     std::string ptType = "mbr";  // mbr | gpt
     bool repairBoot = true;
     uint32_t partCount = 1;
+    // 还原引擎（0.7，docs/23）：""/block = B 引擎（Linux apply）；swap = A 引擎
+    // （救援层只做改名交换，不 apply —— 见 bootfiles/zjswap.sh）。
+    std::string engine;
     // _zjresy 恢复日志附加字段（对齐旧 C# WriteRestoreLog，Phase 5 补）
     std::wstring targetDiskName;   // 磁盘型号
     uint64_t targetDiskSize = 0;   // 整盘字节数
