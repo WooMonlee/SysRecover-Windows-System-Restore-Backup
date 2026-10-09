@@ -103,6 +103,25 @@ bool ReadMenuBinding(std::wstring* imagePath, int* imageIndex,
 // 「安装菜单」（用户 2026-10-05 实测 bug）。
 void DeleteMenuBinding();
 
+// ── A 引擎（0.7）空间预检（用户 2026-10-09 规格，docs/22 §1.1）────────
+// 需要空闲 ≥ 解压内容量 + pagefile.sys + swapfile.sys + hiberfil.sys
+//            + 余量（内容×10% + 2GB）。
+// 策略：够 → 直接开始（不问）；临界/不确定 → 上层弹一次让用户确认。
+struct SwapSpaceEstimate {
+    unsigned long long content = 0;    // 镜像未压缩内容量（调用方传入）
+    unsigned long long pagefile = 0;   // 目标盘当前实际大小（读不到按 0）
+    unsigned long long swapfile = 0;
+    unsigned long long hiberfil = 0;
+    unsigned long long slack = 0;      // 内容×10% + 2GB
+    unsigned long long required = 0;   // 合计
+    unsigned long long freeBytes = 0;  // 目标盘当前空闲
+    bool enough = false;               // free >= required
+    bool certain = true;               // 空闲值读取成功（false=让用户确认）
+};
+bool EstimateSwapSpace(const PartitionInfo& target,
+                       unsigned long long imageContentBytes,
+                       SwapSpaceEstimate& out);
+
 // 本次还原/装菜单该走哪套引导链（PIT-092）：UEFI 固件 **且** 目标盘 GPT →
 // UEFI/ESP；否则（含"UEFI 固件 + MBR 盘"）BIOS/GRUB4DOS。GUI 用它给
 // "安装菜单成功"的提示选对说法（UEFI=开机按 F12 选固件启动项；
