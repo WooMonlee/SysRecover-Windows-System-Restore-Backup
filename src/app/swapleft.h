@@ -26,6 +26,7 @@ struct SwapLeftInfo {
     bool rootIntact = false;               //（~old）根下有 Windows 目录
     bool siblingNew = false;               //（~old）同盘 ~new 仍在
     bool rescueOk = false;                 //（~old）根下 ZJRESTORE-status.txt result=OK
+    bool keepOldMarker = false;            //（~old）.zj-keepold 标记存在（备返模式）
 };
 
 struct SwapLeftVerdict {

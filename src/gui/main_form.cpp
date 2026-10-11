@@ -202,9 +202,44 @@ void CMainForm::InitWindow() {
     ::PostMessage(m_hWnd, WM_CHECK_RESCUE, 0, 0);
 }
 
+// ────────────────── pre-message filter：Ctrl+Tab 切模式 ──────────────────
+// WindowImplBase::OnCreate 已把 this 注册为 pre-message filter
+//（WinImplBase.cpp:275），虚分派先到本覆写；这里只新增拦 Ctrl+Tab，
+// 其余原样转交基类（保持 ESC 关窗等既有行为）。
+// 裸 Tab 不拦（保持焦点循环）；忙碌时只吞不切 —— Notify 对忙时
+// SELECTCHANGED 早退（main_form.cpp:737），切了会造成「Tab 变了、模式没变」。
+LRESULT CMainForm::MessageHandler(UINT uMsg, WPARAM wParam, LPARAM lParam,
+                                  bool& bHandled) {
+    bHandled = false;
+    if (uMsg == WM_KEYDOWN && wParam == VK_TAB &&
+        (::GetKeyState(VK_CONTROL) & 0x8000)) {
+        bHandled = true;  // 吞掉 → PreMessageHandler 提前返回，不再 SetNextTabControl
+        if (!m_busy) {
+            CControlUI* p = m_PaintManager.FindControl(
+                m_backupMode ? _T("ModeRestore") : _T("ModeBackup"));
+            if (p)
+                static_cast<COptionUI*>(p)->Selected(true);  // → SELECTCHANGED → ApplyModeUi
+        }
+        return 0;
+    }
+    return WindowImplBase::MessageHandler(uMsg, wParam, lParam, bHandled);
+}
+
 // ────────────────── HandleMessage（worker 线程安全回调） ──────────────────
 
 LRESULT CMainForm::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
+    // 回车不再触发「开始」（用户 2026-10-11 二轮规格，替代 2026-10-10 的
+    // 「全局回车 = 主按钮」）：开始改走 **Alt+E**（main.xml MainAction
+    // shortcut="E"）。这里只在「焦点恰好是主按钮」时吞掉回车 —— 否则
+    // CButtonUI::DoEvent 对 VK_RETURN 会 Activate，回车仍能误启备份/还原；
+    // 焦点在别处时回车交给标准控件语义（如 TAB 到「删除菜单」按回车 =
+    // 点击它，且有确认框兜底）。焦点在原生 EDIT 子窗口时 WM_KEYDOWN 直接
+    // 发给子窗口、根本到不了这里（天然只在非输入文本时生效）。
+    if (msg == WM_KEYDOWN && wParam == VK_RETURN) {
+        CControlUI* pFocus = m_PaintManager.GetFocus();
+        if (pFocus && _tcscmp(pFocus->GetName(), _T("MainAction")) == 0)
+            return 0;
+    }
     if (msg == WM_MOUSELEAVE) {
         ::SendMessage(m_tipHwnd, TTM_POP, 0, 0);
     }
@@ -843,11 +878,11 @@ void CMainForm::RefreshBootMenuBtn() {
             if (tgt.empty()) tgt = Tr(L"（原目标分区）");
             if (uefiPath)
                 swprintf(tip, 512,
-                         Tr(L"已安装：开机按 F12 启动菜单选「SysRecover」，\n把 %ls（第 %d 个镜像）还原到 %ls。\n点此删除（要换镜像请先删除、再安装）"),
+                         Tr(L"已安装：开机按 F12 启动菜单选「SysRecover」，\n把 %ls（第 %d 个镜像）还原到 %ls。\n点此删除（要换镜像请先删除、再安装）\n镜像请勿移动或删除，否则该菜单无法还原"),
                          boundImg.c_str(), boundIdx, tgt.c_str());
             else
                 swprintf(tip, 512,
-                         Tr(L"已安装：开机菜单里选「SysRecover」即可把\n%ls（第 %d 个镜像）还原到 %ls。\n点此删除（要换镜像请先删除、再安装）"),
+                         Tr(L"已安装：开机菜单里选「SysRecover」即可把\n%ls（第 %d 个镜像）还原到 %ls。\n点此删除（要换镜像请先删除、再安装）\n镜像请勿移动或删除，否则该菜单无法还原"),
                          boundImg.c_str(), boundIdx, tgt.c_str());
         } else {
             wcscpy_s(tip, Tr(L"已安装启动还原（旧版安装，未绑定镜像）。点此删除"));
@@ -867,7 +902,7 @@ void CMainForm::RefreshBootMenuBtn() {
         p->SetBkColor(can ? 0xFFFFFFFF : ui_skin::C_DISABLED);
         btn->SetTextColor(can ? ui_skin::C_TEXT : ui_skin::C_DIS_TEXT);
         wcscpy_s(tip, can
-            ? Tr(L"把当前镜像写进开机菜单：重启后选「SysRecover」进恢复环境，\n自动把该镜像还原到第二步选中的目标分区")
+            ? Tr(L"把当前镜像写进开机菜单：重启后选「SysRecover」进恢复环境，\n自动把该镜像还原到第二步选中的目标分区\n镜像请勿移动或删除，否则该菜单无法还原")
             : Tr(L"请先选择镜像与目标分区，再安装菜单"));
     }
     p->SetToolTip(tip);
@@ -897,8 +932,11 @@ void CMainForm::ToggleBootMenu() {
     {
         const PartitionInfo& part = m_parts[m_selPart];
         // ⚠️ CConfirmDlg 的正文只显示**最多 3 行**、且是**单行标签**（PIT-039），
-        // 超长/超行会被静默裁掉 —— 所以这里刻意压成 3 行短句：只显示文件名
-        //（路径可能很长，裁到 18 字符），并把"会格式化"这句放在第 3 行。
+        // 超长/超行会被静默裁掉（行宽预算 376px/fs13 ≈ 28 全角字）—— 刻意压成
+        // 3 行短句：第 1 行 = 用法（按引导链分措辞：BIOS 是 bootmgr 启动菜单 /
+        // UEFI 是 F12 固件菜单，不能写"BIOS菜单"——会把用户误导进 BIOS 设置，
+        // 用户 2026-10-11 规格）；第 2 行只显示文件名（路径可能很长，裁到 18
+        // 字符）；第 3 行**必须保留"会格式化"的危险告知**（§11 二次确认红线）。
         std::wstring name = m_wimPath;
         size_t sl = name.find_last_of(L"\\/");
         if (sl != std::wstring::npos)
@@ -907,9 +945,13 @@ void CMainForm::ToggleBootMenu() {
             name = name.substr(0, 18) + L"...";
         wchar_t msg[512];
         swprintf(msg, 512,
-                 Tr(L"把当前镜像写进开机启动菜单？\n"
-                    L"镜像：%ls（第 %d 个）\n"
-                    L"目标：%ls: 盘 —— 选该菜单项会格式化该分区"),
+                 UseUefiBootFor(part)
+                     ? Tr(L"重启后按 F12 选「SysRecover」还原？\n"
+                          L"镜像：%ls（第 %d 个）\n"
+                          L"目标：%ls: 盘 —— 选中即格式化该分区")
+                     : Tr(L"重启后在启动菜单选「SysRecover」还原？\n"
+                          L"镜像：%ls（第 %d 个）\n"
+                          L"目标：%ls: 盘 —— 选中即格式化该分区"),
                  name.c_str(), m_selImageIndex,
                  part.letter.empty() ? L"?" : part.letter.c_str());
         // 与"确认还原"一致：右按钮（动作）高亮且为回车默认项，ESC 一律取消。
@@ -922,6 +964,7 @@ void CMainForm::ToggleBootMenu() {
         req.part = (int)part.partNumber;
         req.index = m_selImageIndex;
         req.repairBoot = true;
+        req.engine = "swap";  // 0.7 默认 A 引擎
         std::string err;
         m_busy = true;
         UpdateMainAction();
@@ -1327,8 +1370,9 @@ void CMainForm::StartRestore() {
     // 目标盘健康提醒（PIT-086，用户 2026-09-26）：坏盘先警告（默认取消）。
     if (!AskDiskHealthWarning((int)part.diskIndex))
         return;
-    // 非静默模式：只弹一个选择框（退出 / 退出并重启）——选定后暂存并自动重启，
+    // 非静默模式：只弹一个选择框（退出 / 还原后重启）——选定后暂存并自动重启，
     // 不再有额外的成功提示框，也不弹关机通知。静默模式：不弹框，直接暂存并重启。
+    // 2026-10-09 用户规格：右下角按钮文案"重启后还原"→"还原后重启"（语序更清晰）。
     if (!IsSilent()) {
         // 提示文案必须与**真实行为**一致（PIT-072）：PE 里 / 还原到非系统盘走的是
         // "就地还原、不重启"，以前这里一律写"重启后还原"，用户 2026-09-21 在 PE 里
@@ -1355,31 +1399,37 @@ void CMainForm::StartRestore() {
             }
         }
         wchar_t confirm[640];
+        // 备返两档文案（用户 2026-10-10 规格）：勾选「备返」→ 保留！+ 可返回；
+        // 未勾选 → 丢失！+ 无法返回。「丢失！/保留！」由 Ask2 的 hl 参数红+粗显示。
+        // 注意：就地还原（PE/非系统盘）走格式化+直接写入，~old 交换不存在 →
+        // 备返无效果，一律按「丢失！」档显示（与真实行为一致，PIT-072）。
+        const bool keepOldEff = needReboot && IsKeepOld();
+        std::wstring hlWord = keepOldEff ? Tr(L"保留！") : Tr(L"丢失！");
+        std::wstring line2 =
+            (keepOldEff ? Tr(L"该分区上的所有数据将保留！")
+                        : Tr(L"该分区上的所有数据将丢失！")) + logNote;
         if (needReboot) {
-            // 把**判定原因**也显示出来（用户 2026-09-23：PE 里系统盘是 X:，还原 C:
-            // 本不该重启 → 需要一眼看出到底卡在哪个条件）。文案保持短，避免被
-            // 确认框右侧裁掉（PIT-074 的教训）。
-            // 按**原因码**选文案（M1：原来 `why.find("系统盘")` 是中文子串匹配，
-            // 消息一翻译就恒不成立 → 永远显示"被占用"那个分支）。
-            std::wstring shortWhy =
-                whyReason == INPLACE_SYSTEM_DISK
-                    ? Tr(L"目标是正在运行的系统盘")
-                    : Tr(L"目标分区当前被占用");
             swprintf(confirm, 640,
-                     Tr(L"即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n" L"该分区上的所有数据将被覆盖！%ls\n" L"原因：%ls；将暂存任务并在重启后执行。"),
+                     Tr(L"即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n"
+                        L"%ls\n%ls"),
                      part.letter.empty() ? L"?" : part.letter.c_str(),
-                     part.diskIndex, part.partNumber, logNote.c_str(),
-                     shortWhy.c_str());
+                     part.diskIndex, part.partNumber, line2.c_str(),
+                     keepOldEff ? Tr(L"新系统不好用时可以返回旧系统")
+                                : Tr(L"新系统不好用将无法返回旧系统"));
             if (CConfirmDlg::Ask2(m_hWnd, Tr(L"确认还原"), confirm, Tr(L"退出"),
-                                  Tr(L"退出并重启"), /*defaultIsRight=*/true) != 1)
+                                  Tr(L"还原后重启"), /*defaultIsRight=*/true,
+                                  hlWord) != 1)
                 return;
         } else {
             swprintf(confirm, 640,
-                     Tr(L"即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n" L"该分区上的所有数据将被覆盖！%ls\n" L"目标分区当前未被占用，将立即就地还原，不需要重启。"),
+                     Tr(L"即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n"
+                        L"该分区上的所有数据将丢失！%ls\n"
+                        L"目标分区当前未被占用，将立即就地还原，不需要重启。"),
                      part.letter.empty() ? L"?" : part.letter.c_str(),
                      part.diskIndex, part.partNumber, logNote.c_str());
             if (CConfirmDlg::Ask2(m_hWnd, Tr(L"确认还原"), confirm, Tr(L"取消"),
-                                  Tr(L"开始还原"), /*defaultIsRight=*/true) != 1)
+                                  Tr(L"开始还原"), /*defaultIsRight=*/true,
+                                  Tr(L"丢失！")) != 1)
                 return;
         }
     }
@@ -1415,6 +1465,8 @@ void CMainForm::StartRestoreAsync() {
                 ? (int)m_parts[m_selPart].partNumber : 1;
     req.index = m_selImageIndex;
     req.repairBoot = true;
+    req.engine = "swap";  // 0.7 默认 A 引擎：Windows 解压 + Linux 改名交换
+    req.keepOld = IsKeepOld();  // 备返：保留 ~old + 桌面管理快捷方式
     std::string err;
     bool needReboot = true;
     // 进度：把 ops 层 apply 的进度转投到界面 —— 用户 2026-09-23 反馈"还原时进度条
@@ -1559,7 +1611,9 @@ void CMainForm::ApplyModeUi() {
         if (p) { RECT rc = { l, t, r, b }; p->SetPos(rc); }
     };
     if (m_backupMode) {
-        Text(_T("BrowseBtn"),   Tr(L"浏览保存位置…"));
+        // 2026-10-11 用户规格：去掉「…」——还原页同位按钮（浏览系统镜像）本来
+        // 就没有省略号，两页文字都是完整显示的，策略保持一致。
+        Text(_T("BrowseBtn"),   Tr(L"浏览保存位置"));
         Vis(_T("SearchBtn"),    false);  // 搜索是还原专属（2026-09-30 用户规格）
         // 「ESP」勾选占用搜索按钮在第一步卡片里的同一位置（备份专属，2026-09-30）
         Vis(_T("EspChk"),       true);
@@ -1605,6 +1659,7 @@ void CMainForm::ApplyModeUi() {
         Vis(_T("RepairBootBtn"),false);
         Vis(_T("BootMenuBtn"),  true);
         Vis(_T("LogBtn"),       false);  // 「日志」按钮是还原模式专属（用户 2026-10-03 规格）
+        Vis(_T("KeepOld"),      false);  // 「备返」是还原模式专属
         Text(_T("PartTitle"),   Tr(L"备份源分区"));
         Text(_T("PartHint"),    Tr(L"选择要备份为镜像的源分区（移动盘已隐藏）"));
         // 第三步右侧：备份模式 = 静默模式 + CPU 下拉；引导按钮两模式共用同一位置（XML 定）。
@@ -1632,6 +1687,7 @@ void CMainForm::ApplyModeUi() {
         Vis(_T("RepairBootBtn"),true);
         Vis(_T("BootMenuBtn"),  true);
         Vis(_T("LogBtn"),       true);
+        Vis(_T("KeepOld"),      true);   // 「备返」还原模式专属
         Text(_T("PartTitle"),   Tr(L"系统安装位置"));
         Text(_T("PartHint"),    Tr(L"选择要安装恢复镜像的目标分区（移动盘已隐藏）"));
         // 还原模式几何（切回时必须复位第三步右侧那几个）。2026-10-03 用户规格：
@@ -1765,6 +1821,12 @@ void CMainForm::RebootNow() {
 bool CMainForm::IsSilent() {
     COptionUI* p =
         static_cast<COptionUI*>(m_PaintManager.FindControl(_T("Silent")));
+    return p && p->IsSelected();
+}
+
+bool CMainForm::IsKeepOld() {
+    COptionUI* p =
+        static_cast<COptionUI*>(m_PaintManager.FindControl(_T("KeepOld")));
     return p && p->IsSelected();
 }
 

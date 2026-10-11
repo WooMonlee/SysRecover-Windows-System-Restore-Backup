@@ -59,12 +59,20 @@ for d in "$M/~new"/* "$M/~new"/.[!.]*; do
     [ -e "$d" ] || continue
     b=$(basename "$d")
     [ "$b" = ".zj-done" ] && continue
+    # 跳过契约文件（Windows 侧写的 _zjresy*.log / restore-task.conf）
+    # 这些文件不应该被移到根目录，swap 后应删除
+    case "$b" in
+        _zjresy*.log|restore-task.conf|restore-task.json)
+            rm -f "$d" 2>/dev/null
+            continue;;
+    esac
     if [ -e "$M/$b" ]; then
         rm -rf "$M/$b" 2>/dev/null || say "WARN: clear conflict $b failed"
     fi
     mv "$d" "$M/$b" 2>/dev/null || say "WARN: move new $b failed"
 done
-rmdir "$M/~new" 2>/dev/null
+# 删除 ~new 目录（含 .zj-done）
+rm -rf "$M/~new" 2>/dev/null
 sync
 umount "$M" 2>/dev/null
 say "swap done (old tree kept at ~old; first boot should delete it)"

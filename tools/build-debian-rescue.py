@@ -336,6 +336,7 @@ def main():
     for d in ('proc', 'sys', 'dev', 'tmp', 'mnt'):
         os.makedirs(os.path.join(zj.STG, d), exist_ok=True)
     for name, mode in (('init', 0o755), ('zjrestore-lite.sh', 0o755),
+                       ('zjswap.sh', 0o755), ('setup-swap.sh', 0o755),
                        ('ntfs-boot-code.bin', 0o644),
                        ('ntfs-boot-cont.bin', 0o644)):
         s = os.path.join(zj.BOOT, name if name != 'init'

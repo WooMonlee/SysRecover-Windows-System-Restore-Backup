@@ -129,6 +129,11 @@ IMAGE_PATH=$(get_task image_path)
 say "offset=$TARGET_OFFSET size=$TARGET_SIZE pt=$PT_TYPE index=$IMAGE_INDEX repair=$REPAIR_BOOT"
 say "image=$IMAGE_PATH"
 [ -n "$ESP_INDEX" ] && say "esp subimage: index=$ESP_INDEX (restore to ESP after main apply)"
+# A 引擎（0.7）：engine=swap 时目标分区已由 Windows 侧解压出 ~new（含 .zj-done），
+# Linux 侧只做改名交换，不做 mkntfs / wimlib apply。缺省 block = 产线 B 引擎。
+ENGINE=$(get_task engine)
+case "$ENGINE" in swap|block) ;; *) ENGINE=block ;; esac
+say "engine=$ENGINE"
 
 # 设备枚举（用户 2026-10-04 规格）：内置盘分区 → 可移动盘分区 → **无分区的可移动
 # 整盘**（光盘/未分区 U 盘）。U 盘/光盘放最后但**不丢**（镜像可能合法放在上面，
@@ -624,12 +629,14 @@ fi
 
 # ── 定位镜像文件（扫描所有分区找 IMAGE_PATH；跳过目标分区）──
 # 拆成函数 + 两轮扫描：模块加载后磁盘/分区可能出现晚、或某个分区瞬时打不开
-# （2026-10-04 客户"image not found"快速退出的最大嫌疑）——第二轮给一次机会。
+# （2026-09-04 客户"image not found"快速退出的最大嫌疑）——第二轮给一次机会。
+# A 引擎（engine=swap）不需要镜像文件：Windows 侧已解压完成，这里只做交换。
 IMG_FILE=""
 IMG_REL=$(echo "$IMAGE_PATH" | cut -d: -f2- | tr '\\' '/' | sed 's|^/*||')
 SRC_M="/tmp/zj_img"
 mkdir -p "$SRC_M"
 : > /tmp/zj_img.fail
+if [ "$ENGINE" != "swap" ]; then
 scan_image(){
     for _d in $(list_parts); do
         [ -b "$_d" ] || continue
@@ -721,6 +728,7 @@ else
     persist_log
     exit 1
 fi
+fi # end engine != swap (image scan + precheck)
 
 # ── ESP 子镜像（方案 C，用户 2026-09-30 规格 / 无忧 66 楼）──
 # 主镜像里可能含名为 ESP 的子镜像（备份时勾选 --esp 并入，契约键 esp_index）。
@@ -728,6 +736,45 @@ fi
 # ESP 分区（所以镜像分区 umount 要挪到那之后，见下方 apply done 处）。
 # 没有 esp_index 时整段不跑（绝大多数任务不带），完全不受影响。
 
+# ── A 引擎：改名交换（engine=swap）──
+# Windows 侧已把镜像解压到目标分区的 ~new\（含完成标记 .zj-done）；Linux 侧
+# 只需调用 zjswap.sh：旧顶层项 → ~old\、~new 顶层项 → 原位。不 mkntfs、不
+# wimlib apply。失败安全：~new 缺 .zj-done 或已有 ~old → 拒绝并保留旧系统。
+# 交换完成后目标分区已有完整新系统文件，但 bootmgr/BCD 可能仍缺（万能镜像
+# 常不带 \Boot）—— bootfix 段照常执行。
+if [ "$ENGINE" = "swap" ]; then
+    STEP=swapping
+    say "A-engine swap: ~new -> root (no mkntfs, no apply)"
+    ZJSWAP="$(command -v zjswap.sh 2>/dev/null)"
+    [ -n "$ZJSWAP" ] || ZJSWAP=/zjswap.sh
+    if [ ! -f "$ZJSWAP" ]; then
+        RESULT=FAILED; STEP=swap-missing
+        say "ERROR: zjswap.sh not found in initramfs"
+        persist_log
+        exit 1
+    fi
+    # zjswap 自己挂载目标（ntfs3 → ntfs-3g 兜底），不需要预先挂载
+    _s0=$(date +%s)
+    sh "$ZJSWAP" "$TARGET_DEV" /tmp/zj_swap_mnt
+    swap_rc=$?
+    _s1=$(date +%s)
+    say "swap rc=$swap_rc elapsed=$((_s1 - _s0))s"
+    if [ $swap_rc -ne 0 ]; then
+        RESULT=FAILED; STEP=swap-failed
+        case $swap_rc in
+            2) say "~new missing or incomplete (.zj-done absent) - extract was not done or failed" ;;
+            3) say "leftover ~old present - previous swap interrupted or user chose keep; handle on next Windows start" ;;
+            *) say "zjswap.sh failed rc=$swap_rc" ;;
+        esac
+        say_dmesg
+        persist_log
+        exit 1
+    fi
+    say "swap done: ~new -> root, old -> ~old"
+    # 未格式化 → PBR 原封不动（与 keep 模式同款处理：只在扇区 1 全 0 时才重写）
+    KEPT_FS=1
+    TARGET_FS=ntfs
+else
 # ── 准备目标分区（PIT-053 修正了 PIT-052 的结论）──
 # 默认 mkntfs 快速格式化。曾一度以为"Windows 引导代码不认 mkntfs 的布局"而
 # 改成"保留原 NTFS 只清空文件"，那是个**误诊**：真实原因是我们移植引导区时
@@ -1009,6 +1056,7 @@ fi
 
 STEP=apply-done
 say "apply done"
+fi # end engine != swap (B-engine prepare+apply)
 
 # ── 引导补全：把 \bootmgr + \Boot\* 拷进目标分区（万能镜像常缺 \Boot\BCD）──
 # 文件由 Windows 暂存阶段生成（bcdedit /export 得到可移植 BCD），/init 已拷到

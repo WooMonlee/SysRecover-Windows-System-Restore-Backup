@@ -275,7 +275,9 @@ int CmdRestore(const std::vector<std::string>& a) {
     req.index = index;
     req.repairBoot = repairBoot;
     // 0.7（docs/23）：--engine swap = A 引擎（Windows 原生解压 + Linux 仅改名交换）
+    // 默认 swap（A 引擎）；--engine block 回退 B 引擎（Linux apply）。
     req.engine = Opt(a, "--engine");
+    if (req.engine.empty()) req.engine = "swap";
     std::string err;
     bool needReboot = true;
     // BitLocker 提醒（同 GUI 规格）：有加密卷就醒目提示（脚本场景不阻塞，只提示）
@@ -815,8 +817,33 @@ int main() {
                                     " -> delete (" + v.reason + ")");
                 sysrecover::DeleteSwapLeftover(it);
             } else if (v.action == sysrecover::SwapLeftAction::AskUndo) {
-                bool undo = false;
-                if (yesFlag) {
+                // 备返保留的 ~old（.zj-keepold）：--yes 也保留不动（保留是
+                // 用户当初的显式选择，绝不能被 --yes 静默撤销/删除）。
+                const bool keepOld = it.keepOldMarker && !it.isNew;
+                bool undo = false, del = false;
+                if (keepOld) {
+                    if (yesFlag) {
+                        std::fprintf(stderr,
+                                     Tr("[残留] %s 备返旧系统保留不动（--yes）\n"),
+                                     tag.c_str());
+                    } else if (hasConsole) {
+                        std::fprintf(stderr,
+                                     Tr("检测到备返保留的旧系统 %s：%s\n"
+                                        "  y = 撤销（搬回旧系统），d = 删除（释放空间），"
+                                        "其它键 = 保留不动\n"
+                                        "选择 [keep]: "),
+                                     tag.c_str(), v.reason.c_str());
+                        char line[32] = {0};
+                        if (std::fgets(line, sizeof(line), stdin)) {
+                            undo = (line[0] == 'y' || line[0] == 'Y');
+                            del = !undo && (line[0] == 'd' || line[0] == 'D');
+                        }
+                    } else {
+                        std::fprintf(stderr,
+                                     Tr("[残留] %s 备返旧系统保留不动（非交互式运行）\n"),
+                                     tag.c_str());
+                    }
+                } else if (yesFlag) {
                     undo = true;
                 } else if (hasConsole) {
                     std::fprintf(stderr,
@@ -837,9 +864,14 @@ int main() {
                 if (undo) {
                     std::string det;
                     sysrecover::UndoSwapLeftover(it.drive, det);
+                } else if (del) {
+                    sysrecover::LogInfo("swap leftover: " + tag +
+                                        " -> delete (user chose, keepold)");
+                    sysrecover::DeleteSwapLeftover(it);
                 } else {
                     sysrecover::LogInfo("swap leftover kept by user: " + tag +
-                                        " (" + v.reason + ")");
+                                        (keepOld ? " (keepold)" : "") + " (" +
+                                        v.reason + ")");
                 }
             } else {
                 sysrecover::LogInfo("swap leftover: " + tag + " -> " + v.reason);

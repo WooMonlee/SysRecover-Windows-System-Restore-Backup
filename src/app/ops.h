@@ -37,6 +37,9 @@ struct RestoreRequest {
     // 还原引擎（0.7，docs/21/22/23）：""/"block" = B 引擎（Linux apply）；
     // "swap" = A 引擎（Windows 原生解压到 <目标>:\~new + Linux 仅改名交换）。
     std::string engine;
+    // 备返（用户 2026-10-09 规格）：true = 交换后保留 ~old，往新系统桌面
+    // 放管理 GUI 快捷方式（无 RunOnce）；false = 开机 RunOnce 静默删 ~old。
+    bool keepOld = false;
 };
 
 // 备份。覆盖确认由调用方负责（CLI --yes / GUI 对话框）。

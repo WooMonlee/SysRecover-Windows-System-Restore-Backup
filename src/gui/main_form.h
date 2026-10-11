@@ -53,6 +53,12 @@ public:
     virtual void InitWindow() override;
     virtual void Notify(TNotifyUI& msg) override;
     virtual LRESULT HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) override;
+    // pre-message filter 覆写（WindowImplBase::OnCreate 已把 this 注册为
+    // pre-message filter，WinImplBase.cpp:275，虚分派先到我们）：拦 Ctrl+Tab
+    // 切模式 —— 裸 Tab 在 PreMessageHandler 的 switch 里就被 SetNextTabControl
+    // 吃掉（UIManager.cpp:671-676），HandleMessage 永远收不到，只能在这层拦。
+    virtual LRESULT MessageHandler(UINT uMsg, WPARAM wParam, LPARAM lParam,
+                                   bool& bHandled) override;
     // 自绘控件注入点（未知 UIClass 回落到这里，见 ui_skin.h 头部注释）
     virtual CControlUI* CreateControl(LPCTSTR pstrClass) override;
 
@@ -99,6 +105,7 @@ private:
     void CancelAndExit();         // 中止 worker → 清理未完成镜像 → 关窗
     void CleanupIncompleteOutput();
     bool IsSilent();   // 「静默模式」勾选态
+    bool IsKeepOld();  // 「备返」勾选态（保留 ~old）
     bool IsEspChecked();   // 「ESP」勾选态（备份专属，2026-09-30：ESP 并入主镜像）
     void SetStatus(const std::wstring& text);
     void SetProgress(int pct);

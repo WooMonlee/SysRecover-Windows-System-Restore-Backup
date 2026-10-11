@@ -25,11 +25,21 @@ tools/vmtest/stage/
 tools/vmtest/drill-images/
 tools/vmtest/__pycache__/
 tools/vmtest/**/__pycache__/
+# 归档的演练脚本同款（graveyard 只进脚本；测试盘/日志不入库，base 单个 4GB）
+graveyard/tools/vmtest/base/
+graveyard/tools/vmtest/logs/
 
 # 本机会话/截图产物
 .claude/
 tools/ui/*.png
 tools/ui/out/
+# 仓库根的演练/截图残留（bootfiles/ 下的才是随包资产）
+/crop-*.png
+/shot-*.png
+/grldr
+/grldr.mbr
+/menu.lst
+/restore-task.conf
 
 # 调研原始 PDF（正文已转 ESD备份还原工具调研.txt 入库，避免重复二进制）
 ESD备份还原工具调研.pdf
