@@ -997,6 +997,27 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
         err = Tr("缺少镜像路径");
         return 1;
     }
+    // 0.05) 引擎取值与「引擎 × 备返」组合校验（docs/24 P1-1/P1-2，2026-10-11）：
+    //   ① --engine 只认 swap/block/空（空=默认 swap）——防手滑值写进契约后
+    //      在救援层被缺省成另一种引擎（静默换承诺）；
+    //   ② 备返（keepOld，保留旧系统 ~old）由 A 引擎的改名交换实现；B 引擎
+    //      （--engine block）会 mkntfs 格式化目标分区，旧系统必然消失 ——
+    //      静默组合 = 用户以为有保护其实没有 → 拒绝（fail-closed）。
+    //      当前前端组合不可达（GUI 恒 A、CLI 无 keepold 旗标），属防御性拦截。
+    if (!req.engine.empty() && req.engine != "swap" && req.engine != "block") {
+        err = Tr("--engine 仅支持 swap（默认，A 引擎）或 block（B 引擎兜底），"
+                 "收到未知值已中止，未动目标分区。");
+        LogError(err);
+        return 2;
+    }
+    if (req.keepOld && req.engine != "swap") {
+        err = Tr("备返（保留旧系统）仅支持默认 A 引擎：--engine block 会格式化"
+                 "目标分区并丢弃旧系统。请改用默认引擎，或取消备返。");
+        LogError(err);
+        AppendHistory("restore-rejected", req.image, req.image, 0,
+                      "keepOld requested with block engine");
+        return 4;
+    }
     // 0) 镜像可用性**快检**（秒级，PIT-057 + PIT-106）：只拒绝"上次没写完/
     //    不完整"的镜像（否则 Linux 侧 apply rc=84，而目标分区已被格式化 →
     //    开机黑屏）；**不做全量扫描**（大镜像十几分钟，用户无法忍受）。
@@ -1237,7 +1258,9 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             char buf[256];
             snprintf(buf, sizeof(buf),
                      Tr("A 引擎空间不足：需要约 %.1f GB（内容+页文件+余量），"
-                        "目标盘可用 %.1f GB。请清理磁盘后重试。"),
+                        "目标盘可用 %.1f GB。请清理磁盘后重试，或改用 "
+                        "`--engine block`（B 引擎兜底：先格式化再写入，只需"
+                        "目标总容量 ≥ 镜像体积）。"),
                      se.required / 1073741824.0, se.freeBytes / 1073741824.0);
             err = buf;
             if (adv) *adv = ADV_SPACE;
