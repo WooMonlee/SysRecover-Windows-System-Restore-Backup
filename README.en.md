@@ -2,7 +2,7 @@
 
 > **English** | [中文](README.md)
 
-> Version `0.4.1` | **x64 + x86 dual architecture** (the Windows side follows the OS bitness; the Linux rescue layer is always x64) | Windows 7 / 10 / 11 / WinPE | Release package ≈47 MB (≈90% of it is the rescue layer)
+> Version `0.7.23` | **x64 + x86 dual architecture** (the Windows side follows the OS bitness; the Linux rescue layer is always x64) | Windows 7 / 10 / 11 / WinPE | Release package ≈41 MB (≈27 MB of it is the rescue kernel and initramfs)
 > License: own code **MIT** (see [`LICENSE`](LICENSE)); third-party components are *separately distributed* — full list, license texts and source-code provenance in [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt)
 
 In one sentence: **back up a Windows system into a single image file, and restore it in one click when you need it.**
@@ -63,13 +63,13 @@ Because in real jobs you hit the following, and a lot of tools fall over on exac
 │                first, rename only on success)                         │
 │  restore       four safety checks → image usability check → pick one: │
 │                   ├─ in-place:  format + apply + bcdboot → no reboot  │
-│                   └─ staged:    stage task + install boot layer →     │
+│                   └─ staged:    extract to <target>:\~new + boot →     │
 │                                 reboot                                │
 └──────────────────────────────┬─────────────────────────────────────────┘
                                ↓ reboot (only for the "restore the running system disk" path)
 ┌──────────── built-in Linux rescue layer (vmlinuz + initramfs + restore)┐
-│  load storage modules → find target partition and image → format →     │
-│  apply → fix boot → reboot                                             │
+│  load modules → find target partition → swap ~new ↔ old tree →         │
+│  fix boot → reboot (no reformat)                                       │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -96,9 +96,9 @@ So **the user does not enrol MOK and does not turn Secure Boot off**. The shim i
 | Mechanism | How |
 |---|---|
 | **Writing an image survives interruption** | Write `<target>.tmp` first, rename only on success; an interrupt leaves at worst a temp file, **the original image is untouched** |
-| **Bad images are refused** | Before touching anything we check whether the image is "fully written" (set `WRITE_IN_PROGRESS` flag / integrity fails → refuse) |
+| **Bad images are refused** | Before touching anything we check the image is not a half-written file (`WRITE_IN_PROGRESS` set → refuse); run `--verify` if you want the full integrity check |
 | **It cannot wipe the wrong disk** | Four-element verification (GUID / disk serial / offset / size); **four restore checks**: target is ESP, BitLocker, a recovery partition, or the image file lives inside the target partition → **any hit is refused** (exit code 4) |
-| **The MBR is never touched** | Only the target partition is formatted; rescue files go onto the target partition; **nothing new at the root of data disks** |
+| **The MBR is never touched** | The disk MBR is never touched; only the **target partition** changes (the A-engine swaps in place **without formatting**; only the `--engine block` fallback quick-formats it); rescue files go onto the target partition; **nothing new at the root of data disks** |
 | **It boots after the restore** | Writes back the complete NTFS boot region (426 B in sector 0 + sectors 1..8); adds `\bootmgr` and `C:\Boot\BCD`; BCD uses `device boot` (independent of drive letters / disk numbers) |
 | **A run can be cancelled** | Closing the window mid-backup/restore offers "abort and exit", stops within a second and deletes the incomplete temp file |
 | **Every failure leaves evidence** (0.6.22+) | Rescue-layer "black box": every mountable partition root + the ESP gets `ZJRESTORE-status.txt` (result + step), the full log, and a **per-device probe table** (mount result / raw error / PCI controllers / DMI); a fallback log home is claimed when the software folder is missing |
@@ -206,12 +206,12 @@ The execution mode is **chosen automatically**:
 
 | Situation | Behaviour |
 |---|---|
-| Target is the **running system disk** | Stage the task → **reboot** into the built-in rescue layer → format + apply + fix boot → auto-reboot into the new system |
+| Target is the **running system disk** | Stage it (**Windows first extracts the system into `<target>:\~new`**) → **reboot** into the built-in rescue layer → **rename-swap** (no reformat, no apply) → fix boot → auto-reboot into the new system |
 | Target is **not in use** (in **WinPE**, or restoring to a **non-system disk**) | **In-place restore**: format + apply + `bcdboot` → **done, no reboot** |
 
 - `--index N` picks a sub-image; `--no-repair-boot` skips boot repair
 - If the image carries an **ESP sub-image** (made with `--esp`), it is restored **automatically** along with the system — no extra flag needed
-- The image must live on a **local disk**: the rescue layer the machine reboots into cannot reach the network (UNC / mapped drives)
+- The image must live on a **local disk**: extraction (Windows side) and the rescue/fallback (Linux side) both run locally — UNC / mapped drives don't work
 - Exit codes: `0` success / `1` generic failure / `2` bad arguments / `3` needs admin / `4` dangerous target refused / `5` image verification failed / `6` cancelled
 
 ### Case 3 · An unattended, silent restore entry point
@@ -219,7 +219,7 @@ The execution mode is **chosen automatically**:
 Idea: **stage** the restore task (with the always-present boot module installed), then trigger it from the **boot menu** or a **one-time boot entry**, fully automatically.
 
 1. (Recommended) Install the always-present boot module once via the GUI's "Install boot restore" (UEFI: writes a firmware boot entry; BIOS: a real-mode boot sector entry in the BCD).
-2. Stage a silent restore: safety checks → image usability check → write contract → refresh boot layer → arm the one-time boot:
+2. Stage a silent restore: safety checks → image check → extract to `<target>:\~new` → write contract → refresh boot layer → arm the one-time boot:
 
    ```cmd
    SysRecover.exe restore --image D:\backup\wannei-win10.esd --disk 0 --part 3 --index 1 --yes
@@ -234,7 +234,7 @@ Idea: **stage** the restore task (with the always-present boot module installed)
 - **One-time semantics**: that boot entry is consumed after one use; normal boots go to Windows as usual.
 - **Always-present semantics (UEFI)**: the firmware entry sits at the end of `BootOrder`, selectable from the boot menu at any time;
   the task contract lives on a **data disk** (never formatted), so choosing it again runs the restore once more — an always-present one-click restore in the boot menu.
-- ⚠️ **Not always-present under BIOS**: the rescue files are formatted away together with the target partition, so that menu entry **only works for that one run**; use UEFI if you need it to persist.
+- ⚠️ **Not always-present under BIOS**: after the restore the target root only contains the image contents (the boot files leave with the old tree), so that menu entry **only works for that one run**; use UEFI if you need it to persist.
 ---
 
 ## 9. Building (for people who want to compile it)
@@ -253,12 +253,12 @@ mingw32-make -f Makefile clean
 - Regression tests: `tools/vmtest/*.ps1` (UEFI/SB, BIOS/GRUB4DOS, screen output, direct firmware boot…) plus `mk-drill.py`/`run-drill.ps1` (end-to-end restore drill); see [`docs/07`](docs/07-测试矩阵与回归记录.md)
 - New machine / new environment: see [`docs/10-新环境交接说明`](docs/10-新环境交接说明.md)
 
-### What is in the release package (`dist/`, about 46 MB)
+### What is in the release package (`dist/`, about 41 MB)
 
 ```
 SysRecover.exe / SysRecoverUI.exe   # full x86 set (entry point): the real programs + libwim-15.dll + x86 UCRT
 x64/{SysRecover.exe, SysRecoverUI.exe, libwim-15.dll, UCRT(16)}
-bootfiles/{grldr, grldr.mbr, vmlinuz-zjrestore, initramfs-zjrestore.cpio.gz, zjrestore-lite.sh}
+bootfiles/{grldr, grldr.mbr, vmlinuz-zjrestore, initramfs-zjrestore.cpio.gz, zjrestore-lite.sh, zj-ea-apply.exe}
 bootfiles/sb/{shimx64.efi, grubx64.efi, grub.cfg}         # Secure Boot chain (x64, independent of host bitness)
 skin/ resources/ version.json THIRD_PARTY_LICENSES.txt
 ```
@@ -292,7 +292,7 @@ skin/ resources/ version.json THIRD_PARTY_LICENSES.txt
   (the rescue layer runs Linux and cannot execute `bcdboot`) → in testing, restoring Win7 inside a "Win10-configured UEFI VM" produced a **boot loop**.
   **Recommend restoring Win7 targets via BIOS/MBR** (the mainstream Win7 shape). On the todo list (see `docs/14` §3: run `bcdboot` on first boot after the restore).
 - **PE in-place restore / RAID on real hardware / closing while busy**: code ready, **pending field testing** ([`docs/11` §3](docs/11-接手指南（读我优先）.md) has the checklist).
-- **Rescue-layer memory floor**: 512 MB restored a 43 GB image end to end in testing; **192 MB gets the apply OOM-killed near the end** (the failure is still fully recorded, and below 400 MB a warning appears on screen and in the log). Give the rescue environment ≥1 GB.
+- **Rescue-layer memory floor**: the default **A-engine** (the rescue layer only does the rename-swap) needs very little memory; with the **B-engine fallback (`--engine block`, apply inside Linux)** testing showed **512 MB restores a 43 GB image end to end, while 192 MB gets the apply OOM-killed near the end** (the failure is still fully recorded, and below 400 MB a warning appears on screen and in the log) — give that path ≥1 GB.
 - `ZJ_ENABLE_MOK_PATH` (the alternative path: our self-signed UKI + MOK enrolment) is **not compiled and not shipped by default**
   (change it to 1 in `src/boot/uefi.cpp` to enable).
 

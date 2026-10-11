@@ -2,7 +2,7 @@
 
 > [中文](README.md) | **English**
 
-> 版本 `0.4.1`｜**x64 + x86 双架构**（Windows 侧跟随系统位数，Linux 救援层固定 x64）｜Windows 7 / 10 / 11 / WinPE｜发布包 ≈47 MB（其中 ≈90% 是救援层）
+> 版本 `0.7.23`｜**x64 + x86 双架构**（Windows 侧跟随系统位数，Linux 救援层固定 x64）｜Windows 7 / 10 / 11 / WinPE｜发布包 ≈41 MB（其中 ≈27 MB 是救援内核与 initramfs）
 > 许可：自有代码 **MIT**（见 [`LICENSE`](LICENSE)）；第三方组件「单独分发」，清单、全文与源码出处见 [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt)
 
 一句话：**把 Windows 系统备份成一个镜像文件，需要的时候一键还原回去。**
@@ -67,11 +67,11 @@
 │  backup        VSS 热备 → 写 WIM/ESD（先写 <目标>.tmp，成功才改名）  │
 │  restore       安全四检查 → 镜像可用性校验 → 二选一：                │
 │                   ├─ 就地还原：格式化 + apply + bcdboot → 不重启      │
-│                   └─ 重启还原：暂存任务 + 配引导 → 重启              │
+│                   └─ 重启还原：解压到 <目标>:\~new + 配引导 → 重启     │
 └──────────────────────────────┬──────────────────────────────────────┘
                                ↓ 重启（仅"还原系统盘"这条路）
 ┌──────────── 内置 Linux 救援层（vmlinuz + initramfs + restore 脚本）─┐
-│  加载存储模块 → 找目标分区与镜像 → 格式化 → apply → 修引导 → 重启   │
+│  加载模块 → 找目标分区 → 交换 ~new ↔ 旧树 → 修引导 → 重启（不格式化） │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -98,9 +98,9 @@
 | 机制 | 做法 |
 |---|---|
 | **写镜像不怕中断** | 先写 `<目标>.tmp`，成功才改名；中断只会留下临时文件，**原镜像不受影响** |
-| **不接受坏镜像** | 动手前检查镜像是否"写入完成"（带 `WRITE_IN_PROGRESS` 标志/完整性不过 → 拒绝） |
+| **不接受坏镜像** | 动手前检查镜像不是"写入未完成"的半截文件（`WRITE_IN_PROGRESS` 标志），半截直接拒绝；需要更严可用 `--verify` 做全量校验 |
 | **不会抹错盘** | 四元素校验（GUID/磁盘序列号/偏移/大小）；**还原四检查**：目标是 ESP、BitLocker、恢复分区、或镜像文件就在目标分区内 → **任一命中直接拒绝**（退出码 4） |
-| **不碰 MBR** | 只格式化目标分区；救援文件放目标分区；**数据盘根目录零新增** |
+| **不碰 MBR** | 从不动磁盘 MBR；只改**目标分区**（A 引擎原地改名交换、**不格式化**，`--engine block` 回退时才快格）；救援文件放目标分区；**数据盘根目录零新增** |
 | **还原后能开机** | 写回完整 NTFS 引导区（扇区 0 的 426B + 扇区 1..8）；补 `\bootmgr` + `C:\Boot\BCD`；BCD 用 `device boot`（与盘符/磁盘号无关） |
 | **任务能中止** | 备份/还原中点关闭 → 可选「终止并退出」，1 秒内收手，并删掉未写完的临时文件 |
 | **失败必留证**（0.6.22+） | 救援层"黑匣子"：每个可挂载分区根 + ESP 都写 `ZJRESTORE-status.txt`（结果+步骤）、完整日志、**逐设备探测表**（mount 结果/错误原文/PCI 控制器/DMI）；软件目录找不到时也认领兜底日志窝 |
@@ -213,12 +213,12 @@ SysRecover.exe restore --image D:\backup\wannei-win10.esd --disk 0 --part 3 --in
 
 | 情形 | 行为 |
 |---|---|
-| 目标是**正在运行的系统盘** | 暂存任务 → **重启**进内置救援层 → 格式化 + 应用 + 修引导 → 自动重启回新系统 |
+| 目标是**正在运行的系统盘** | 暂存（**Windows 侧先把系统解压到 `<目标>:\~new`**）→ **重启**进内置救援层 → **改名交换**（不格式化、不 apply）→ 修引导 → 自动重启回新系统 |
 | 目标**未被占用**（在 **PE** 里、或还原到**非系统盘**） | **就地还原**：格式化 + 应用 + `bcdboot` → **完成，不重启** |
 
 - `--index N` 指定子镜像；`--no-repair-boot` 不自动修引导
 - 镜像里若带 **ESP 子镜像**（备份时加了 `--esp`），还原系统时**自动**把 ESP 一并恢复，无需额外参数
-- 镜像必须放在**本地分区**：重启后的救援层访问不到网络（UNC / 映射盘）
+- 镜像必须放在**本地分区**：解压（Windows 侧）与救援/回退（Linux 侧）都只在本机进行，网络 UNC / 映射盘用不了
 - 退出码：`0` 成功 / `1` 通用失败 / `2` 参数错 / `3` 需管理员 / `4` 危险目标被拒 / `5` 镜像校验失败 / `6` 取消
 
 ### 案例 3 · 做"无人参与的静默还原"入口
@@ -227,7 +227,7 @@ SysRecover.exe restore --image D:\backup\wannei-win10.esd --disk 0 --part 3 --in
 
 1. （推荐）先用 GUI 的「安装菜单」装一次常驻引导模块（UEFI：写固件启动项；BIOS：BCD 实模式启动扇区条目）。
    用法：**BIOS** 开机时连续按 ↑/↓ 选「SysRecover」；**UEFI** 按固件启动菜单键（多为 F12）选「SysRecover」。
-2. 暂存一次静默还原：安检 → 镜像可用性校验 → 写契约 → 刷新引导层 → 设单次启动：
+2. 暂存一次静默还原：安检 → 镜像校验 → 解压到 `<目标>:\~new` → 写契约 → 刷新引导层 → 设单次启动：
 
    ```cmd
    SysRecover.exe restore --image D:\backup\wannei-win10.esd --disk 0 --part 3 --index 1 --yes
@@ -242,7 +242,7 @@ SysRecover.exe restore --image D:\backup\wannei-win10.esd --disk 0 --part 3 --in
 - **单次语义**：那条"单次启动"用完即消，平时开机照常进 Windows。
 - **常驻语义（UEFI）**：固件启动项挂在 `BootOrder` 末尾，开机启动菜单里随时能选；
   任务契约放在**数据盘**（不被格式化），所以之后再选它还会再还原一次 —— 就是"菜单里常驻的一键还原"。
-- ⚠️ **BIOS 下不常驻**：救援文件随目标分区一起被格式化，那条菜单项**只对当次有效**；要常驻请用 UEFI。
+- ⚠️ **BIOS 下不常驻**：还原后目标根只剩镜像内容（引导文件随之退出），那条菜单项**只对当次有效**；要常驻请用 UEFI。
 ---
 
 ## 九、构建（给想自己编的人）
@@ -261,12 +261,12 @@ mingw32-make -f Makefile clean
 - 回归测试：`tools/vmtest/*.ps1`（UEFI/SB、BIOS/GRUB4DOS、屏显、固件直启…）+ `mk-drill.py`/`run-drill.ps1`（端到端还原演练）；清单见 [`docs/07`](docs/07-测试矩阵与回归记录.md)
 - 换机器/换环境：见 [`docs/10-新环境交接说明`](docs/10-新环境交接说明.md)
 
-### 发布包内容（`dist/`，约 46 MB）
+### 发布包内容（`dist/`，约 41 MB）
 
 ```
 SysRecover.exe / SysRecoverUI.exe   # x86 整套（入口）：真程序 + libwim-15.dll + x86 UCRT
 x64/{SysRecover.exe, SysRecoverUI.exe, libwim-15.dll, UCRT(16)}
-bootfiles/{grldr, grldr.mbr, vmlinuz-zjrestore, initramfs-zjrestore.cpio.gz, zjrestore-lite.sh}
+bootfiles/{grldr, grldr.mbr, vmlinuz-zjrestore, initramfs-zjrestore.cpio.gz, zjrestore-lite.sh, zj-ea-apply.exe}
 bootfiles/sb/{shimx64.efi, grubx64.efi, grub.cfg}         # Secure Boot 链（x64，与宿主位数无关）
 skin/ resources/ version.json THIRD_PARTY_LICENSES.txt
 ```
@@ -300,7 +300,7 @@ skin/ resources/ version.json THIRD_PARTY_LICENSES.txt
   （救援层在 Linux，跑不了 `bcdboot`）→ 实测在"按 Win10 配的 UEFI VM"里还原 Win7 会出现**引导循环**。
   **建议 Win7 目标走 BIOS/MBR**（Win7 的主流形态）。已列入待办（见 `docs/14` §3：还原后首次启动刷 `bcdboot`）。
 - **PE 就地还原 / RAID 真机 / 忙时关闭**：代码已就绪，**待实测**（[`docs/11` §3](docs/11-接手指南（读我优先）.md) 有清单）。
-- **救援层内存下限**：实测 **512MB** 可完整还原 43GB 镜像；**192MB 会在 apply 尾段被 OOM 杀掉**（失败也会完整留证，且 `<400MB` 会提前在屏幕/日志里 WARN）。救援环境建议 ≥1GB。
+- **救援层内存下限**：默认 **A 引擎**（救援层只做改名交换）内存需求很低；走 **B 引擎（`--engine block`，在 Linux 里 apply）** 时实测 **512MB 可完整还原 43GB 镜像、192MB 会在 apply 尾段被 OOM 杀掉**（失败也完整留证，`<400MB` 提前 WARN），该场景建议 ≥1GB。
 - `ZJ_ENABLE_MOK_PATH`（备选线：我们自签的 UKI + MOK 注册）默认**不编译、不随包**
   （`src/boot/uefi.cpp` 里改成 1 可启用）。
 
