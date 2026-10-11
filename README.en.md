@@ -2,7 +2,7 @@
 
 > **English** | [中文](README.md)
 
-> Version `0.7.23` | **x64 + x86 dual architecture** (the Windows side follows the OS bitness; the Linux rescue layer is always x64) | Windows 7 / 10 / 11 / WinPE | Release package ≈41 MB (≈27 MB of it is the rescue kernel and initramfs)
+> Version `0.7.24` | **x64 + x86 dual architecture** (the Windows side follows the OS bitness; the Linux rescue layer is always x64) | Windows 7 / 10 / 11 / WinPE | Release package ≈41 MB (≈27 MB of it is the rescue kernel and initramfs)
 > License: own code **MIT** (see [`LICENSE`](LICENSE)); third-party components are *separately distributed* — full list, license texts and source-code provenance in [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt)
 
 In one sentence: **back up a Windows system into a single image file, and restore it in one click when you need it.**
