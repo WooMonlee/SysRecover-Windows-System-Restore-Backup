@@ -1,6 +1,7 @@
 // 备份/还原共享操作层实现。语义对齐 CLI（Phase 2-4 已验证）与旧 C# 编排器。
 #include "../common/i18n.h"
 #include "ops.h"
+#include "shortcut.h"
 #include "swapleft.h"
 
 #include <windows.h>
@@ -1182,7 +1183,7 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
         // fail-closed：目标盘还有未处理的 ~old（用户选「保留不动」/清理未跑）
         // → 不动盘、中止；重新运行程序会再次询问（docs/23 §5）。
         {
-            DWORD a = GetFileAttributesW((target.letter + L"\\~old").c_str());
+            DWORD a = GetFileAttributesW((target.letter + L":\\~old").c_str());
             if (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY)) {
                 err = Tr("目标盘存在未处理的 ~old 残留，A 引擎还原已中止"
                          "（重新运行程序会再次询问如何处理）");
@@ -1281,6 +1282,260 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
         }
         LogInfo("A-engine: ~new ready (with .zj-done marker)");
         }  // if (!reuse)
+        // ── 备返处理（用户 2026-10-09 规格）────────────────────────────────
+        // keepOld=true  → 写标记 + 部署程序 + 桌面快捷方式（无 RunOnce，
+        //                 用户自己点快捷方式管理 ~old）；
+        // keepOld=false → 原方案：RunOnce 静默 .cmd 删 ~old（开机自动清）。
+        // 失败仅 WARN 不阻断（用户可手动启动程序处理）。
+        if (req.keepOld) {
+            // 1. 写备返标记到目标根（zjswap.sh 会把它移入 ~old/.zj-keepold）
+            {
+                const std::wstring marker = target.letter + L":\\.zj-keepold";
+                HANDLE hm = CreateFileW(marker.c_str(), GENERIC_WRITE, 0,
+                                        nullptr, CREATE_ALWAYS,
+                                        FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (hm != INVALID_HANDLE_VALUE) {
+                    const char txt[] = "keepold=1";
+                    DWORD wr = 0;
+                    WriteFile(hm, txt, sizeof(txt) - 1, &wr, nullptr);
+                    CloseHandle(hm);
+                    LogInfo("A-engine: keepold marker written to target root");
+                } else {
+                    LogWarn("A-engine: keepold marker write failed err=" +
+                            std::to_string(GetLastError()));
+                }
+            }
+            // 2. 部署完整程序到 ~new 下的 Program Files\SysRecover（行末不能以
+            //    \ 结尾 —— 反斜杠会把下一行吃进注释，导致 progDst "未声明"）
+            const std::wstring progDst =
+                newDir + L"\\Program Files\\SysRecover";
+            const bool copied = CopyDir(AppDir(), progDst);
+            if (copied) {
+                LogInfo("A-engine: program deployed to " + W2U(progDst));
+                // 3. 读新系统注册表找用户桌面 → 创建快捷方式
+                const std::wstring hive =
+                    newDir + L"\\Windows\\System32\\config\\SOFTWARE";
+                auto enablePriv = [](const wchar_t* name) {
+                    HANDLE tok = nullptr;
+                    if (!OpenProcessToken(GetCurrentProcess(),
+                                          TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+                                          &tok))
+                        return false;
+                    TOKEN_PRIVILEGES tp = {};
+                    tp.PrivilegeCount = 1;
+                    LookupPrivilegeValueW(nullptr, name, &tp.Privileges[0].Luid);
+                    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+                    AdjustTokenPrivileges(tok, FALSE, &tp, sizeof(tp), nullptr,
+                                          nullptr);
+                    bool ok = GetLastError() == ERROR_SUCCESS;
+                    CloseHandle(tok);
+                    return ok;
+                };
+                enablePriv(L"SeBackupPrivilege");
+                enablePriv(L"SeRestorePrivilege");
+                const wchar_t kHiveKey[] = L"ZJSWAPCLEANUP";
+                LONG rc = RegLoadKeyW(HKEY_LOCAL_MACHINE, kHiveKey,
+                                      hive.c_str());
+                if (rc == ERROR_SUCCESS) {
+                    // 读用户桌面路径（ProfileList → NTUSER.DAT → Desktop）
+                    std::wstring desktopDir;
+                    {
+                        HKEY hProf = nullptr;
+                        std::wstring profKey = std::wstring(kHiveKey) +
+                            L"\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList";
+                        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, profKey.c_str(), 0,
+                                          KEY_READ, &hProf) == ERROR_SUCCESS) {
+                            wchar_t sid[256];
+                            DWORD sidLen = 256;
+                            DWORD idx = 0;
+                            while (RegEnumKeyExW(hProf, idx++, sid, &sidLen,
+                                                 nullptr, nullptr, nullptr,
+                                                 nullptr) == ERROR_SUCCESS) {
+                                if (wcsncmp(sid, L"S-1-5-21-", 10) != 0) {
+                                    sidLen = 256;
+                                    continue;
+                                }
+                                std::wstring ntd = newDir + L"\\Users\\" + sid +
+                                                   L"\\NTUSER.DAT";
+                                if (GetFileAttributesW(ntd.c_str()) !=
+                                    INVALID_FILE_ATTRIBUTES) {
+                                    const wchar_t kUserKey[] = L"ZJUSER";
+                                    if (RegLoadKeyW(HKEY_LOCAL_MACHINE, kUserKey,
+                                                    ntd.c_str()) == ERROR_SUCCESS) {
+                                        HKEY hDesk = nullptr;
+                                        std::wstring deskKey = std::wstring(kUserKey) +
+                                            L"\\Software\\Microsoft\\Windows\\CurrentVersion"
+                                            L"\\Explorer\\User Shell Folders";
+                                        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+                                                          deskKey.c_str(), 0,
+                                                          KEY_READ, &hDesk) ==
+                                            ERROR_SUCCESS) {
+                                            wchar_t buf[MAX_PATH] = {};
+                                            DWORD type = 0, sz = sizeof(buf);
+                                            if (RegQueryValueExW(hDesk, L"Desktop",
+                                                                 nullptr, &type,
+                                                                 (LPBYTE)buf,
+                                                                 &sz) ==
+                                                ERROR_SUCCESS) {
+                                                wchar_t expanded[MAX_PATH] = {};
+                                                ExpandEnvironmentStringsW(buf, expanded,
+                                                                          MAX_PATH);
+                                                desktopDir = expanded;
+                                            }
+                                            RegCloseKey(hDesk);
+                                        }
+                                        RegUnLoadKeyW(HKEY_LOCAL_MACHINE, kUserKey);
+                                    }
+                                }
+                                if (!desktopDir.empty())
+                                    break;
+                                sidLen = 256;
+                            }
+                            RegCloseKey(hProf);
+                        }
+                        // 回退：Users 目录下第一个有 Desktop 的
+                        if (desktopDir.empty()) {
+                            WIN32_FIND_DATAW fd;
+                            std::wstring userRoot = newDir + L"\\Users\\*";
+                            HANDLE fh = FindFirstFileW(userRoot.c_str(), &fd);
+                            if (fh != INVALID_HANDLE_VALUE) {
+                                do {
+                                    if (fd.dwFileAttributes &
+                                        FILE_ATTRIBUTE_DIRECTORY) {
+                                        std::wstring n = fd.cFileName;
+                                        if (n != L"." && n != L".." &&
+                                            n != L"Public" && n != L"Default") {
+                                            std::wstring d = newDir + L"\\Users\\" +
+                                                             n + L"\\Desktop";
+                                            if (IsDir(d)) {
+                                                desktopDir = d;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                } while (FindNextFileW(fh, &fd));
+                                FindClose(fh);
+                            }
+                        }
+                    }
+                    RegUnLoadKeyW(HKEY_LOCAL_MACHINE, kHiveKey);
+                    // 注册表里的桌面是新系统视角的绝对路径（C:\Users\..），
+                    // 此刻还没换位 —— 必须映射进 ~new，否则 .lnk 落在旧系统
+                    // 桌面、随后被 zjswap 移进 ~old（快捷方式就丢了）。
+                    // 回退分支给出的路径已在 ~new 下，不重复加前缀。
+                    if (desktopDir.size() >= 3 && desktopDir[1] == L':' &&
+                        desktopDir.compare(0, newDir.size(), newDir) != 0)
+                        desktopDir = newDir + desktopDir.substr(2);
+                    if (!IsDir(desktopDir))
+                        desktopDir.clear();
+                    // 创建桌面快捷方式（目标必须写换位后的最终路径：~new 换位
+                    // 后变成 <盘>:\Program Files\...；--swap-menu 不传——GUI 不解析
+                    // 参数，启动残留扫描本身就会弹处理框）
+                    if (!desktopDir.empty()) {
+                        std::wstring lnkPath;
+                        const std::wstring lnkTarget =
+                            target.letter +
+                            L":\\Program Files\\SysRecover\\SysRecoverUI.exe";
+                        if (CreateShortcut(desktopDir, L"SysRecover", lnkTarget,
+                                           L"", lnkPath))
+                            LogInfo("A-engine: shortcut created: " +
+                                    W2U(lnkPath));
+                        else
+                            LogWarn("A-engine: shortcut create failed");
+                    } else {
+                        LogWarn("A-engine: desktop dir not found, skip shortcut");
+                    }
+                } else {
+                    LogWarn("A-engine: SOFTWARE hive load failed rc=" +
+                            std::to_string(rc));
+                }
+            } else {
+                LogWarn("A-engine: program deploy failed, skip shortcut");
+            }
+        } else {
+            // keepOld=false → 原方案：RunOnce 静默 .cmd 删 ~old
+            // 先清掉上一次「备返」可能留在目标根的标记：否则它会被 zjswap 一起
+            // 移进 ~old，让本应自动删除的 ~old 变成 AskUndo（用户明明没勾备返）。
+            {
+                const std::wstring marker = target.letter + L":\\.zj-keepold";
+                if (GetFileAttributesW(marker.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                    if (DeleteFileW(marker.c_str()))
+                        LogInfo("A-engine: stale keepold marker removed");
+                    else
+                        LogWarn("A-engine: stale keepold marker remove failed err=" +
+                                std::to_string(GetLastError()));
+                }
+            }
+            const std::wstring cmdPath =
+                newDir + L"\\Windows\\System32\\zj-swap-cleanup.cmd";
+            static const wchar_t kCmd[] =
+                L"@echo off\r\n"
+                L"if exist \"%SystemRoot%\\System32\" "
+                L"if not exist \"%SystemDrive%\\~new\" (\r\n"
+                L"  rd /s /q \"%SystemDrive%\\~old\" >nul 2>&1\r\n"
+                L")\r\n"
+                L"del /f /q \"%~f0\" >nul 2>&1\r\n";
+            HANDLE hc = CreateFileW(cmdPath.c_str(), GENERIC_WRITE, 0, nullptr,
+                                    CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                                    nullptr);
+            if (hc != INVALID_HANDLE_VALUE) {
+                DWORD wr = 0;
+                WriteFile(hc, kCmd, (DWORD)(sizeof(kCmd) - 2), &wr, nullptr);
+                CloseHandle(hc);
+                const std::wstring hive =
+                    newDir + L"\\Windows\\System32\\config\\SOFTWARE";
+                auto enablePriv = [](const wchar_t* name) {
+                    HANDLE tok = nullptr;
+                    if (!OpenProcessToken(GetCurrentProcess(),
+                                          TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+                                          &tok))
+                        return false;
+                    TOKEN_PRIVILEGES tp = {};
+                    tp.PrivilegeCount = 1;
+                    LookupPrivilegeValueW(nullptr, name, &tp.Privileges[0].Luid);
+                    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+                    AdjustTokenPrivileges(tok, FALSE, &tp, sizeof(tp), nullptr,
+                                          nullptr);
+                    bool ok = GetLastError() == ERROR_SUCCESS;
+                    CloseHandle(tok);
+                    return ok;
+                };
+                enablePriv(L"SeBackupPrivilege");
+                enablePriv(L"SeRestorePrivilege");
+                const wchar_t kHiveKey[] = L"ZJSWAPCLEANUP";
+                LONG rc = RegLoadKeyW(HKEY_LOCAL_MACHINE, kHiveKey,
+                                      hive.c_str());
+                if (rc == ERROR_SUCCESS) {
+                    HKEY hKey = nullptr;
+                    std::wstring sub = std::wstring(kHiveKey) +
+                                       L"\\Microsoft\\Windows\\CurrentVersion"
+                                       L"\\RunOnce";
+                    rc = RegCreateKeyExW(HKEY_LOCAL_MACHINE, sub.c_str(), 0,
+                                         nullptr, 0, KEY_WRITE, nullptr, &hKey,
+                                         nullptr);
+                    if (rc == ERROR_SUCCESS) {
+                        const wchar_t* cmd =
+                            L"%SystemRoot%\\System32\\zj-swap-cleanup.cmd";
+                        rc = RegSetValueExW(hKey, L"ZJSwapCleanup", 0,
+                                            REG_SZ, (const BYTE*)cmd,
+                                            (DWORD)((wcslen(cmd) + 1) * 2));
+                        RegCloseKey(hKey);
+                    }
+                    RegUnLoadKeyW(HKEY_LOCAL_MACHINE, kHiveKey);
+                    if (rc == ERROR_SUCCESS)
+                        LogInfo("A-engine: RunOnce cleanup injected into ~new");
+                    else
+                        LogWarn("A-engine: RunOnce inject failed rc=" +
+                                std::to_string(rc));
+                } else {
+                    LogWarn("A-engine: SOFTWARE hive load failed rc=" +
+                            std::to_string(rc));
+                }
+            } else {
+                LogWarn("A-engine: cleanup cmd write failed err=" +
+                        std::to_string(GetLastError()));
+            }
+        }
     }
     if (!AcquireOpLock()) {
         err = Tr("已有备份/还原实例在运行");

@@ -12,6 +12,7 @@
 #include <string.h>
 #include <tchar.h>
 #include <wchar.h>
+#include <wctype.h>  // towupper（快捷键字母绘制）
 #include <string>  // std::wstring（SyncTextFromNative 用；标准头须在 StdAfx.h 之前，PIT-012）
 
 using sysrecover::Tr;
@@ -345,6 +346,31 @@ bool CTabOptionUI::DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopContro
     return true;
 }
 
+// ═════════════════════════ 加速键词内画线（共用）═════════════════════════
+// 2026-10-11 二轮规格（GlyphCheck / SkinButton / TextItem 收起态三处共用）：
+// 规则 = 标签里存在快捷键字母（不分大小写）→ 线画在**词内首次出现**处、
+// 不追加尾随字母（「ESP」+P → E S P̲；「Clear」+C → C̲lear；「CPU 50%」+C → C̲PU 50%）；
+// 一个都没有 → 维持「文字 + 4px + 尾随字母」（中文标签都走这条，如「不限速 C」「类型 T」）。
+
+// 返回词内首次命中位置（let 须已 towupper），未命中返回 nullptr。
+static const wchar_t* ShortcutHit(const wchar_t* txt, wchar_t let) {
+    if (!txt || !let) return nullptr;
+    for (; *txt; ++txt)
+        if (towupper(*txt) == let) return txt;
+    return nullptr;
+}
+
+// 词首到 hit（不含）这段前缀的像素宽（把下划线对到词内字母的 x 用）。
+static int ShortcutPrefixW(HDC hDC, const wchar_t* txt, const wchar_t* hit,
+                           int px, bool bold = false) {
+    wchar_t buf[64];
+    size_t n = (size_t)(hit - txt);
+    if (n > 63) n = 63;
+    for (size_t i = 0; i < n; ++i) buf[i] = txt[i];
+    buf[n] = 0;
+    return TextW(hDC, buf, px, bold);
+}
+
 // ═════════════════════════ CGlyphCheckBoxUI ═════════════════════════
 
 bool CGlyphCheckBoxUI::DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopControl) {
@@ -366,7 +392,33 @@ bool CGlyphCheckBoxUI::DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopCo
         Poly(hDC, chk, 3, 1.7f, C_CHECK_MK);
     }
     // 实测文字起点 = 方框左 + 18，13px，颜色比正文更黑
-    TextAt(hDC, GetText(), rc.left + 18, BaselineOf(cy, 13), 13, C_CHECK_TX);
+    const int tx = rc.left + 18;
+    const int by = BaselineOf(cy, 13);
+    TextAt(hDC, GetText(), tx, by, 13, C_CHECK_TX);
+    // 快捷键字母（shortcut= 属性，光板字母无括号）：Alt+字母 的触发在
+    // Duilib 内置 WM_SYSCHAR。画法规则见 ShortcutHit（词内命中只画线、
+    // 未命中尾随字母）；线：基线 +2 起画、宽 = 该字母宽、静音色（禁用态随文字变灰）。
+    wchar_t let = (wchar_t)towupper(GetShortcut());
+    if (let) {
+        const wchar_t* txt = GetText();
+        const DWORD lc = IsEnabled() ? C_SECOND : C_DIS_TEXT;
+        const wchar_t* hit = ShortcutHit(txt, let);
+        if (hit) {
+            const int px0 = tx + ShortcutPrefixW(hDC, txt, hit, 13);
+            wchar_t s[2] = {*hit, 0};
+            const int lw = TextW(hDC, s, 13);
+            if (lw > 0)
+                SolidRect(hDC, {px0, by + 2, px0 + lw, by + 3}, lc);
+        } else {
+            int tw = TextW(hDC, txt, 13);
+            wchar_t s[2] = {let, 0};
+            const int lx = tx + tw + 4;
+            TextAt(hDC, s, lx, by, 13, lc);
+            const int lw = TextW(hDC, s, 13);
+            if (lw > 0)
+                SolidRect(hDC, {lx, by + 2, lx + lw, by + 3}, lc);
+        }
+    }
     return true;
 }
 
@@ -460,7 +512,8 @@ void CPartItemUI::PaintRow(HDC hDC, const RECT& rc, bool collapsed) {
     // 实测老界面分区行是「三带」布局（逐行墨迹扫描 old1.png y232..272）：
     //   带1 中心 = mid-9（y241.5）  磁盘型号、「已用 / 总」
     //   带2 中心 = mid  （y251  ）  盘符列整列垂直居中、分区号
-    //   带3 中心 = mid+9（y261  ）  卷标（无则「—」）、「可用 xx」
+    //   带3 中心 = mid+9（y261  ）  卷标（无则「无卷标」——2026-10-11 用户
+    //   规格：原来的「—」看着像下划线，用户看不懂）、「可用 xx」
     const int l1 = mid - 9;
     const int l2 = mid + 9;
     const int b1 = BaselineOf(l1, 12);
@@ -487,7 +540,7 @@ void CPartItemUI::PaintRow(HDC hDC, const RECT& rc, bool collapsed) {
 
     // ── 列2：磁盘型号（灰） / 卷标（深，无则「—」）──
     if (!m_disk.IsEmpty()) TextAt(hDC, m_disk, rc.left + kCol2, b1, 12, C_SECOND);
-    TextAt(hDC, m_sub.IsEmpty() ? Tr(L"—") : m_sub.GetData(), rc.left + kCol2, b2, 13, C_TEXT);
+    TextAt(hDC, m_sub.IsEmpty() ? Tr(L"无卷标") : m_sub.GetData(), rc.left + kCol2, b2, 13, C_TEXT);
 
     // ── 列3：磁盘号/分区号（单行，垂直居中）──
     TextAt(hDC, m_partNo, rc.left + kCol3, BaselineOf(mid, 13), 13, C_TEXT);
@@ -547,13 +600,51 @@ bool CTextItemUI::DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopControl
     return true;
 }
 
+// 收起态加速键画法（与 SkinButton/GlyphCheck 同规则，见 ShortcutHit）：
+// 词内有快捷键字母（如「CPU 50%」的 C、类型 T 若在词内）→ 整词居中 +
+// 词内首次出现处下划线；没有 → 「文字 + 4px + 尾随字母」整体居中
+// （如「不限速 C」「类型 T」）。没画（无字母/无文本）返回 false，调用方走原居中路径。
+static bool DrawShortcutGroup(HDC hDC, const RECT& rc, const wchar_t* text,
+                              wchar_t let) {
+    if (!let || !text || !*text) return false;
+    const int by = BaselineOf((rc.top + rc.bottom) / 2, 13);
+    const wchar_t* hit = ShortcutHit(text, let);
+    if (hit) {
+        const int w = TextW(hDC, text, 13);
+        const int x = rc.left + ((rc.right - rc.left) - w) / 2;
+        TextAt(hDC, text, x, by, 13, C_TEXT);
+        const int px0 = x + ShortcutPrefixW(hDC, text, hit, 13);
+        wchar_t s[2] = {*hit, 0};
+        const int w1 = TextW(hDC, s, 13);
+        if (w1 > 0)
+            SolidRect(hDC, {px0, by + 2, px0 + w1, by + 3}, C_SECOND);
+        return true;
+    }
+    const wchar_t one[2] = {let, 0};
+    const int w1 = TextW(hDC, text, 13);
+    const int w2 = TextW(hDC, one, 13);
+    const int x0 = rc.left + ((rc.right - rc.left) - (w1 + 4 + w2)) / 2;
+    TextAt(hDC, text, x0, by, 13, C_TEXT);
+    const int lx = x0 + w1 + 4;
+    TextAt(hDC, one, lx, by, 13, C_SECOND);
+    SolidRect(hDC, {lx, by + 2, lx + w2, by + 3}, C_SECOND);
+    return true;
+}
+
 void CTextItemUI::DrawItemText(HDC hDC, const RECT& rcItem) {
+    // 父下拉带 shortcut=（2026-10-11 用户规格，如 FormatBox 的 T /
+    // CpuCapBox 的 C）→ 画法见 DrawShortcutGroup；父级无 shortcut
+    // 走原居中路径，行为不变。
+    CControlUI* pParent = GetParent();
+    wchar_t let = pParent ? (wchar_t)towupper(pParent->GetShortcut()) : 0;
     // 固定收起文字优先（如「类型」）：收起框居中显示它，下拉列表不受影响
     if (!m_collapsed.IsEmpty()) {
+        if (DrawShortcutGroup(hDC, rcItem, m_collapsed.GetData(), let)) return;
         TextIn(hDC, m_collapsed.GetData(), rcItem, 13, C_TEXT, 1);
         return;
     }
     if (m_center) {   // 按钮态（CComboUI::PaintText）：在框内水平居中
+        if (DrawShortcutGroup(hDC, rcItem, GetText(), let)) return;
         TextIn(hDC, GetText(), rcItem, 13, C_TEXT, 1);
         return;
     }
@@ -631,6 +722,32 @@ bool CSkinLabelUI::DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopContro
         const int radius = m_cxyBorderRound.cx > 0 ? m_cxyBorderRound.cx / 2 : 0;
         if (m_dwBackColor != 0) FillRound(hDC, rc, radius, m_dwBackColor);
         if (m_dwBorderColor != 0) StrokeRound(hDC, rc, radius, 1.0f, m_dwBorderColor);
+    }
+    const std::wstring text(GetText() ? GetText() : L"");
+    // 行内高亮（确认框「丢失！/保留！」红+粗）：把文本拆成
+    // 前段 / 高亮段 / 后段，各测宽再按基线逐段画（对齐按三段总宽）。
+    if (!m_hl.empty()) {
+        size_t p = text.find(m_hl);
+        if (p != std::wstring::npos) {
+            const std::wstring a = text.substr(0, p);
+            const std::wstring b = text.substr(p, m_hl.size());
+            const std::wstring c = text.substr(p + m_hl.size());
+            const DWORD hlColor = 0xFFD9302C;  // 警示红（Material Red 600）
+            int wa = TextW(hDC, a.c_str(), m_px, m_bold);
+            int wb = TextW(hDC, b.c_str(), m_px, true);
+            int wc = TextW(hDC, c.c_str(), m_px, m_bold);
+            int total = wa + wb + wc;
+            int x = rc.left;
+            if (m_align == 1) x = rc.left + (rc.right - rc.left - total) / 2;
+            else if (m_align == 2) x = rc.right - total;
+            int base = BaselineOf((rc.top + rc.bottom) / 2, m_px);
+            if (!a.empty()) TextAt(hDC, a.c_str(), x, base, m_px, m_color, m_bold);
+            x += wa;
+            TextAt(hDC, b.c_str(), x, base, m_px, hlColor, true);
+            x += wb;
+            if (!c.empty()) TextAt(hDC, c.c_str(), x, base, m_px, m_color, m_bold);
+            return true;
+        }
     }
     TextIn(hDC, GetText(), rc, m_px, m_color, m_align, m_bold);
     return true;
@@ -728,7 +845,41 @@ bool CSkinButtonUI::DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopContr
     if (m_dwBorderColor != 0) StrokeRound(hDC, rc, radius, 1.0f, m_dwBorderColor);
 
     DWORD fg = en ? (m_dwTextColor ? m_dwTextColor : C_TEXT) : C_DIS_TEXT;
-    TextIn(hDC, GetText(), rc, m_px, fg, /*halign=*/1, m_bold);
+    // 有 shortcut= 属性 → 视觉画法（触发在 Duilib 内置 WM_SYSCHAR 通路，
+    // UIManager.cpp PreMessageHandler，这里只负责视觉）。画法规则见
+    // ShortcutHit：词内命中 → 整词居中 + 词内首次出现处下划线（不加字母）；
+    // 未命中 → 「文字 + 4px + 尾随字母」整体居中，字母静音色与正文拉开
+    // （禁用态随文字变灰）。线：基线 +2 起画，宽 = 该字母宽。
+    wchar_t let = (wchar_t)towupper(GetShortcut());
+    if (let) {
+        const wchar_t* txt = GetText();
+        const DWORD lc = en ? C_SECOND : C_DIS_TEXT;
+        const int by = BaselineOf((rc.top + rc.bottom) / 2, m_px);
+        const wchar_t* hit = ShortcutHit(txt, let);
+        if (hit) {
+            const int tw = TextW(hDC, txt, m_px, m_bold);
+            const int x = rc.left + ((rc.right - rc.left) - tw) / 2;
+            TextAt(hDC, txt, x, by, m_px, fg, m_bold);
+            const int px0 = x + ShortcutPrefixW(hDC, txt, hit, m_px, m_bold);
+            wchar_t s[2] = {*hit, 0};
+            const int w1 = TextW(hDC, s, m_px, m_bold);
+            if (w1 > 0)
+                SolidRect(hDC, {px0, by + 2, px0 + w1, by + 3}, lc);
+        } else {
+            wchar_t s[2] = {let, 0};
+            const int gap = 4;
+            int tw = TextW(hDC, txt, m_px, m_bold);
+            int lw = TextW(hDC, s, m_px, m_bold);
+            int x = rc.left + ((rc.right - rc.left) - (tw + gap + lw)) / 2;
+            if (tw > 0) TextAt(hDC, txt, x, by, m_px, fg, m_bold);
+            const int lx = x + tw + gap;
+            TextAt(hDC, s, lx, by, m_px, lc, m_bold);
+            if (lw > 0)
+                SolidRect(hDC, {lx, by + 2, lx + lw, by + 3}, lc);
+        }
+    } else {
+        TextIn(hDC, GetText(), rc, m_px, fg, /*halign=*/1, m_bold);
+    }
     return true;
 }
 

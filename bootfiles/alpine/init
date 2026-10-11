@@ -375,14 +375,32 @@ fi
 
 # ── 2d) 测试钩子（内核 cmdline，仅供实验室/"印证版"；产线不带这些参数）──
 #   zjapply=block|dir|dirfuse   zjfs=ntfs3|fuse|auto   zjtarget=format|keep
+#   zjsetup=1                   跑 setup-swap.sh（A 引擎 swap 演练盘初始化）
 # （zjapply=dir/dirfuse 仅供实验室复现"目录写"对比；产线用户流程永远是 block）
+ZJ_SETUP=0
 for _kv in $(cat /proc/cmdline 2>/dev/null); do
     case "$_kv" in
         zjapply=*)    export ZJ_APPLY_MODE="${_kv#zjapply=}" ;;
         zjfs=*)       export ZJ_APPLY_FS="${_kv#zjfs=}" ;;
         zjtarget=*)   export ZJ_TARGET_MODE="${_kv#zjtarget=}" ;;
+        zjsetup=1)    ZJ_SETUP=1 ;;
     esac
 done
+
+# ── 2e) A 引擎 swap 演练盘初始化（zjsetup=1，仅实验室）──
+if [ "$ZJ_SETUP" = "1" ]; then
+    say "setup mode: running setup-swap.sh"
+    if [ -x /setup-swap.sh ]; then
+        /bin/sh /setup-swap.sh
+        _src=$?
+        say "setup-swap.sh returned (rc=$_src)"
+    else
+        say "setup-swap.sh not found"
+    fi
+    say "SETUP DONE, halting"
+    poweroff -f 2>/dev/null || reboot -f 2>/dev/null || halt -f
+    exit 0
+fi
 
 # ── 3) 执行还原（有日志或 conf 即可）──
 # 不 exec：脚本若中途失败，落到 shell 便于排查，也避免 PID1 退出触发 panic。

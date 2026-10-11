@@ -189,6 +189,37 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
                 const std::wstring tagW =
                     std::wstring(1, it.drive) + L": " +
                     (it.isNew ? L"~new" : L"~old");
+                if (it.keepOldMarker && !it.isNew) {
+                    // 备返保留的 ~old（用户当初勾了「备返」）→ 三选：
+                    // 保留（安全项，回车/ESC 都落这里）/ 撤销 / 删除。
+                    std::wstring msg3 =
+                        Tr(L"发现备返保留的旧系统：") + tagW + L"\n" +
+                        Tr(L"保留 = 维持现状；撤销 = 把旧系统搬回根目录；") +
+                        L"\n" +
+                        Tr(L"删除 = 永久清除旧系统，释放磁盘空间。");
+                    int r = CConfirmDlg::Ask3(
+                        nullptr, Tr(L"处理备返的旧系统"), msg3,
+                        Tr(L"保留不动"), Tr(L"撤销恢复"), Tr(L"删除旧系统"),
+                        /*defaultIdx=*/0);
+                    if (r == 1) {
+                        std::string det;
+                        if (!sysrecover::UndoSwapLeftover(it.drive, det)) {
+                            ::MessageBoxW(
+                                nullptr,
+                                (Tr(L"撤销未完全成功（") + U2W8(det) +
+                                 Tr(L"），详情见日志。")).c_str(),
+                                Tr(L"九转还原"), MB_OK | MB_ICONWARNING);
+                        }
+                    } else if (r == 2) {
+                        sysrecover::LogInfo("swap leftover: " + tagN +
+                                            " -> delete (user chose, keepold)");
+                        sysrecover::DeleteSwapLeftoverAsync(it);
+                    } else {
+                        sysrecover::LogInfo("swap leftover kept by user: " +
+                                            tagN + " (keepold)");
+                    }
+                    continue;
+                }
                 std::wstring msg = Tr(L"发现中断残留：") + tagW + L"\n" +
                                    Tr(L"撤销 = 把旧系统搬回根目录并删除 ~old；") +
                                    L"\n" +

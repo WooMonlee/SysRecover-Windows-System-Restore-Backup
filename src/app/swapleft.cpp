@@ -151,6 +151,10 @@ bool ProbeDrive(wchar_t drive, bool wantNew, SwapLeftInfo& out) {
         out.rootIntact = IsDir(root + L"Windows");
         out.siblingNew = IsDir(root + L"~new");
         out.rescueOk = ReadRescueOk(root);
+        // 备返标记：ops.cpp 暂存时写在目标根 → zjswap.sh 移入 ~old/
+        out.keepOldMarker =
+            GetFileAttributesW((dir + L"\\.zj-keepold").c_str()) !=
+            INVALID_FILE_ATTRIBUTES;
     }
     return true;
 }
@@ -188,7 +192,12 @@ SwapLeftVerdict DecideSwapLeftover(const SwapLeftInfo& i, long staleHours) {
         return v;
     }
     // ~old：结构判据优先（时间不作自动删除依据，见文件头注释）
-    if (!i.rootIntact) {
+    if (i.keepOldMarker) {
+        // 备返模式（ops.cpp 暂存时写 .zj-keepold）：~old 是用户有意保留的，
+        // 永不自动删除 —— 交给 AskUndo 对话框（用户可删/撤销/继续留着）。
+        v.action = SwapLeftAction::AskUndo;
+        v.reason = "~old: keep-old marker present (user chose to keep old system)";
+    } else if (!i.rootIntact) {
         v.action = SwapLeftAction::AskUndo;
         v.reason =
             "~old: system dir missing at root (swap interrupted; ~old may hold "
@@ -278,6 +287,18 @@ bool UndoSwapLeftover(wchar_t drive, std::string& detail) {
         FindClose(h);
     }
     RemoveDirectoryW(old.c_str());  // 空才成功；有冲突残留则保留
+    // 撤销备返：.zj-keepold 标记会随搬迁回到根目录 —— 用户已选择撤销保留语义，
+    // 立即删掉它，否则下次启动扫描又会把它当"备返残留"再问一遍。
+    {
+        std::wstring marker = root + L".zj-keepold";
+        if (GetFileAttributesW(marker.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            if (DeleteFileW(marker.c_str()))
+                LogInfo("undo swap: keepold marker removed");
+            else
+                LogWarn("undo swap: keepold marker remove failed err=" +
+                        std::to_string(GetLastError()));
+        }
+    }
     detail = "moved=" + std::to_string(moved) +
              " conflict=" + std::to_string(conflict) +
              " failed=" + std::to_string(failed);

@@ -10,6 +10,7 @@
 //
 // 注意：所有 C++ 标准头必须在 StdAfx.h 之前（PIT-012）。
 #include <map>
+#include <string>
 
 #include "StdAfx.h"
 
@@ -306,11 +307,16 @@ public:
     void SetAttribute(LPCTSTR pstrName, LPCTSTR pstrValue) override;
     bool DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopControl) override;
 
+    // 行内高亮：文本中等于 m_hl 的子串用红色+粗体画（确认框「丢失！」/「保留！」）。
+    // 高亮串必须已包含在 SetText 的文本里；找不到则整行按普通样式画。
+    void SetHighlight(const std::wstring& hl) { m_hl = hl; }
+
 private:
     int   m_px;
     int   m_align;  // 0=左 1=中 2=右
     bool  m_bold;
     DWORD m_color;
+    std::wstring m_hl;
 };
 
 // 在 CMainForm::CreateControl 里注册以上标签
