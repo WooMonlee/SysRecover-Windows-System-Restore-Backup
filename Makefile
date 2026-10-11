@@ -213,4 +213,10 @@ package: ea-apply
 # 打完包再严格核一次"指针"（version.json ↔ version.h 等）—— 防止"改了源码没打包"
 	@$(PYTHON) tools/check-docs.py --strict-dist
 
-.PHONY: all cli gui clean package check crash-test smoke
+# ---- B 引擎端到端演练（docs/24 P2-4；QEMU + 断言，数分钟；演练盘不入库）----
+# 先重建演练盘（陈旧 drill.raw 会报 Cannot find GRLDR），再跑 run-drill 断言。
+drill:
+	$(PYTHON) tools/vmtest/mk-drill.py
+	powershell -ExecutionPolicy Bypass -File tools/vmtest/run-drill.ps1 -Secs 240
+
+.PHONY: all cli gui clean package check crash-test smoke drill
