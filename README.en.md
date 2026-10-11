@@ -152,6 +152,17 @@ So **the user does not enrol MOK and does not turn Secure Boot off**. The shim i
 > All commands: `SysRecover.exe help`; per-command help: `SysRecover.exe help backup`.
 > There are also `repair-boot` (fix boot without reinstalling) and `history` (operation log), among others.
 
+**Three restore channels (how to choose)**:
+
+| Scenario | Channel | How it runs | Requirements |
+|---|---|---|---|
+| Restoring the system disk from a running Windows (default) | **A-engine** (rename swap) | Stage extracts to `<target>:\~new` → reboot → rescue layer renames/swaps (no format; optional KeepOld keeps the old system as `~old`) | Target free space >= content + page file + margin |
+| A-engine space too small / target filesystem corrupted | **B-engine fallback** (`--engine block`) | Stage → reboot → rescue layer `mkntfs` + apply (**old system discarded**) | Total target capacity >= image size; >= 1 GB RAM recommended |
+| Booted from PE / USB (**first choice when Windows won't start**) | In-place restore | Windows side formats + applies + repairs boot directly, **no reboot, never enters Linux** | WinPE |
+| Windows won't start and **no task was ever staged** | The PE channel above | The SysRecover boot-menu item needs a staged task; without one it cannot enter the restore flow | PE media required |
+
+> Trade-off details and the expert-panel review: [`docs/24-双引擎并存方案复审（专家组）`](docs/24-双引擎并存方案复审（专家组）.md).
+
 **Path style (backslash vs forward slash)**:
 
 - Windows file/directory options (`--dest`, `--image`, `--file`, output dir) use **backslashes**: `D:\backup\win10.esd`
