@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：430/430 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：429/432 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n建议：以管理员身份运行（本程序要读写分区与引导）。': '\n\nAdvice: run as administrator (this program reads and writes partitions and boot data).',
@@ -27,10 +27,11 @@ EN = {
     ' 备份': ' backup',
     '%d - %ls（%.1f GB）': '%d - %ls (%.1f GB)',
     '%s（用时 %s）\n': '%s (took %s)\n',
+    '--engine 仅支持 swap（默认，A 引擎）或 block（B 引擎兜底），收到未知值已中止，未动目标分区。': '--engine accepts only swap (default, A-engine) or block (B-engine fallback); unknown value rejected, target partition untouched.',
     ': 盘': ': drive',
     ': 盘）': ': drive)',
     ':\\）': ':\\)',
-    'A 引擎空间不足：需要约 %.1f GB（内容+页文件+余量），目标盘可用 %.1f GB。请清理磁盘后重试。': 'A-engine: not enough free space: about %.1f GB required (content + page/swap/hiber files + margin), %.1f GB available on the target. Free up space and retry.',
+    'A 引擎空间不足：需要约 %.1f GB（内容+页文件+余量），目标盘可用 %.1f GB。请清理磁盘后重试，或改用 `--engine block`（B 引擎兜底：先格式化再写入，只需目标总容量 ≥ 镜像体积）。': 'A-engine space insufficient: needs about %.1f GB (content + page file + margin), target has %.1f GB free. Free up disk space and retry, or use `--engine block` (B-engine fallback: format first, then write; only needs total target capacity >= image size).',
     'A 引擎解压失败(rc=%d): ': 'A-engine extraction failed (rc=%d): ',
     'BitLocker 提醒': 'BitLocker notice',
     'CPU 不限制': 'No CPU limit',
@@ -166,6 +167,7 @@ EN = {
     '备份源分区': 'Source Disk',
     '备份镜像不可用：': 'Backup image is unusable: ',
     '备返': 'KeepOld',
+    '备返（保留旧系统）仅支持默认 A 引擎：--engine block 会格式化目标分区并丢弃旧系统。请改用默认引擎，或取消备返。': 'KeepOld (preserve old system) is only supported with the default A-engine: --engine block formats the target partition and discards the old system. Use the default engine, or disable KeepOld.',
     '复制后日志与还原记录都会保存在那里。': 'Logs and restore records will be kept there.',
     '复制失败：': 'Copy failed: ',
     '复制并运行': 'Copy and Run',
