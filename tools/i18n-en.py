@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：475/475 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：467/469 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n建议：以管理员身份运行（本程序要读写分区与引导）。': '\n\nAdvice: run as administrator (this program reads and writes partitions and boot data).',
@@ -120,8 +120,6 @@ EN = {
     '保留 = 下次运行再问（还原前会被拦截）。': 'Keep = asked again next run (restore is blocked until handled).',
     '保留 = 维持现状；返回旧系统 = 重启把旧系统搬回根；': 'Keep = leave as is; Return to old system = reboot and move the old system back to the root;',
     '保留不动': 'Keep As Is',
-    '保留老系统以便恢复，注意会占用现有系统同等大小的空间，并且必须把本程序安装新系统中。': 'Keep the old system for rollback. It uses about as much space as the current system, and this program must also be installed in the new system.',
-    '保留！': 'KEPT!',
     '修复引导失败（bcdboot rc=': 'Boot repair failed (bcdboot rc=',
     '写入': 'Writing',
     '写入 ESP 引导失败（bcdboot rc=': 'Failed to write the ESP boot files (bcdboot rc=',
@@ -135,8 +133,8 @@ EN = {
     '删除恢复环境的启动项与 ZJRESTORE 文件；不动系统与数据': 'Deletes the recovery boot entry and the ZJRESTORE files; system and data are untouched.',
     '删除旧系统': 'Delete Old OS',
     '删除菜单': 'Del Menu',
-    '即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n%ls\n%ls': 'The image will be restored to drive %ls: (disk %u partition %u).\n%ls\n%ls',
     '即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n该分区上的所有数据将丢失！%ls\n目标分区当前未被占用，将立即就地还原，不需要重启。': 'The image will be restored to drive %ls: (disk %u partition %u).\nAll data on this partition will be LOST!%ls\nThe target partition is not in use; restore will start in place with no reboot.',
+    '即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n还原后重启，是在现在的Windows下还原，还原完成后进入Linux修复引导，如果不满意，还可以返回到现在的系统；\n重启后还原，是立即重启，在Linux下去还原镜像并修复引导，%ls: 盘的所有内容将丢失。': 'The image will be restored to drive %ls: (disk %u partition %u).\nRestore-then-reboot: restore in current Windows, then reboot into Linux to fix boot; if unsatisfied, you can still return to the current system.\nReboot-then-restore: reboot immediately and restore in Linux; all content on drive %ls: will be LOST.',
     '卷影复制服务(VSS)': 'Volume Shadow Copy Service (VSS)',
     '发现中断残留：': 'Interrupted leftover found: ',
     '发现备返保留的旧系统：': 'Found an old system kept by Keep-Old: ',
@@ -172,7 +170,6 @@ EN = {
     '备份格式：esd(慢)=慢速压缩、体积最小；wim(中)=正常大小；wim(快)=最快、体积最大': 'Backup format: esd(slow) = slowest compression, smallest file; wim(mid) = normal size; wim(fast) = fastest, largest file',
     '备份源分区': 'Source Disk',
     '备份镜像不可用：': 'Backup image is unusable: ',
-    '备返': 'KeepOld',
     '备返（保留旧系统）仅支持默认 A 引擎：--engine block 会格式化目标分区并丢弃旧系统。请改用默认引擎，或取消备返。': 'KeepOld (preserve old system) is only supported with the default A-engine: --engine block formats the target partition and discards the old system. Use the default engine, or disable KeepOld.',
     '复制后日志与还原记录都会保存在那里。': 'Logs and restore records will be kept there.',
     '复制失败：': 'Copy failed: ',
@@ -269,8 +266,6 @@ EN = {
     '文件→系统': 'Restore',
     '文件对话框创建失败': 'Failed to create the file dialog',
     '文件属性检查': 'File attribute audit',
-    '新系统不好用将无法返回旧系统': 'If the new system misbehaves, you cannot go back to the old one',
-    '新系统不好用时可以返回旧系统': 'If the new system misbehaves, you can return to the old one',
     '新系统交换失败': 'New-system swap failed',
     '新系统解压数据不完整': 'New-system extract data is incomplete',
     '旗舰版': 'Ultimate',
@@ -395,8 +390,6 @@ EN = {
     '诊断包已导出到桌面。\n': 'The diagnostics bundle was exported to the Desktop.\n',
     '诊断包已导出：': 'Diagnostics bundle exported: ',
     '该分区上没有可用的旧系统（~old\\Windows）。\n': 'This partition has no usable old system (~old\\Windows).\n',
-    '该分区上的所有数据将丢失！': 'All data on this partition will be LOST!',
-    '该分区上的所有数据将保留！': 'All data on this partition will be KEPT!',
     '该镜像不是 Windows 7 及以上的系统镜像（缺少 \\Windows\\system32\\winload.exe；Vista 以前系统 / 安装源/ 不完整镜像均不支持还原），已中止，未动目标分区。': 'This image is not a Windows 7 or later system image (missing \\Windows\\system32\\winload.exe; pre-Vista systems / install-source images / incomplete images are not supported for restore). Aborted before touching the target partition.',
     '请先选择保存位置': 'Please choose a save location first',
     '请先选择镜像与目标分区，再安装菜单': 'Select an image and a target partition first, then install the menu',
@@ -431,6 +424,7 @@ EN = {
     '选择镜像与目标分区后开始；还原系统盘会重启进恢复环境，非系统盘就地还原': 'Choose an image and target; the system disk restore reboots into rescue, others run in place',
     '重启后在启动菜单选「SysRecover」还原？\n镜像：%ls（第 %d 个）\n目标：%ls: 盘 —— 选中即格式化该分区': 'Pick "SysRecover" in the boot menu to restore?\nImage: %ls (#%d)\nTarget: %ls: — selecting it formats this partition',
     '重启后按 F12 选「SysRecover」还原？\n镜像：%ls（第 %d 个）\n目标：%ls: 盘 —— 选中即格式化该分区': 'Press F12 and pick "SysRecover" to restore?\nImage: %ls (#%d)\nTarget: %ls: — selecting it formats this partition',
+    '重启后还原': 'Reboot Then Restore',
     '重启进安全模式再测': 'Safe Mode + Retest',
     '重映射扇区': 'Reallocated sectors',
     '重试失败': 'Retry failed',

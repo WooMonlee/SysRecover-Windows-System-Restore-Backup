@@ -1,9 +1,11 @@
 #pragma once
-// 通用二选确认框：主窗口在还原前弹出，按钮为「退出」/「还原后重启」。
+// 通用确认框（Ask2 二选 / Ask3 三选）。
 //
-// 用户规格（2026-09-16）：非静默模式下，还原流程只保留这一个选择框 ——
-// 用户选定「还原后重启」后暂存任务并自动重启，不再有额外的成功提示框，
-// 也不弹 Windows 关机通知。静默模式（勾选）下完全不弹框。
+// 还原确认（2026-10-14 用户规格）：需重启时弹三选 ——
+//   取消（ESC/回车安全项）/ 还原后重启（swap + keepOld=true，可返回旧系统）/
+//   重启后还原（block，C 盘内容全丢）；defaultIdx=1（回车=还原后重启）。
+// 就地还原保持二选：取消 / 开始还原。
+// 静默模式（勾选）下完全不弹框，engine=swap + keepOld=false。
 //
 // 注意：所有 C++ 标准头必须在 StdAfx.h 之前（PIT-012）。
 #include <string>
@@ -24,7 +26,8 @@ public:
                     const std::wstring& leftText, const std::wstring& rightText,
                     bool defaultIsRight, const std::wstring& hl = std::wstring());
 
-    // 通用三选（备返 ~old 处理等）：返回 0（左）/ 1（中）/ 2（右）。
+    // 通用三选（还原确认 取消/还原后重启/重启后还原、AskUndo 备返处理等）：
+    // 返回 0（左）/ 1（中）/ 2（右）。
     // 三个按钮重排为等宽；defaultIdx 指定回车落在哪（0/1/2）；ESC 仍是 0（安全项）。
     static int Ask3(HWND owner, const std::wstring& title, const std::wstring& msg,
                     const std::wstring& leftText, const std::wstring& midText,

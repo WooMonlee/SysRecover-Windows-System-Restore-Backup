@@ -83,9 +83,9 @@
         <!-- tooltip：鼠标悬停解释（Win32 Tooltip，300px 自动换行；LoadSkinXml 会翻属性值） -->
     <GlyphCheck name="Silent" float="true" pos="360,302,460,326" text="静默模式" shortcut="Q"
                 tooltip="不弹任何确认框，直接暂存任务并重启（无人值守/批量部署用）" />
-    <GlyphCheck name="KeepOld" float="true" pos="248,302,340,326" text="备返"
-                visible="false" selected="true" shortcut="K"
-                tooltip="保留老系统以便恢复，注意会占用现有系统同等大小的空间，并且必须把本程序安装新系统中。" />
+    <!-- 「备返」勾选已取消（2026-10-14 用户规格：客户抱怨太占位置）。
+         保留旧系统的能力改由还原确认框的「还原后重启」选项隐含提供
+         （A 引擎 swap + keepOld=true，仅写标记、不再部署程序/快捷方式）。 -->
     <!-- 「日志」按钮（还原模式专属，2026-10-03 用户规格）：一键搜集 各盘日志 +
          explorer 转储 + 事件日志 → 打包到桌面；结果框里可重启进/出安全模式。 -->
     <SkinButton name="LogBtn" float="true" pos="466,296,524,329" text="日志" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFE7ECF2" borderround="14,14" textcolor="#FF1B2432" shortcut="L"
