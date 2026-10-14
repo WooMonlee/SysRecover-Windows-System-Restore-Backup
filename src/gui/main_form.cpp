@@ -1503,9 +1503,12 @@ void CMainForm::StartRestore() {
     // 目标盘健康提醒（PIT-086，用户 2026-09-26）：坏盘先警告（默认取消）。
     if (!AskDiskHealthWarning((int)part.diskIndex))
         return;
-    // 非静默模式：只弹一个选择框（退出 / 还原后重启）——选定后暂存并自动重启，
-    // 不再有额外的成功提示框，也不弹关机通知。静默模式：不弹框，直接暂存并重启。
-    // 2026-10-09 用户规格：右下角按钮文案"重启后还原"→"还原后重启"（语序更清晰）。
+    // 静默模式默认：A 引擎 + keepOld=false（无人值守，~old 由 RunOnce 自动清理）。
+    // 非静默模式下面确认框会覆盖这两个值。
+    m_restoreEngine  = "swap";
+    m_restoreKeepOld = false;
+    // 非静默模式：需重启时弹三选（取消/还原后重启/重启后还原）；就地还原仍二选。
+    // 静默模式：不弹框，直接暂存并重启（静默默认 = 还原后重启 / keepOld=false）。
     if (!IsSilent()) {
         // 提示文案必须与**真实行为**一致（PIT-072）：PE 里 / 还原到非系统盘走的是
         // "就地还原、不重启"，以前这里一律写"重启后还原"，用户 2026-09-21 在 PE 里
@@ -1532,27 +1535,30 @@ void CMainForm::StartRestore() {
             }
         }
         wchar_t confirm[640];
-        // 备返两档文案（用户 2026-10-10 规格）：勾选「备返」→ 保留！+ 可返回；
-        // 未勾选 → 丢失！+ 无法返回。「丢失！/保留！」由 Ask2 的 hl 参数红+粗显示。
-        // 注意：就地还原（PE/非系统盘）走格式化+直接写入，~old 交换不存在 →
-        // 备返无效果，一律按「丢失！」档显示（与真实行为一致，PIT-072）。
-        const bool keepOldEff = needReboot && IsKeepOld();
-        std::wstring hlWord = keepOldEff ? Tr(L"保留！") : Tr(L"丢失！");
-        std::wstring line2 =
-            (keepOldEff ? Tr(L"该分区上的所有数据将保留！")
-                        : Tr(L"该分区上的所有数据将丢失！")) + logNote;
+        // 2026-10-14 用户规格：确认框三选 —— 取消 / 还原后重启 / 重启后还原。
+        // 还原后重启 = A 引擎（Windows 解压 + Linux 交换），可返回旧系统；
+        // 重启后还原 = B 引擎（Linux 直写），C 盘内容全丢。
+        // 文案按用户给定原文（Ask3 恰好 3 行）；盘符/分区号沿用现有格式化惯例。
         if (needReboot) {
             swprintf(confirm, 640,
                      Tr(L"即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n"
-                        L"%ls\n%ls"),
+                        L"还原后重启，是在现在的Windows下还原，还原完成后进入Linux修复引导，如果不满意，还可以返回到现在的系统；\n"
+                        L"重启后还原，是立即重启，在Linux下去还原镜像并修复引导，%ls: 盘的所有内容将丢失。"),
                      part.letter.empty() ? L"?" : part.letter.c_str(),
-                     part.diskIndex, part.partNumber, line2.c_str(),
-                     keepOldEff ? Tr(L"新系统不好用时可以返回旧系统")
-                                : Tr(L"新系统不好用将无法返回旧系统"));
-            if (CConfirmDlg::Ask2(m_hWnd, Tr(L"确认还原"), confirm, Tr(L"退出"),
-                                  Tr(L"还原后重启"), /*defaultIsRight=*/true,
-                                  hlWord) != 1)
-                return;
+                     part.diskIndex, part.partNumber,
+                     part.letter.empty() ? L"?" : part.letter.c_str());
+            int r = CConfirmDlg::Ask3(m_hWnd, Tr(L"确认还原"), confirm,
+                                      Tr(L"取消"), Tr(L"还原后重启"),
+                                      Tr(L"重启后还原"),
+                                      /*defaultIdx=*/1);  // 回车=还原后重启（推荐）；ESC=取消
+            if (r == 0) return;  // 取消
+            if (r == 1) {        // 还原后重启：A 引擎 swap + keepOld
+                m_restoreEngine  = "swap";
+                m_restoreKeepOld = true;
+            } else {             // 重启后还原：B 引擎 block，内容全丢
+                m_restoreEngine  = "block";
+                m_restoreKeepOld = false;
+            }
         } else {
             swprintf(confirm, 640,
                      Tr(L"即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n"
@@ -1564,6 +1570,9 @@ void CMainForm::StartRestore() {
                                   Tr(L"开始还原"), /*defaultIsRight=*/true,
                                   Tr(L"丢失！")) != 1)
                 return;
+            // 就地还原不走交换，引擎无意义但保持默认 swap（StageRestore 内部按需处理）
+            m_restoreEngine  = "swap";
+            m_restoreKeepOld = false;
         }
     }
     // （日志落点的提示已**合并进上面的确认框**，不再单独弹窗 —— 用户 2026-09-23
@@ -1598,8 +1607,8 @@ void CMainForm::StartRestoreAsync() {
                 ? (int)m_parts[m_selPart].partNumber : 1;
     req.index = m_selImageIndex;
     req.repairBoot = true;
-    req.engine = "swap";  // 0.7 默认 A 引擎：Windows 解压 + Linux 改名交换
-    req.keepOld = IsKeepOld();  // 备返：保留 ~old + 桌面管理快捷方式
+    req.engine = m_restoreEngine;       // "swap"=还原后重启 / "block"=重启后还原
+    req.keepOld = m_restoreKeepOld;     // swap 时 true=保留 ~old 可返回；block 恒 false
     std::string err;
     bool needReboot = true;
     // 进度：把 ops 层 apply 的进度转投到界面 —— 用户 2026-09-23 反馈"还原时进度条
@@ -1792,7 +1801,6 @@ void CMainForm::ApplyModeUi() {
         Vis(_T("RepairBootBtn"),false);
         Vis(_T("BootMenuBtn"),  true);
         Vis(_T("LogBtn"),       false);  // 「日志」按钮是还原模式专属（用户 2026-10-03 规格）
-        Vis(_T("KeepOld"),      false);  // 「备返」是还原模式专属
         Text(_T("PartTitle"),   Tr(L"备份源分区"));
         Text(_T("PartHint"),    Tr(L"选择要备份为镜像的源分区（移动盘已隐藏）"));
         // 第三步右侧：备份模式 = 静默模式 + CPU 下拉；引导按钮两模式共用同一位置（XML 定）。
@@ -1820,7 +1828,6 @@ void CMainForm::ApplyModeUi() {
         Vis(_T("RepairBootBtn"),true);
         Vis(_T("BootMenuBtn"),  true);
         Vis(_T("LogBtn"),       true);
-        Vis(_T("KeepOld"),      true);   // 「备返」还原模式专属
         Text(_T("PartTitle"),   Tr(L"系统安装位置"));
         Text(_T("PartHint"),    Tr(L"选择要安装恢复镜像的目标分区（移动盘已隐藏）"));
         // 还原模式几何（切回时必须复位第三步右侧那几个）。2026-10-03 用户规格：
@@ -1954,12 +1961,6 @@ void CMainForm::RebootNow() {
 bool CMainForm::IsSilent() {
     COptionUI* p =
         static_cast<COptionUI*>(m_PaintManager.FindControl(_T("Silent")));
-    return p && p->IsSelected();
-}
-
-bool CMainForm::IsKeepOld() {
-    COptionUI* p =
-        static_cast<COptionUI*>(m_PaintManager.FindControl(_T("KeepOld")));
     return p && p->IsSelected();
 }
 

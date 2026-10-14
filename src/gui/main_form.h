@@ -96,6 +96,12 @@ private:
     void StartBackup();    // UI 校验 + 确认 → StartBackupAsync
     void StartRestoreAsync();  // worker 线程：StageRestore
     void StartBackupAsync();   // worker 线程：RunBackup
+    // 还原引擎选择（2026-10-14 用户规格：确认框三选）：
+    //   "swap"  = 还原后重启（A 引擎，Windows 解压 + Linux 交换，可返回旧系统）
+    //   "block" = 重启后还原（B 引擎，Linux 直写，C 盘内容全丢）
+    // 由 StartRestore 在确认框里选定，StartRestoreAsync 消费。
+    std::string m_restoreEngine = "swap";
+    bool        m_restoreKeepOld = false;  // swap 时 true=保留 ~old 可返回；block 恒 false
     void ApplyModeUi();
     void UpdateMainAction();
     // 从界面（原生 EDIT 子窗口）回读镜像路径 → 同步 m_wimPath、必要时解析镜像、刷新按钮。
@@ -126,7 +132,6 @@ private:
     void CancelAndExit();         // 中止 worker → 清理未完成镜像 → 关窗
     void CleanupIncompleteOutput();
     bool IsSilent();   // 「静默模式」勾选态
-    bool IsKeepOld();  // 「备返」勾选态（保留 ~old）
     bool IsEspChecked();   // 「ESP」勾选态（备份专属，2026-09-30：ESP 并入主镜像）
     void SetStatus(const std::wstring& text);
     void SetProgress(int pct);

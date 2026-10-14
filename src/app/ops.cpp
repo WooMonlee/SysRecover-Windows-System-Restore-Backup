@@ -1345,175 +1345,26 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
         }
         LogInfo("A-engine: ~new ready (with .zj-done marker)");
         }  // if (!reuse)
-        // ── 备返处理（用户 2026-10-09 规格）────────────────────────────────
-        // keepOld=true  → 写标记 + 部署程序 + 桌面快捷方式（无 RunOnce，
-        //                 用户自己点快捷方式管理 ~old）；
-        // keepOld=false → 原方案：RunOnce 静默 .cmd 删 ~old（开机自动清）。
+        // ── keepOld 处理（2026-10-14 用户规格：取消「备返」勾选与程序部署）────
+        // keepOld=true  → 只写 .zj-keepold 标记（zjswap.sh 移入 ~old/.zj-keepold）；
+        //                 不再部署整程序、不再建桌面快捷方式（客户抱怨占位置）。
+        //                 ~old 保留供「返回旧系统」（AskUndo / returnold）。
+        // keepOld=false → RunOnce 静默 .cmd 删 ~old（开机自动清，无人值守默认）。
         // 失败仅 WARN 不阻断（用户可手动启动程序处理）。
         if (req.keepOld) {
-            // 1. 写备返标记到目标根（zjswap.sh 会把它移入 ~old/.zj-keepold）
-            {
-                const std::wstring marker = target.letter + L":\\.zj-keepold";
-                HANDLE hm = CreateFileW(marker.c_str(), GENERIC_WRITE, 0,
-                                        nullptr, CREATE_ALWAYS,
-                                        FILE_ATTRIBUTE_NORMAL, nullptr);
-                if (hm != INVALID_HANDLE_VALUE) {
-                    const char txt[] = "keepold=1";
-                    DWORD wr = 0;
-                    WriteFile(hm, txt, sizeof(txt) - 1, &wr, nullptr);
-                    CloseHandle(hm);
-                    LogInfo("A-engine: keepold marker written to target root");
-                } else {
-                    LogWarn("A-engine: keepold marker write failed err=" +
-                            std::to_string(GetLastError()));
-                }
-            }
-            // 2. 部署完整程序到 ~new 下的 Program Files\SysRecover（行末不能以
-            //    \ 结尾 —— 反斜杠会把下一行吃进注释，导致 progDst "未声明"）
-            const std::wstring progDst =
-                newDir + L"\\Program Files\\SysRecover";
-            const bool copied = CopyDir(AppDir(), progDst);
-            if (copied) {
-                LogInfo("A-engine: program deployed to " + W2U(progDst));
-                // 3. 读新系统注册表找用户桌面 → 创建快捷方式
-                const std::wstring hive =
-                    newDir + L"\\Windows\\System32\\config\\SOFTWARE";
-                auto enablePriv = [](const wchar_t* name) {
-                    HANDLE tok = nullptr;
-                    if (!OpenProcessToken(GetCurrentProcess(),
-                                          TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
-                                          &tok))
-                        return false;
-                    TOKEN_PRIVILEGES tp = {};
-                    tp.PrivilegeCount = 1;
-                    LookupPrivilegeValueW(nullptr, name, &tp.Privileges[0].Luid);
-                    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-                    AdjustTokenPrivileges(tok, FALSE, &tp, sizeof(tp), nullptr,
-                                          nullptr);
-                    bool ok = GetLastError() == ERROR_SUCCESS;
-                    CloseHandle(tok);
-                    return ok;
-                };
-                enablePriv(L"SeBackupPrivilege");
-                enablePriv(L"SeRestorePrivilege");
-                const wchar_t kHiveKey[] = L"ZJSWAPCLEANUP";
-                LONG rc = RegLoadKeyW(HKEY_LOCAL_MACHINE, kHiveKey,
-                                      hive.c_str());
-                if (rc == ERROR_SUCCESS) {
-                    // 读用户桌面路径（ProfileList → NTUSER.DAT → Desktop）
-                    std::wstring desktopDir;
-                    {
-                        HKEY hProf = nullptr;
-                        std::wstring profKey = std::wstring(kHiveKey) +
-                            L"\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList";
-                        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, profKey.c_str(), 0,
-                                          KEY_READ, &hProf) == ERROR_SUCCESS) {
-                            wchar_t sid[256];
-                            DWORD sidLen = 256;
-                            DWORD idx = 0;
-                            while (RegEnumKeyExW(hProf, idx++, sid, &sidLen,
-                                                 nullptr, nullptr, nullptr,
-                                                 nullptr) == ERROR_SUCCESS) {
-                                if (wcsncmp(sid, L"S-1-5-21-", 10) != 0) {
-                                    sidLen = 256;
-                                    continue;
-                                }
-                                std::wstring ntd = newDir + L"\\Users\\" + sid +
-                                                   L"\\NTUSER.DAT";
-                                if (GetFileAttributesW(ntd.c_str()) !=
-                                    INVALID_FILE_ATTRIBUTES) {
-                                    const wchar_t kUserKey[] = L"ZJUSER";
-                                    if (RegLoadKeyW(HKEY_LOCAL_MACHINE, kUserKey,
-                                                    ntd.c_str()) == ERROR_SUCCESS) {
-                                        HKEY hDesk = nullptr;
-                                        std::wstring deskKey = std::wstring(kUserKey) +
-                                            L"\\Software\\Microsoft\\Windows\\CurrentVersion"
-                                            L"\\Explorer\\User Shell Folders";
-                                        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
-                                                          deskKey.c_str(), 0,
-                                                          KEY_READ, &hDesk) ==
-                                            ERROR_SUCCESS) {
-                                            wchar_t buf[MAX_PATH] = {};
-                                            DWORD type = 0, sz = sizeof(buf);
-                                            if (RegQueryValueExW(hDesk, L"Desktop",
-                                                                 nullptr, &type,
-                                                                 (LPBYTE)buf,
-                                                                 &sz) ==
-                                                ERROR_SUCCESS) {
-                                                wchar_t expanded[MAX_PATH] = {};
-                                                ExpandEnvironmentStringsW(buf, expanded,
-                                                                          MAX_PATH);
-                                                desktopDir = expanded;
-                                            }
-                                            RegCloseKey(hDesk);
-                                        }
-                                        RegUnLoadKeyW(HKEY_LOCAL_MACHINE, kUserKey);
-                                    }
-                                }
-                                if (!desktopDir.empty())
-                                    break;
-                                sidLen = 256;
-                            }
-                            RegCloseKey(hProf);
-                        }
-                        // 回退：Users 目录下第一个有 Desktop 的
-                        if (desktopDir.empty()) {
-                            WIN32_FIND_DATAW fd;
-                            std::wstring userRoot = newDir + L"\\Users\\*";
-                            HANDLE fh = FindFirstFileW(userRoot.c_str(), &fd);
-                            if (fh != INVALID_HANDLE_VALUE) {
-                                do {
-                                    if (fd.dwFileAttributes &
-                                        FILE_ATTRIBUTE_DIRECTORY) {
-                                        std::wstring n = fd.cFileName;
-                                        if (n != L"." && n != L".." &&
-                                            n != L"Public" && n != L"Default") {
-                                            std::wstring d = newDir + L"\\Users\\" +
-                                                             n + L"\\Desktop";
-                                            if (IsDir(d)) {
-                                                desktopDir = d;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                } while (FindNextFileW(fh, &fd));
-                                FindClose(fh);
-                            }
-                        }
-                    }
-                    RegUnLoadKeyW(HKEY_LOCAL_MACHINE, kHiveKey);
-                    // 注册表里的桌面是新系统视角的绝对路径（C:\Users\..），
-                    // 此刻还没换位 —— 必须映射进 ~new，否则 .lnk 落在旧系统
-                    // 桌面、随后被 zjswap 移进 ~old（快捷方式就丢了）。
-                    // 回退分支给出的路径已在 ~new 下，不重复加前缀。
-                    if (desktopDir.size() >= 3 && desktopDir[1] == L':' &&
-                        desktopDir.compare(0, newDir.size(), newDir) != 0)
-                        desktopDir = newDir + desktopDir.substr(2);
-                    if (!IsDir(desktopDir))
-                        desktopDir.clear();
-                    // 创建桌面快捷方式（目标必须写换位后的最终路径：~new 换位
-                    // 后变成 <盘>:\Program Files\...；--swap-menu 不传——GUI 不解析
-                    // 参数，启动残留扫描本身就会弹处理框）
-                    if (!desktopDir.empty()) {
-                        std::wstring lnkPath;
-                        const std::wstring lnkTarget =
-                            target.letter +
-                            L":\\Program Files\\SysRecover\\SysRecoverUI.exe";
-                        if (CreateShortcut(desktopDir, L"SysRecover", lnkTarget,
-                                           L"", lnkPath))
-                            LogInfo("A-engine: shortcut created: " +
-                                    W2U(lnkPath));
-                        else
-                            LogWarn("A-engine: shortcut create failed");
-                    } else {
-                        LogWarn("A-engine: desktop dir not found, skip shortcut");
-                    }
-                } else {
-                    LogWarn("A-engine: SOFTWARE hive load failed rc=" +
-                            std::to_string(rc));
-                }
+            const std::wstring marker = target.letter + L":\\.zj-keepold";
+            HANDLE hm = CreateFileW(marker.c_str(), GENERIC_WRITE, 0,
+                                    nullptr, CREATE_ALWAYS,
+                                    FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (hm != INVALID_HANDLE_VALUE) {
+                const char txt[] = "keepold=1";
+                DWORD wr = 0;
+                WriteFile(hm, txt, sizeof(txt) - 1, &wr, nullptr);
+                CloseHandle(hm);
+                LogInfo("A-engine: keepold marker written to target root");
             } else {
-                LogWarn("A-engine: program deploy failed, skip shortcut");
+                LogWarn("A-engine: keepold marker write failed err=" +
+                        std::to_string(GetLastError()));
             }
         } else {
             // keepOld=false → 原方案：RunOnce 静默 .cmd 删 ~old
