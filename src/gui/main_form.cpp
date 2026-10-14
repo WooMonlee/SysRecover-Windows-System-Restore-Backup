@@ -1542,8 +1542,8 @@ void CMainForm::StartRestore() {
         if (needReboot) {
             swprintf(confirm, 640,
                      Tr(L"即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n"
-                        L"还原后重启，是在现在的Windows下还原，还原完成后进入Linux修复引导，如果不满意，还可以返回到现在的系统；\n"
-                        L"重启后还原，是立即重启，在Linux下去还原镜像并修复引导，%ls: 盘的所有内容将丢失。"),
+                        L"还原后重启，是解压镜像后重启修复引导，可以恢复到现在状态\n"
+                        L"重启后还原，是重启格式化%ls: 盘后还原镜像，无法恢复现在状态"),
                      part.letter.empty() ? L"?" : part.letter.c_str(),
                      part.diskIndex, part.partNumber,
                      part.letter.empty() ? L"?" : part.letter.c_str());

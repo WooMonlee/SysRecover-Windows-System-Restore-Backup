@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：467/469 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：468/469 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n建议：以管理员身份运行（本程序要读写分区与引导）。': '\n\nAdvice: run as administrator (this program reads and writes partitions and boot data).',
@@ -134,7 +134,7 @@ EN = {
     '删除旧系统': 'Delete Old OS',
     '删除菜单': 'Del Menu',
     '即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n该分区上的所有数据将丢失！%ls\n目标分区当前未被占用，将立即就地还原，不需要重启。': 'The image will be restored to drive %ls: (disk %u partition %u).\nAll data on this partition will be LOST!%ls\nThe target partition is not in use; restore will start in place with no reboot.',
-    '即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n还原后重启，是在现在的Windows下还原，还原完成后进入Linux修复引导，如果不满意，还可以返回到现在的系统；\n重启后还原，是立即重启，在Linux下去还原镜像并修复引导，%ls: 盘的所有内容将丢失。': 'The image will be restored to drive %ls: (disk %u partition %u).\nRestore-then-reboot: restore in current Windows, then reboot into Linux to fix boot; if unsatisfied, you can still return to the current system.\nReboot-then-restore: reboot immediately and restore in Linux; all content on drive %ls: will be LOST.',
+    '即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n还原后重启，是解压镜像后重启修复引导，可以恢复到现在状态\n重启后还原，是重启格式化%ls: 盘后还原镜像，无法恢复现在状态': 'The image will be restored to drive %ls: (disk %u partition %u).\nRestart & restore: extracts the image, then reboots to fix boot; you can roll back.\nRestore now: reboots, formats drive %ls:, then restores; rollback is NOT possible.',
     '卷影复制服务(VSS)': 'Volume Shadow Copy Service (VSS)',
     '发现中断残留：': 'Interrupted leftover found: ',
     '发现备返保留的旧系统：': 'Found an old system kept by Keep-Old: ',
