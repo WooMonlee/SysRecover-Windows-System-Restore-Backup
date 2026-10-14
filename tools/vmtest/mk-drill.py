@@ -44,6 +44,42 @@ INITRD = os.environ.get('ZJ_DRILL_INITRD') or os.path.join(
 SEC = 512
 DISK_SECTORS = 2 * 1024 * 1024 * 1024 // SEC
 
+# ZJ_DRILL_ENGINE=swap -> A-engine drill (PIT-138 regression: engine=swap must
+# still restore the ESP/EA subimages from the image file). Swap mode differs in
+# exactly two ways, both driven by the contract/cmdline, not by the layout:
+#   * CONF/LOG gain `engine=swap`
+#   * the first boot menu carries `zjsetup=1` so init runs setup-swap.sh, which
+#     formats sda2 and plants `~new/` + `.zj-done` (the pre-extracted system),
+#     then rewrites menu.lst to drop the flag so the *second* boot runs the
+#     real restore. Default 'block' keeps the existing B-engine drill intact.
+#
+# ZJ_DRILL_UNDO=1 / ZJ_DRILL_UNDORESUME=1 -> returnold drill (PIT-139, 方案 C):
+#   * both imply ENGINE=swap (`engine=swap` in the contract)
+#   * contract action=returnold, image_*=0/empty (返回旧系统不碰镜像)
+#   * first boot cmdline zjsetup=2 (undo) / zjsetup=3 (interrupted undo, phase=2)
+#   * setup-swap.sh builds the post-swap layout directly, so the host (Windows)
+#     never has to mount the NTFS the rescue layer just wrote in order to swap
+#     the contract between two boots.
+#
+# ZJ_DRILL_BULK=N -> scale drill (PIT-142): plant N small files in the tree the
+#   next boot must rename/delete (only when ENGINE=swap).  The drill disk used
+#   to carry a 3-file toy tree while a real Windows has 100k+ files, so the
+#   2026-10-13 "rm -rf ~/.new failed" could never be reproduced here.
+ENGINE = os.environ.get('ZJ_DRILL_ENGINE', 'block')
+UNDO = os.environ.get('ZJ_DRILL_UNDO', '') != ''
+UNDO_RESUME = os.environ.get('ZJ_DRILL_UNDORESUME', '') != ''
+SETUP_MODE = ''          # '' = no zjsetup=; else the N in zjsetup=N
+if UNDO or UNDO_RESUME:
+    ENGINE = 'swap'
+    SETUP_MODE = '3' if UNDO_RESUME else '2'
+
+# PIT-142: scale drill.  The drill disk always carried a 3-file toy tree while a
+# real Windows has 100k+ files, so "rm -rf ~/.new failed" (2026-10-13) could not
+# be reproduced here at all.  ZJ_DRILL_BULK=N makes setup-swap.sh plant N small
+# files in the tree that the *next* boot must rename/delete.  0 = off (default,
+# keeps the existing fast drills).
+BULK = os.environ.get('ZJ_DRILL_BULK', '').strip()
+
 PARTS = [
     (2048, 204800, 'ZJBOOT'),
     (206848, 1400000, 'ZJSYS'),
@@ -84,6 +120,52 @@ repair_boot=1
 MENU_TXT = ("timeout 3\ndefault 0\ntitle zjrestore-test\n"
             "kernel /vmlinuz-zjrestore console=tty0 console=ttyS0,115200 loglevel=7 "
             "nvme_core.io_timeout=1\ninitrd /initramfs-zjrestore.cpio.gz\n")
+
+# A-engine deltas (PIT-138). Contract gets engine=swap, and the first boot menu
+# carries zjsetup=N so init runs setup-swap.sh (formats sda2, plants the initial
+# swap/returnold layout) which then rewrites menu.lst to drop the flag for the
+# real run.
+if ENGINE == 'swap':
+    CONF_TXT = CONF_TXT + 'engine=swap\n'
+    LOG_TXT = LOG_TXT.replace('pt_type=mbr\n', 'pt_type=mbr\nengine=swap\n')
+    if SETUP_MODE:
+        MENU_TXT = MENU_TXT.replace('nvme_core.io_timeout=1\n',
+                                    'nvme_core.io_timeout=1 zjsetup=%s\n' % SETUP_MODE)
+    else:
+        MENU_TXT = MENU_TXT.replace('nvme_core.io_timeout=1\n',
+                                    'nvme_core.io_timeout=1 zjsetup=1\n')
+    if BULK:
+        MENU_TXT = MENU_TXT.replace('zjsetup=%s\n' % SETUP_MODE if SETUP_MODE else 'zjsetup=1\n',
+                                    ('zjsetup=%s zjbulk=%s\n' % (SETUP_MODE or '1', BULK)))
+
+# returnold deltas (PIT-139, 方案 C): the contract is the *only* thing driving
+# this drill - action=returnold + no image (返回旧系统不碰镜像). image_*=0 and
+# an empty image_path mirror what StageReturnOld writes on a real machine.
+if UNDO or UNDO_RESUME:
+    CONF_TXT = (CONF_TXT
+                .replace('action=restore\n', 'action=returnold\n')
+                .replace('image_path=D:/images/test.wim\n', 'image_path=\n')
+                .replace('image_index=1\n', 'image_index=0\n')
+                .replace('esp_index=2\n', 'esp_index=0\n')
+                .replace('ea_index=3\n', 'ea_index=0\n'))
+    LOG_TXT = (LOG_TXT
+               .replace('action=restore\n', 'action=returnold\n')
+               .replace('image_path=D:/images/test.wim\n', 'image_path=\n')
+               .replace('image_index=1\n', 'image_index=0\n')
+               .replace('esp_index=2\n', 'esp_index=0\n')
+               .replace('ea_index=3\n', 'ea_index=0\n'))
+
+# ZJ_DRILL_AUTORECOVER=1 -> P3 auto-recover drill (PIT-148): point the contract
+# at a nonexistent image so the rescue layer fails *before* touching the target
+# (STEP=image-not-found, STAGE=0). Expected new behavior: the EXIT trap writes
+# "recover decision: reboot", init AUTO-RECOVERs with reboot -f instead of
+# dropping to a bare # shell; with QEMU -no-reboot the VM exits by itself.
+AUTORECOVER = os.environ.get('ZJ_DRILL_AUTORECOVER', '') != ''
+if AUTORECOVER:
+    CONF_TXT = CONF_TXT.replace('image_path=D:/images/test.wim\n',
+                                'image_path=D:/images/no-such.wim\n')
+    LOG_TXT = LOG_TXT.replace('image_path=D:/images/test.wim\n',
+                              'image_path=D:/images/no-such.wim\n')
 
 
 def run(*args):
@@ -198,7 +280,9 @@ def main():
     ], subdirs=('images', 'bootfix', 'bootfix/Boot', 'bootfix/Boot/fonts',
                 'ZJRESTORE'))
 
-    print('== drill.raw ready: %s (%d bytes) ==' % (IMG, os.path.getsize(IMG)))
+    mode = 'undo-resume' if UNDO_RESUME else ('undo' if UNDO else ENGINE)
+    print('== drill.raw ready: %s (%d bytes) engine=%s mode=%s bulk=%s ==' % (
+        IMG, os.path.getsize(IMG), ENGINE, mode, BULK or 'off'))
     return 0
 
 

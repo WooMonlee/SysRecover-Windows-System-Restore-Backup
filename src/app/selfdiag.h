@@ -7,28 +7,47 @@
 //     `ZJRESTORE\{bootfix,scripts,logs}` 子树 + 目录清单；内核/initramfs 这类大件
 //     只进清单不搬运）。
 #include <string>
+#include <vector>
+
+#include "../disk/disk.h"  // 可选的「已枚举磁盘表」参数（省掉重复 EnumerateDisks）
 
 namespace sysrecover {
 
 // diag 文本（与 `diag` 命令同源）。返回 wimlib 初始化结果（0=OK）。
-int DiagReportText(std::string& out);
+// disks = 调用方手上已有的磁盘表（传 nullptr 则自己枚举一次）——
+// 枚举在慢速 USB2 设备上会阻塞数秒到数十秒，一次启动里 diag/list/收集
+// 各枚举一遍会累加成"启动卡 20 秒"，能复用就复用（问题 2，2026-10-12）。
+int DiagReportText(std::string& out,
+                   const std::vector<DiskInfo>* disks = nullptr);
 
 // 磁盘/分区表文本（UTF-8，CRLF；与 `list` 同源）。
-void DiskListText(std::string& out);
+void DiskListText(std::string& out,
+                  const std::vector<DiskInfo>* disks = nullptr);
 
 // 写 diag.txt + list.txt 到 logsDir（失败静默，仅记日志）。
-void WriteDiagFiles(const std::wstring& logsDir);
+void WriteDiagFiles(const std::wstring& logsDir,
+                    const std::vector<DiskInfo>* disks = nullptr);
 
 // 把部署痕迹收集到 dstDir。onlyDrive=0 → 扫描所有固定盘（启动时）；
 // 否则只收该盘（暂存完成后立即收一次）。返回收集到的文件数。
 // 另收：盘根黑匣子三件套（ZJRESTORE-last/probe/status）、ZJRESTORE-logs 兜底日志窝、
 // drive-map.txt（盘符↔物理身份对照）、ESP 的 \EFI\ZJRESTORE\logs（用户 2026-10-04 规格）。
-int CollectDeployArtifacts(const std::wstring& dstDir, wchar_t onlyDrive);
+// disks 同上：复用调用方的磁盘表（否则**每个盘符都会枚举一遍**，26 个盘符 = 26 次）。
+int CollectDeployArtifacts(const std::wstring& dstDir, wchar_t onlyDrive,
+                           const std::vector<DiskInfo>* disks = nullptr);
 
 // 救援层失败回执（黑匣子）：在 logs\collected 里找 ZJRESTORE-status.txt
 // （result=FAILED），返回 3 行用户提示（失败步骤/时间/版本/日志位置）。
-// 同一回执只报一次（logs\.last-rescue-status 去重）。无失败或已报过返回空串。
-std::wstring CheckLastRescueFailure();
+// 同一回执只报一次（logs\.last-rescue-status 去重）。无失败或已报过 msg 为空。
+// P3（PIT-148，用户 2026-10-14）：附 retryable —— true = A/B 类失败（未动目标
+// 或引导未验证，判定 common/rescue_decision.h::RescueStepRetryable），
+// GUI 可据此提供「一键重试」；C 类（已动盘）只给日志路径。
+struct RescueNotice {
+    std::wstring msg;       // 3 行用户提示（空 = 无事可报 / 已报过）
+    bool retryable = false; // true = 可安全地重新暂存 + 重启
+    std::string step;       // 原始 STEP（如 image-not-found；诊断用）
+};
+RescueNotice CheckLastRescueFailure();
 
 // 支持包出包成功后清理散落在各盘的日志（用户规格 4：不该到处放）：
 // <盘根>\ZJRESTORE-{last.log,probe.txt,status.txt}、zjrestore-boot.log、

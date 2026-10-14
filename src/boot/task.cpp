@@ -57,7 +57,7 @@ std::string BuildTaskConf(const RestoreTask& t) {
     char buf[8192];
     snprintf(
         buf, sizeof(buf),
-        "action=restore\n"
+        "action=%s\n"
         "pt_type=%s\n"
         "image_part_guid=%s\n"
         "image_rel_path=%s\n"
@@ -73,7 +73,9 @@ std::string BuildTaskConf(const RestoreTask& t) {
         "partition_count=%u\n"
         "software_dir=%s\n"
         "engine=%s\n"
+        "keep_old=%d\n"
         "contract_version=%d\n",
+        (t.action.empty() ? "restore" : t.action.c_str()),
         t.ptType.c_str(), W2U(t.imagePartGuid).c_str(),
         W2U(t.imageRelPath).c_str(), W2U(t.imagePath).c_str(), t.imageIndex,
         t.espIndex, t.eaIndex,
@@ -82,6 +84,7 @@ std::string BuildTaskConf(const RestoreTask& t) {
         (unsigned long long)t.targetSize, W2U(t.targetDiskSerial).c_str(),
         t.repairBoot ? 1 : 0, t.partCount, W2U(t.softwareDir).c_str(),
         (t.engine.empty() ? "block" : t.engine.c_str()),
+        t.keepOld ? 1 : 0,
         SYSRECOVER_CONTRACT_VERSION);
     return buf;
 }
@@ -90,13 +93,14 @@ std::string BuildTaskJson(const RestoreTask& t) {
     char buf[8192];
     snprintf(
         buf, sizeof(buf),
-        "{\"schema\":1,\"action\":\"restore\",\"pt_type\":\"%s\","
+        "{\"schema\":1,\"action\":\"%s\",\"pt_type\":\"%s\","
         "\"image_path\":\"%s\",\"image_rel_path\":\"%s\",\"image_index\":%d,"
         "\"esp_index\":%d,"
         "\"ea_index\":%d,"
         "\"target_disk\":%d,\"target_part\":%d,"
         "\"target_offset\":%llu,\"target_size\":%llu,"
         "\"repair_boot\":%s,\"partition_count\":%u}\n",
+        (t.action.empty() ? "restore" : t.action.c_str()),
         t.ptType.c_str(), JsonEsc(W2U(t.imagePath)).c_str(),
         W2U(t.imageRelPath).c_str(), t.imageIndex, t.espIndex, t.eaIndex,
         t.targetDisk, t.targetPart, (unsigned long long)t.targetOffset,
@@ -109,7 +113,7 @@ std::string BuildRestoreLogText(const RestoreTask& t,
                                 const std::string& isoTimestamp) {
     char buf[8192];
     snprintf(buf, sizeof(buf),
-             "action=restore\n"
+             "action=%s\n"
              "log_time=%s\n"
              "software_version=%s\n"
              "software_path=%s\n"
@@ -122,23 +126,26 @@ std::string BuildRestoreLogText(const RestoreTask& t,
              "target_vol_label=%s\n"
              "image_path=%s\n"
              "image_index=%d\n"
-             "esp_index=%d\n"
-             "ea_index=%d\n"
-             "repair_boot=%d\n"
-             "pt_type=%s\n"
-             "engine=%s\n"
-             "contract_version=%d\n",
-             isoTimestamp.c_str(), SYSRECOVER_VERSION,
-             W2U(t.softwarePath).c_str(),
-             W2U(t.targetDiskName).c_str(), W2U(t.targetDiskSerial).c_str(),
-             (unsigned long long)t.targetDiskSize,
-             (unsigned long long)t.targetOffset,
-             (unsigned long long)t.targetSize, W2U(t.targetFs).c_str(),
-             W2U(t.targetVolLabel).c_str(), W2U(t.imagePath).c_str(),
-             t.imageIndex, t.espIndex, t.eaIndex, t.repairBoot ? 1 : 0,
-             t.ptType.c_str(),
-             (t.engine.empty() ? "block" : t.engine.c_str()),
-             SYSRECOVER_CONTRACT_VERSION);
+        "esp_index=%d\n"
+        "ea_index=%d\n"
+        "repair_boot=%d\n"
+        "pt_type=%s\n"
+        "engine=%s\n"
+        "keep_old=%d\n"
+        "contract_version=%d\n",
+        (t.action.empty() ? "restore" : t.action.c_str()),
+        isoTimestamp.c_str(), SYSRECOVER_VERSION,
+        W2U(t.softwarePath).c_str(),
+        W2U(t.targetDiskName).c_str(), W2U(t.targetDiskSerial).c_str(),
+        (unsigned long long)t.targetDiskSize,
+        (unsigned long long)t.targetOffset,
+        (unsigned long long)t.targetSize, W2U(t.targetFs).c_str(),
+        W2U(t.targetVolLabel).c_str(), W2U(t.imagePath).c_str(),
+        t.imageIndex, t.espIndex, t.eaIndex, t.repairBoot ? 1 : 0,
+        t.ptType.c_str(),
+        (t.engine.empty() ? "block" : t.engine.c_str()),
+        t.keepOld ? 1 : 0,
+        SYSRECOVER_CONTRACT_VERSION);
     return buf;
 }
 

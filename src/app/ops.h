@@ -86,6 +86,16 @@ int StageRestore(const RestoreRequest& req, std::string& err,
                  bool* needReboot = nullptr, ProgressFn progress = nullptr,
                  ErrAdvice* adv = nullptr);
 
+// 一键重试（P3 / PIT-148，用户 2026-10-14 规格）：从 <exeDir>\restore-task.conf
+// 重建 RestoreRequest（按 target_offset/size/serial 匹配当前磁盘表）并重新
+// StageRestore。**只用于 A/B 类失败**（未动目标 / 引导未验证，判定见
+// common/rescue_decision.h::RescueStepRetryable）—— C 类（mkntfs/apply 已动盘）
+// 救援层已自动重试 ×2，此处 fail-closed 不提供。
+// keep_old 不在 conf 原设计里（PIT-148 起新增），老 conf 缺键按 false。
+// 返回：0 成功（*needReboot 由 StageRestore 决定）；1 失败（err=原因）；
+//       2 conf 缺失/action 非 restore（err=说明）；4 找不到目标盘（err=说明）。
+int RetryStagedRestore(std::string& err, bool* needReboot = nullptr);
+
 // 安装/更新「一键还原菜单项」（用户 2026-09-29 规格）：
 //   把当前选中的 **镜像 + 目标分区** 写成**常驻任务契约**（目标分区根 `_zjresy*.log`
 //   + 软件目录 `restore-task.conf`），并部署救援环境 + **常驻**启动项
@@ -96,6 +106,29 @@ int StageRestore(const RestoreRequest& req, std::string& err,
 // 返回：0 成功；1 失败；2 参数错（缺镜像 / 目标无盘符）；4 危险目标被拒；5 镜像不可用。
 int StageRestoreMenu(const RestoreRequest& req, std::string& err,
                      ErrAdvice* adv = nullptr);
+
+// ── 返回旧系统（PIT-139，2026-10-13，方案 C）─────────────────────────
+// A 引擎 keepOld 备返的撤销。**必须重启进 Linux 救援层完成目录反向交换** ——
+// 在 Windows 里改名正在运行的系统树（根 -> ~new、~old -> 根）不可回滚，
+// 救援层里没有进程占用，纯同卷改名、秒级、可中断续做（见 docs/23 §5）。
+// Windows 侧只做：暂存契约(action=returnold) + 无条件部署引导层 + 单次启动 +
+// 写待执行标记 + 返回 needReboot=true（调用方负责 shutdown /r）。
+// 前置：目标根有完整旧系统 `~old\Windows` 且根有完整新系统 `\Windows`；
+//       软件目录不得位于目标盘（否则程序会把自己搬走）。
+// 返回：0 成功；1 失败（err=原因）；4 前置不满足（err=说明，此时应让用户
+//       改选「删除旧系统」，或先在别处运行本程序）。
+int StageReturnOld(const PartitionInfo& target, std::string& err,
+                   bool* needReboot = nullptr);
+
+// 目标根是否具备「返回旧系统」的条件（纯只读探测，不写任何东西）。
+// 供 GUI/CLI 决定按钮态与确认框文案；与 StageReturnOld 内部同一判据，不会漂移。
+bool DetectReturnOldCapability(const PartitionInfo& target, bool* hasOldTree,
+                               bool* hasRootTree, std::string& detail);
+
+// 便捷入口（CLI）：按磁盘号/分区号定位后调 StageReturnOld。
+// disk/part 都 < 0 时自动找「根有 \Windows 且 ~old\Windows 也在」的第一块固定盘。
+int StageReturnOldByDiskPart(int disk, int part, std::string& err,
+                             bool* needReboot = nullptr);
 
 // 读取"已安装菜单项"绑定的镜像/目标（供 GUI 显示与"是否与当前选择一致"判断）。
 // 数据源：<exeDir>\restore-task.conf（StageRestore/StageRestoreMenu 写的副契约）。

@@ -12,6 +12,7 @@
 #include "tiny_test.h"
 
 #include "app/advice.h"
+#include "app/swapleft.h"
 #include "boot/bcd.h"
 #include "boot/bcd_parse.h"
 #include "boot/bootpath.h"
@@ -194,6 +195,15 @@ TEST(task_conf_has_required_keys) {
     CHECK_CONTAINS(c, "repair_boot=0");
     CHECK_CONTAINS(c, "partition_count=3");
     CHECK_CONTAINS(c, "software_dir=D:\\ZJRESTORE");
+    CHECK_CONTAINS(c, "keep_old=0");  // PIT-148：默认 false（SampleTask 未设）
+}
+
+// PIT-148：keep_old 进 conf（一键重试要复刻"是否备返"）；true=1。
+TEST(task_conf_keep_old) {
+    RestoreTask t = SampleTask();
+    t.keepOld = true;
+    CHECK_CONTAINS(BuildTaskConf(t), "keep_old=1");
+    CHECK_CONTAINS(BuildRestoreLogText(t, "T"), "keep_old=1");
 }
 
 TEST(task_json_escapes_backslashes) {
@@ -220,6 +230,48 @@ TEST(task_restore_log_contract) {
     CHECK_CONTAINS(l, "repair_boot=0");
     CHECK_CONTAINS(l, "pt_type=gpt");
 }
+
+// ── PIT-139「返回旧系统」（action=returnold）：**同一契约的第二个取值**，不升
+// contract_version —— 旧救援层不认 action 就照 swap 走，zjswap.sh 缺
+// ~new/.zj-done 会 exit 2 fail-closed，绝不会把盘改坏。这里守三件事：
+//   ① 三种文本形态都写出 action；② 空 action 回落成 restore（老调用点不改也能用）；
+//   ③ engine=swap 且 image_* 被清空（反向交换不需要镜像）。
+TEST(task_returnold_action_in_all_builders) {
+    RestoreTask t = SampleTask();
+    t.action = "returnold";
+    t.engine = "swap";
+    t.imagePath.clear();
+    t.imageRelPath.clear();
+    t.imageIndex = 0;
+    t.espIndex = 0;
+    t.eaIndex = 0;
+
+    CHECK_CONTAINS(BuildTaskConf(t), "action=returnold");
+    CHECK_CONTAINS(BuildTaskJson(t), "\"action\":\"returnold\"");
+    CHECK_CONTAINS(BuildRestoreLogText(t, "2026-10-13T10:00:00"),
+                   "action=returnold");
+
+    // engine 走 swap（A 引擎），且镜像字段确实被清空 —— 反向交换没有镜像。
+    std::string c = BuildTaskConf(t);
+    CHECK_CONTAINS(c, "engine=swap");
+    CHECK_CONTAINS(c, "image_index=0");
+    CHECK_CONTAINS(c, "esp_index=0");
+
+    // 契约版本不动（增量键，见 AGENTS §5 / PIT-139）。
+    CHECK_CONTAINS(c, "contract_version=1");
+    CHECK_EQ(TaskConfGet(c, "action"), std::string("returnold"));
+}
+
+// 空 action 一律回落成 restore：老调用点、外部工具手写的契约都不必改。
+TEST(task_action_defaults_to_restore) {
+    RestoreTask t = SampleTask();
+    t.action.clear();
+    CHECK_CONTAINS(BuildTaskConf(t), "action=restore");
+    CHECK_CONTAINS(BuildTaskJson(t), "\"action\":\"restore\"");
+    CHECK_CONTAINS(BuildRestoreLogText(t, "2026-10-13T10:00:00"),
+                   "action=restore");
+}
+
 
 // ────────────────────────── zip CRC-32 ──────────────────────────
 
@@ -592,6 +644,32 @@ TEST(rescue_report_decision) {
     CHECK(DecideRescueReport(t) == RescueReport::None);
 }
 
+// ── PIT-148：A/B 类失败 → 可「一键重试」；C 类（已动盘）不提供 ──
+// 分类依据 rescue_decision.h 注释；单测守边界，防止有人往 A 类里塞
+// mkntfs/apply（那会把"重试"变成在半成品盘上重来）。
+TEST(rescue_step_retryable) {
+    using sysrecover::RescueStepRetryable;
+    // A/B 类（可一键重试）
+    CHECK(RescueStepRetryable("no-task"));
+    CHECK(RescueStepRetryable("contract-mismatch"));
+    CHECK(RescueStepRetryable("target-not-found"));
+    CHECK(RescueStepRetryable("caps-missing"));
+    CHECK(RescueStepRetryable("image-not-found"));
+    CHECK(RescueStepRetryable("unsupported-image"));
+    CHECK(RescueStepRetryable("interrupted"));
+    CHECK(RescueStepRetryable("swap-missing"));
+    // C 类（不可）
+    CHECK(!RescueStepRetryable("mkntfs-failed"));
+    CHECK(!RescueStepRetryable("apply-failed"));
+    CHECK(!RescueStepRetryable("swap-failed"));
+    CHECK(!RescueStepRetryable("returnold-missing"));
+    CHECK(!RescueStepRetryable("returnold-failed"));
+    // 未知 step（老回执/新脚本）：fail-closed 不提供一键重试
+    CHECK(!RescueStepRetryable(""));
+    CHECK(!RescueStepRetryable("done"));
+    CHECK(!RescueStepRetryable("esp-failed"));
+}
+
 // ────────────── ea（EA 打包 / 组策略文件助手，PIT-122）──────────────
 // PIT-135：非微软重解析点判定（bit31=0；微软 tag 均置位）——Linux 侧 apply
 // 无法设置非微软 reparse（libntfs-3g bug），备份时须排除。
@@ -821,4 +899,85 @@ TEST(refscan_task_commands) {
              std::wstring(L"C:\\Users\\x\\AppData\\Local\\Temp\\a\\up.exe"));
     CHECK_EQ(cmds[1], std::wstring(L"C:\\Program Files\\b\\b.exe"));
     CHECK_EQ(ExtractTaskCommands(L"no commands here").size(), (size_t)0);
+}
+
+// ────────────────────── swapleft（0.7 A 引擎残留决策表）──────────────────────
+// 纯策略 DecideSwapLeftover（src/app/swapleft.cpp，对照 docs/23 §5）：
+//   ~new：过期(≥24h)直接删 → 有 .zj-done 复用 → 无标记下次还原重做；
+//   ~old：时间**永不**自动删除，只按结构判据（keepOld 标记 > 根残缺 >
+//         同盘 ~new 仍在 > 结构完整=交换完成垃圾）。
+TEST(swapleft_decision_table) {
+    using sysrecover::DecideSwapLeftover;
+    using sysrecover::SwapLeftAction;
+    using sysrecover::SwapLeftInfo;
+
+    // ---- ~new ----
+    SwapLeftInfo n;
+    n.isNew = true;
+    n.ageHours = 48;
+    n.hasMarker = true;  // 过期优先于标记：超期的完整 ~new 也删
+    auto v = DecideSwapLeftover(n);
+    CHECK(v.action == SwapLeftAction::Delete);
+    CHECK_CONTAINS(v.reason, "expired");
+
+    n.ageHours = 24;  // 边界（>=）
+    CHECK(DecideSwapLeftover(n).action == SwapLeftAction::Delete);
+    n.ageHours = 23;  // 边界内：标记在 → 复用
+    CHECK(DecideSwapLeftover(n).action == SwapLeftAction::Reuse);
+
+    n.ageHours = -1;  // 无法判定年龄 → 保守按"刚发生"，绝不因过期删
+    CHECK(DecideSwapLeftover(n).action == SwapLeftAction::Reuse);
+    n.hasMarker = false;  // 不完整（无 .zj-done）→ 下次还原重做
+    v = DecideSwapLeftover(n);
+    CHECK(v.action == SwapLeftAction::Redo);
+    CHECK_CONTAINS(v.reason, "incomplete");
+
+    n.ageHours = 2;
+    n.hasMarker = true;  // 近期完整 → 复用免重解压
+    v = DecideSwapLeftover(n);
+    CHECK(v.action == SwapLeftAction::Reuse);
+    CHECK_CONTAINS(v.reason, "complete");
+
+    // 自定义 staleHours：12h 超过 10h 门槛 → 删
+    n.ageHours = 12;
+    CHECK(DecideSwapLeftover(n, 10).action == SwapLeftAction::Delete);
+    CHECK(DecideSwapLeftover(n, 24).action == SwapLeftAction::Reuse);
+
+    // ---- ~old（时间不作删除依据）----
+    SwapLeftInfo o;  // isNew=false 默认
+    o.rootIntact = true;
+    o.rescueOk = true;
+    v = DecideSwapLeftover(o);
+    CHECK(v.action == SwapLeftAction::Delete);  // 结构完整 + ~new 已消化 → 交换完成垃圾
+    CHECK_CONTAINS(v.reason, "receipt OK");
+
+    o.rescueOk = false;  // 无回执同样删，但理由是"结构判据"
+    v = DecideSwapLeftover(o);
+    CHECK(v.action == SwapLeftAction::Delete);
+    CHECK_CONTAINS(v.reason, "consumed");
+
+    o.ageHours = 1000;  // 再老也不自动删 ~old（时间只对 ~new 生效）
+    CHECK(DecideSwapLeftover(o).action == SwapLeftAction::Delete);
+
+    o.siblingNew = true;  // 同盘 ~new 还在 → 交换中断态，问用户
+    v = DecideSwapLeftover(o);
+    CHECK(v.action == SwapLeftAction::AskUndo);
+    CHECK_CONTAINS(v.reason, "sibling");
+
+    o.siblingNew = false;
+    o.rootIntact = false;  // 根下无 Windows → 可能是唯一副本，问用户
+    v = DecideSwapLeftover(o);
+    CHECK(v.action == SwapLeftAction::AskUndo);
+    CHECK_CONTAINS(v.reason, "system dir missing");
+
+    o.keepOldMarker = true;  // 备返标记优先级最高：哪怕根也残缺也只问不删
+    v = DecideSwapLeftover(o);
+    CHECK(v.action == SwapLeftAction::AskUndo);
+    CHECK_CONTAINS(v.reason, "keep-old");
+
+    o.rootIntact = true;  // 结构全绿 + keepOld → 仍 AskUndo（用户有意保留）
+    CHECK(DecideSwapLeftover(o).action == SwapLeftAction::AskUndo);
+
+    // 决策永不产生空理由（日志/排障可用性）
+    CHECK(!v.reason.empty());
 }

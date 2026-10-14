@@ -54,8 +54,13 @@ void DeleteSwapLeftoverAsync(const SwapLeftInfo& i);
 // 等某盘的后台删除收尾（还原暂存进 swap 分支前调用，防并发踩踏）
 void WaitSwapCleanup(wchar_t drive);
 
-// 撤销：把 <盘>:\~old 内容搬回根（尽力而为；冲突留在 ~old 并记日志）。
-// 返回 true = 全部搬回且 ~old 已空；false = 有冲突/失败（detail 说明）。
-bool UndoSwapLeftover(wchar_t drive, std::string& detail);
+// ⚠️ 已移除 `UndoSwapLeftover`（PIT-139，2026-10-13）：它是「返回旧系统」的
+// 旧实现，根因两条 —— ① 根下同名一律 conflict 且 `return conflict==0 &&
+// failed==0`，一有同名就恒 false，而实际上**一个字节都没搬**（零还原 + 误报
+// 成功边界）；② 语义错配：docs/23 §5 的 AskUndo 决策表针对的是**交换中断、根
+// 已空缺**的场景，而 keepOld 是**交换成功**、根下仍是当前系统 —— 在 Windows 里
+// 改名正在运行的系统树不可回滚。
+// 取代者：`ops::StageReturnOld`（写 action=returnold 契约）→ 重启 → Linux 救援层
+// 的 `bootfiles/zjswap-undo.sh` 做目录反向交换（那台机器上没有进程占用）。
 
 }  // namespace sysrecover

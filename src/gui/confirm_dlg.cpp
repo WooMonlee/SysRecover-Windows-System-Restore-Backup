@@ -188,6 +188,12 @@ int CConfirmDlg::RunModal(HWND owner, CConfirmDlg* dlg) {
     dlg->CenterWindow();
     dlg->ShowWindow(true);
     ::SetForegroundWindow(h);
+    // PIT-140（用户 2026-10-13）：启动期的 owner 一度传 nullptr，导致对话框与
+    // 主窗口是两个互不相关的顶层窗口 → 藏在主界面背后、且主界面仍可点。
+    // owner 正确时 Win32 保证被拥有窗口在 owner 之上；这里再显式提到 Z 序最前，
+    // 防 SetForegroundWindow 在前台锁下失效（只改 Z 序/激活，不移动不改尺寸）。
+    ::SetWindowPos(h, HWND_TOP, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
 
     // 局部模态消息循环：owner 已禁用，故本线程消息只服务于本对话框。
     MSG m;

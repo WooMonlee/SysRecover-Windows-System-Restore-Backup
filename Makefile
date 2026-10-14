@@ -157,14 +157,33 @@ EA_APPLY_OUT = bootfiles/zj-ea-apply.exe
 ea-apply: $(EA_APPLY_OUT)
 $(EA_APPLY_OUT): $(EA_APPLY_SRC) src/common/version.h
 	$(EA_APPLY_X86) $(CXXFLAGS) $(INCLUDES) $(EA_APPLY_SRC) -o $(EA_APPLY_OUT) -static -mconsole -municode -s -lntdll -ladvapi32
-# ---- 一致性门禁（测试线已封存 2026-10-09）----
-# 单元测试/冒烟/崩溃探针**全部移入 graveyard\**：旧架构的测试对新架构（Windows
-# 解压 + Linux 改名交换）无意义，将随新软件重做（见 docs/20、docs/21）。
-# 此处只保留开发工作流门禁（文档指针/国际化/宽度）。
-check:
+# ---- 单元测试（0.7 线重做：2026-10-11 自 graveyard/tests 迁回；旧 45 用例对 0.7
+#      源码复验全绿后原样恢复，另补 0.7 新纯逻辑 DecideSwapLeftover 决策表用例）----
+TEST_SRC   = tests/tiny_test.cpp tests/unit_tests.cpp tests/main.cpp
+TEST_UNITS = src/common/sysinfo.cpp src/wim/exclude.cpp src/boot/task.cpp src/common/zip.cpp src/app/advice.cpp \
+      src/common/i18n.cpp src/common/selfarch.cpp src/common/relocate.cpp src/common/pathutil.cpp src/boot/bcd_parse.cpp src/boot/bootpath.cpp \
+      src/common/ea.cpp src/common/refscan.cpp src/app/swapleft.cpp src/common/logger.cpp
+TEST_BIN   = $(OBJDIR)/tests.exe
+$(TEST_BIN): $(TEST_SRC) $(TEST_UNITS) src/common/rescue_decision.h src/common/version.h tests/tiny_test.h | $(OBJDIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(TEST_SRC) $(TEST_UNITS) -o $(TEST_BIN) -static -mconsole -ladvapi32 -lole32 -luuid -lntdll
+
+# 崩溃探针（不进 make check —— 它会真的崩）。产物在 tests\crash-out\（gitignore）。
+CRASH_PROBE = $(OBJDIR)/crash_probe.exe
+$(CRASH_PROBE): tests/crash_probe.cpp src/common/crash.cpp src/common/version.h | $(OBJDIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/crash_probe.cpp src/common/crash.cpp -o $(CRASH_PROBE) -static -mconsole
+crash-test: $(CRASH_PROBE)
+	-$(CRASH_PROBE) tests\crash-out
+	@if exist tests\crash-out\logs\crash\crash-*.dmp (echo CRASH DUMP: OK) else (echo CRASH DUMP: MISSING && exit 1)
+
+# ---- 一致性门禁（check = 单元测试 + 版本脚本自检 + 文档/i18n/宽度/shell 门禁）----
+# 冒烟（QEMU）仍封存（tools/vmtest 在 graveyard），单独 make smoke 不可用；见 docs/20。
+check: $(TEST_BIN)
+	$(TEST_BIN)
+	$(PYTHON) tests/test_version.py
 	$(PYTHON) tools/check-docs.py
 	$(PYTHON) tools/check-i18n.py
 	$(PYTHON) tools/check-widths.py
+	$(PYTHON) tools/check-shell.py
 
 # ---- ★ 发布包：根目录 = x86 整套（入口）；x64/ = x64 整套；与位数无关的资源放根目录 ----
 # 需要**两套工具链**：x64 走 PATH 上的 g++（请先把 mingw64\bin 加到 PATH），x86 走绝对路径。
@@ -183,6 +202,7 @@ package: ea-apply
 	@copy /Y bootfiles\vmlinuz-zjrestore dist\bootfiles\ >nul
 	@copy /Y bootfiles\initramfs-zjrestore.cpio.gz dist\bootfiles\ >nul
 	@copy /Y bootfiles\zjrestore-lite.sh dist\bootfiles\ >nul
+	@copy /Y bootfiles\zjlog.sh dist\bootfiles\ >nul
 	@copy /Y bootfiles\zj-ea-apply.exe dist\bootfiles\ >nul
 # 交付目录不留运行期垃圾：从 dist 直接运行过 exe 时会在 dist\logs 落日志/诊断包
 # （LogBaseDir 的"程序目录"分支）——打包时清掉，避免把测试残留当交付物分发。

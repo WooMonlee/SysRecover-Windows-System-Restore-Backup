@@ -26,4 +26,13 @@ uint64_t MsSinceProcessStart();
 // 不重编就能开）。
 bool StartupTimingEnabled();
 
+// 启动阶段耗时日志（**常开**，不依赖 SYSRECOVER_STARTUP_TIMING）。
+// 每个阶段调一次，打一行 `startup phase <name>: +35 ms (t=20134 ms)`：
+//   · + = 距上一次调用（或进程创建，若尚无前一次）的毫秒数；
+//   · t = 距进程创建的毫秒数。
+// 为什么常开（用户 2026-10-12 问题 2）：机房现场"插了慢速 USB2 盘就慢启动
+// 20 秒"这类问题只在用户机器上偶发，开关式的计时等于没有 —— 只有一行行
+// 阶段耗时摆在日志里，下次拿到日志就能直接看出卡在哪一段。
+void StartupPhase(const char* name);
+
 }  // namespace sysrecover

@@ -1192,26 +1192,66 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             return 1;
         }
     }
+    // 2.2) 就地还原 vs「暂存+重启」**必须在 A 引擎解压之前判定**（2026-10-12
+    //      问题 4）：旧顺序是先解压 ~new（几分钟）再判就地，而 PE / 非系统盘
+    //      目标走就地 → 接着 format 把刚解压的 ~new 一起格式化掉、再整镜像
+    //      apply 第二遍 —— 表现为"100% 后停 16 秒、又从 1% 跑到 100%"
+    //      （同一遍镜像解了两遍）。就地时整段 swap（解压/备返/RunOnce）跳过。
+    std::string inplaceWhy;
+    const bool inPlace = !menuEntry && CanRestoreInPlace(target, inplaceWhy);
+    LogInfo(std::string("restore path: ") +
+            (inPlace ? "in-place" : (menuEntry ? "menu-entry" : "staged-reboot")) +
+            (inplaceWhy.empty() ? "" : " (" + inplaceWhy + ")"));
+
+    // A 引擎残留门禁（就地与暂存共用，docs/23 §5）：目标盘还有未处理的 ~old
+    // （用户选「保留不动」/清理未跑）→ 不动盘、中止；重新运行程序会再次询问。
+    // 就地还原**同样要拦**：就地 = format 整个目标分区，等于不询问就删掉用户
+    // 刚刚选择「保留」的旧系统。
+    auto swapLeftGuard = [&]() -> bool {
+        if (target.letter.empty()) {
+            err = Tr("目标分区无盘符，A 引擎无法解压");
+            return false;
+        }
+        WaitSwapCleanup(target.letter[0]);  // 等启动期后台残留清理收尾
+        DWORD a = GetFileAttributesW((target.letter + L":\\~old").c_str());
+        if (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY)) {
+            err = Tr("目标盘存在未处理的 ~old 残留，A 引擎还原已中止"
+                     "（重新运行程序会再次询问如何处理）");
+            LogError(err);
+            return false;
+        }
+        return true;
+    };
+
+    // ── 就地还原：到此直接执行（不写契约、不部署引导、不重启）────────────
+    if (inPlace) {
+        if (req.engine == "swap" && !swapLeftGuard())
+            return 4;
+        if (!AcquireOpLock()) {
+            err = Tr("已有备份/还原实例在运行");
+            return 1;
+        }
+        ProgressUpdate("restore", 0, "start");
+        LogInfo("restore stage image=" + W2U(imagePath) + " disk=" +
+                std::to_string(req.disk) + " part=" + std::to_string(req.part));
+        LogInfo(std::string("restore mode: in-place (") + inplaceWhy + ")");
+        const ULONGLONG t1 = GetTickCount64();
+        int rc =
+            RunDirectRestore(req, target, imagePath, espIndex, err, progress);
+        if (needReboot)
+            *needReboot = false;
+        ReleaseOpLock();
+        AppendHistory("restore-inplace", req.image, imagePath,
+                      GetTickCount64() - t1, rc == 0 ? "ok" : "failed");
+        return rc;
+    }
+
     // ── A 引擎（0.7，docs/21/22/23）：Windows 原生解压到 <目标>:\~new ──
     // 必须在写契约/部署引导之前完成：解压成功才继续。失败/中断 → 报错、不碰
     // 旧系统、清理 ~new（L1 定案：让用户换镜像重试；断电由下次启动清孤儿）。
     if (req.engine == "swap") {
-        if (target.letter.empty()) {
-            err = Tr("目标分区无盘符，A 引擎无法解压");
+        if (!swapLeftGuard())
             return 4;
-        }
-        WaitSwapCleanup(target.letter[0]);  // 等启动期后台残留清理收尾
-        // fail-closed：目标盘还有未处理的 ~old（用户选「保留不动」/清理未跑）
-        // → 不动盘、中止；重新运行程序会再次询问（docs/23 §5）。
-        {
-            DWORD a = GetFileAttributesW((target.letter + L":\\~old").c_str());
-            if (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY)) {
-                err = Tr("目标盘存在未处理的 ~old 残留，A 引擎还原已中止"
-                         "（重新运行程序会再次询问如何处理）");
-                LogError(err);
-                return 4;
-            }
-        }
         unsigned long long content = 0;
         {
             WimEngine lw;
@@ -1568,27 +1608,16 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
     LogInfo("restore stage image=" + W2U(imagePath) + " disk=" +
             std::to_string(req.disk) + " part=" + std::to_string(req.part));
 
-    // 2.5) 目标分区没被占用（在 PE 里、或还原到非系统盘）→ **就地还原**，不重启；
-    //      否则维持原设计：暂存任务 + 重启进 Linux 救援层执行（PIT-064）。
+    // 2.5) 就地还原分支**已在 2.2 提前返回**（问题 4：必须赶在 A 引擎解压之前，
+    //      否则 ~new 白解压一遍还被自己的 format 掉）—— 这里只会走到两种模式：
+    //      暂存+重启（PIT-064）或常驻菜单项。判定结果复用 2.2 的 inPlace/inplaceWhy，
+    //      不再二次调用 CanRestoreInPlace（会再次开/锁目标卷）。
     {
-        std::string why;
-        if (!menuEntry && CanRestoreInPlace(target, why)) {
-            LogInfo(std::string("restore mode: in-place (") + why + ")");
-            const ULONGLONG t1 = GetTickCount64();
-            int rc =
-                RunDirectRestore(req, target, imagePath, espIndex, err, progress);
-            if (needReboot)
-                *needReboot = false;
-            ReleaseOpLock();
-            AppendHistory("restore-inplace", req.image, imagePath,
-                          GetTickCount64() - t1, rc == 0 ? "ok" : "failed");
-            return rc;
-        }
         if (menuEntry) {
             LogInfo("restore mode: menu entry (contract + persistent boot entry; "
                     "no reboot)");
         } else {
-            LogInfo(std::string("restore mode: staged reboot (") + why + ")");
+            LogInfo(std::string("restore mode: staged reboot (") + inplaceWhy + ")");
         }
         // 网络镜像防呆（问题清单 D1/H1）：暂存+重启后由 **Linux 救援层**读镜像，而救援层
         // 访问不到网络（UNC / 映射网络驱动器）→ 必然 image not found。这里**提前拒绝**
@@ -1639,6 +1668,7 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
     t.targetVolLabel = target.label;
     t.softwarePath = ExePath();
     t.engine = req.engine;  // 0.7：""/block=B 引擎；swap=A 引擎（docs/23）
+    t.keepOld = req.keepOld;  // PIT-148：写进 conf，供「一键重试」原样复刻任务
     // 诊断日志目录（PIT-059）：优先软件目录本身；软件在目标盘（会被格式化）
     // 或只读介质上时，回退到数据盘 <数据盘>\ZJRESTORE（建好，保留给排错用）。
     {
@@ -2007,6 +2037,328 @@ int StageRestoreMenu(const RestoreRequest& req, std::string& err, ErrAdvice* adv
                             /*menuEntry=*/true);
 }
 
+// ── 返回旧系统（PIT-139，方案 C）──────────────────────────────────────
+// 只读探测：目标根是否同时具备「完整旧系统 ~/.old\Windows」与「完整新系统
+// 根 \Windows」。两者都在才谈得上"反向交换"；只有其一说明上次交换中断或
+// 已清理过 —— 此时改走「删除旧系统」或不再提供该入口。
+bool DetectReturnOldCapability(const PartitionInfo& target, bool* hasOldTree,
+                               bool* hasRootTree, std::string& detail) {
+    if (hasOldTree) *hasOldTree = false;
+    if (hasRootTree) *hasRootTree = false;
+    detail.clear();
+    if (target.letter.empty()) {
+        detail = "no drive letter";
+        return false;
+    }
+    const std::wstring root = target.letter + L":\\";
+    auto isDir = [&](const std::wstring& rel) -> bool {
+        DWORD a = GetFileAttributesW((root + rel).c_str());
+        return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+    };
+    const bool oldDir = isDir(L"~old");
+    const bool oldWin = isDir(L"~old\\Windows");
+    const bool rootWin = isDir(L"Windows");
+    if (hasOldTree) *hasOldTree = oldDir && oldWin;
+    if (hasRootTree) *hasRootTree = rootWin;
+    detail = "~old=" + std::string(oldDir ? "yes" : "no") +
+             " ~old\\Windows=" + std::string(oldWin ? "yes" : "no") +
+             " root\\Windows=" + std::string(rootWin ? "yes" : "no");
+    return oldDir && oldWin && rootWin;
+}
+
+int StageReturnOld(const PartitionInfo& target, std::string& err,
+                   bool* needReboot) {
+    if (needReboot)
+        *needReboot = false;
+
+    // 等启动期后台残留清理收尾（与 StageRestore 同款，别在它还没收手时动盘）
+    if (!target.letter.empty())
+        WaitSwapCleanup(target.letter[0]);
+
+    bool hasOld = false, hasRoot = false;
+    std::string det;
+    DetectReturnOldCapability(target, &hasOld, &hasRoot, det);
+    if (!hasOld) {
+        err = std::string(Tr("目标分区上没有可用的旧系统（~old\\Windows 不存在）—— 无法返回。")) +
+              "\n" + det;
+        LogError("return-old rejected: " + det);
+        return 4;
+    }
+    if (!hasRoot) {
+        err = std::string(Tr("目标分区根目录不是完整的当前系统（\\Windows 不存在）—— 无法返回。")) +
+              "\n" + det;
+        LogError("return-old rejected: " + det);
+        return 4;
+    }
+    if (target.letter.empty()) {
+        err = Tr("目标分区无盘符，无法写恢复日志（Linux 侧将无法定位目标）");
+        LogError(err);
+        return 1;
+    }
+
+    std::wstring exeDir = ExeDir();
+    // 软件目录若在目标盘上：反向交换会把根整树挪走，程序与日志会一起被搬进
+    // ~/.new 并在收尾时删除 —— 等于程序把自己删了。**前置拒绝**，让用户把
+    // 程序拷到别的分区（或进 PE）再操作。
+    {
+        wchar_t exLetter = exeDir.size() > 1 ? exeDir[0] : 0;
+        if (exLetter && SameDrive(exLetter, target.letter[0])) {
+            err = Tr("本程序当前运行在目标分区上 —— 返回旧系统会把该分区整树挪走，"
+                     "请先把程序复制到**别的分区**（如 D:\\）再执行。");
+            LogError("return-old rejected: software dir is on the target partition");
+            return 4;
+        }
+    }
+
+    if (!AcquireOpLock()) {
+        err = Tr("已有备份/还原实例在运行");
+        return 1;
+    }
+    ProgressUpdate("restore", 0, "return-old-start");
+    LogInfo("return-old staged: target=" + W2U(target.letter) + " " + det);
+
+    std::wstring logsDir = LogBaseDir() + L"\\logs";
+    CreateDirectoryW(logsDir.c_str(), nullptr);
+    BcdExport(logsDir + L"\\bcd-backup");
+
+    DiskInfo tdisk;
+    for (const auto& d : EnumerateDisks())
+        if (d.index == target.diskIndex)
+            tdisk = d;
+
+    // 契约：action=returnold + engine=swap（**关键降级**：旧救援层不认识
+    // returnold 会落进 engine=swap 分支 → zjswap.sh 查不到 ~new/.zj-done →
+    // exit 2 报 "old system untouched"，绝不 mkntfs；fail-closed）。
+    // image_* 全空：这条路不需要镜像、不 apply。
+    RestoreTask t;
+    t.action = "returnold";
+    t.engine = "swap";
+    t.imagePath.clear();
+    t.imageRelPath.clear();
+    t.imagePartGuid.clear();
+    t.imageIndex = 1;
+    t.espIndex = 0;
+    t.eaIndex = 0;
+    t.targetGuid = target.guid;
+    t.targetOffset = target.offsetBytes;
+    t.targetSize = target.sizeBytes;
+    t.targetDiskSerial = tdisk.serial;
+    t.targetDisk = target.diskIndex;
+    t.targetPart = (int)target.partNumber;
+    t.ptType = tdisk.style == PartitionStyle::GPT ? "gpt" : "mbr";
+    t.repairBoot = true;
+    t.targetDiskName = tdisk.model;
+    t.targetDiskSize = tdisk.sizeBytes;
+    t.targetFs = target.fs;
+    t.targetVolLabel = target.label;
+    t.softwarePath = ExePath();
+    {
+        wchar_t exLetter = exeDir.size() > 1 ? exeDir[0] : L'\0';
+        wchar_t exRoot[4] = {exLetter, L':', L'\\', L'\0'};
+        bool fixedDisk = exLetter && GetDriveTypeW(exRoot) == DRIVE_FIXED;
+        if (fixedDisk) {
+            t.softwareDir = exeDir;
+        } else {
+            std::wstring dataDrive = FindDataDrive();
+            t.softwareDir = dataDrive.empty() ? exeDir : dataDrive + kRecoveryDir;
+            CreateDirectoryW(t.softwareDir.c_str(), nullptr);
+        }
+    }
+
+    // 清场（A2）+ 主/副契约写入
+    {
+        std::string clog;
+        int cleaned = CleanupStrayContracts(clog);
+        LogInfo("stray contracts cleanup: " + std::to_string(cleaned) +
+                " removed (" + clog.substr(0, clog.size() - 1) + ")");
+    }
+    std::string tlog;
+    if (!WriteRestoreLog(target.letter[0], t, tlog)) {
+        ReleaseOpLock();
+        ProgressDone("restore", "failed");
+        err = Tr("写恢复日志失败（需管理员权限写 ") + W2U(target.letter) + Tr(":\\）");
+        LogError(err + " / " + tlog);
+        return 1;
+    }
+    {
+        std::string wtlog;
+        bool okTask = WriteRestoreTask(exeDir, t, wtlog);
+        std::wstring used = exeDir;
+        if (!okTask) {
+            std::wstring dataDrive = FindDataDrive();
+            std::wstring alt =
+                dataDrive.empty() ? std::wstring() : dataDrive + L"ZJRESTORE";
+            if (!alt.empty()) {
+                CreateDirectoryW(alt.c_str(), nullptr);
+                wtlog.clear();
+                if (WriteRestoreTask(alt, t, wtlog)) {
+                    okTask = true;
+                    used = alt;
+                }
+            }
+        }
+        if (!okTask)
+            LogError("return-old task write failed (non-fatal; the target-root "
+                     "log is the primary contract): " + wtlog);
+        else
+            LogInfo("return-old task written to " + W2U(used));
+    }
+
+    // 引导层失败 → 契约回滚（PIT-126 同款：契约已在引导层之前写好，引导层
+    // 失败 = 任务永远不会执行 → 必须撤销，否则目标根留一份陈旧契约）。
+    bool rollbackArmed = true;
+    struct RollbackGuard {
+        bool* armed;
+        ~RollbackGuard() {
+            if (!*armed) return;
+            std::string rlog;
+            int n = CleanupStrayContracts(rlog);
+            DeleteMenuBinding();
+            LogWarn("boot layer failed -> staged contracts rolled back (" +
+                    std::to_string(n) + " stray removed)");
+        }
+    } rollbackGuard{&rollbackArmed};
+
+    // 引导层**无条件重装**（PIT-037）：用户可能已经「删除引导项」，而本次
+    // 必须能单次启动进救援层。UEFI 下 ESP 常驻项也一并刷新。
+    const bool useUefi = UseUefiBootFor(target);
+    LogInfo(std::string("boot path: ") + (useUefi ? "UEFI/ESP" : "BIOS/GRUB4DOS") +
+            " (firmware=" + (IsUefiFirmware() ? "UEFI" : "BIOS") +
+            ", target disk style=" + StyleName(DiskStyleOf(target.diskIndex)) + ")");
+    std::string blog;
+    if (useUefi) {
+        SbMode sbm = CurrentSbMode();
+        if (sbm == SbMode::Shim && !IsMokEnrolled(exeDir)) {
+            ReleaseOpLock();
+            ProgressDone("restore", "failed");
+            err = Tr("本机开启了 Secure Boot，但还没注册启动密钥：请先点" "「安装菜单」，重启一次，在蓝底界面选 " "Enroll key -> 选 zj-mok.cer -> 注册，之后回来再操作");
+            LogError(err);
+            return 1;
+        }
+        std::wstring espRoot;
+        bool guidMatched = false;
+        if (!AcquireEspRoot(espRoot, guidMatched, blog)) {
+            ReleaseOpLock();
+            ProgressDone("restore", "failed");
+            err = Tr("UEFI 机器未找到可用的 ESP 引导分区，无法部署引导层。\n"
+                     "常见原因：DiskGenius 重建分区时漏建 ESP，或把 ESP 标成了"
+                     " Basic Data（应改为 EFI System 类型）。\n当前分区表：\n") +
+                  W2U(DescribePartitions());
+            LogError(err);
+            return 1;
+        }
+        if (!InstallUefiBootEntry(espRoot, exeDir, blog)) {
+            ReleaseOpLock();
+            ProgressDone("restore", "failed");
+            err = Tr("安装 UEFI 引导层失败: ") + blog;
+            LogError(err);
+            return 1;
+        }
+    } else {
+        std::wstring deployDrive = std::wstring(1, target.letter[0]) + L":\\";
+        if (!InstallBootLayer(deployDrive, exeDir, blog)) {
+            ReleaseOpLock();
+            ProgressDone("restore", "failed");
+            err = Tr("安装引导层失败: ") + blog;
+            LogError(err);
+            return 1;
+        }
+    }
+    // 单次启动（只生效一次）
+    if (useUefi && CurrentSbMode() != SbMode::Bootapp) {
+        if (!SetUefiBootNext(blog)) {
+            ReleaseOpLock();
+            ProgressDone("restore", "failed");
+            err = Tr("设置固件单次启动失败: ") + blog;
+            LogError(err);
+            return 1;
+        }
+    } else if (!useUefi && !BcdSetBootsequence(RecoveryGuid())) {
+        ReleaseOpLock();
+        ProgressDone("restore", "failed");
+        err = Tr("设置单次启动失败");
+        LogError(err);
+        return 1;
+    }
+
+    CollectDeployArtifacts(logsDir + L"\\collected", target.letter[0]);
+    AppendHistory("return-old-staged", L"", L"", 0,
+                  "staged; 实际结果见救援层日志");
+    ReleaseOpLock();
+
+    // 待执行标记（PIT-115 同款）：救援层是否真的跑过，用它与 ZJRESTORE-status.txt
+    // 的时间比较判断 —— 引导失败/断电导致救援层**从未执行**时，下次启动也会明确提示。
+    {
+        std::wstring md = LogBaseDir() + L"\\logs";
+        CreateDirectoryW(md.c_str(), nullptr);
+        SYSTEMTIME st2 = {};
+        GetLocalTime(&st2);
+        char mk[600];
+        snprintf(mk, sizeof(mk),
+                 "time=%04u-%02u-%02u %02u:%02u:%02u\ntarget=%s\nimage=%s\n",
+                 st2.wYear, st2.wMonth, st2.wDay, st2.wHour, st2.wMinute,
+                 st2.wSecond, W2U(target.letter).c_str(),
+                 "return-old (~old -> root)");
+        HANDLE hm = CreateFileW((md + L"\\pending-restore.txt").c_str(),
+                                GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                                FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (hm != INVALID_HANDLE_VALUE) {
+            std::string body(mk);
+            DWORD w = 0;
+            WriteFile(hm, body.data(), (DWORD)body.size(), &w, nullptr);
+            CloseHandle(hm);
+        }
+    }
+    rollbackArmed = false;  // 成功：契约保留（救援层要靠它定位）
+    if (needReboot)
+        *needReboot = true;  // PIT-110 教训：**不要无条件清零**
+    ProgressDone("restore", "staged");
+    LogInfo("return-old staged, reboot to execute (action=returnold)");
+    return 0;
+}
+
+// 便捷入口（PIT-139，给 CLI 用）：按磁盘号/分区号定位目标后走 StageReturnOld。
+// disk/part 都 < 0 时自动找「根下有 Windows、且 ~old\Windows 也存在」的第一块
+// 固定盘 —— 与 GUI 扫残留时看到的是同一棵树，不会挑错。
+int StageReturnOldByDiskPart(int disk, int part, std::string& err,
+                             bool* needReboot) {
+    PartitionInfo target;
+    bool found = false;
+    for (const auto& d : EnumerateDisks()) {
+        if (disk >= 0 && (int)d.index != disk) continue;
+        for (const auto& p : d.parts) {
+            if (part >= 0) {
+                if ((int)p.partNumber != part) continue;
+                target = p;
+                found = true;
+                continue;
+            }
+            if (p.letter.size() != 1) continue;
+            PartitionInfo cand = p;
+            bool hOld = false, hRoot = false;
+            std::string det;
+            if (DetectReturnOldCapability(cand, &hOld, &hRoot, det) && hOld &&
+                hRoot) {
+                target = cand;
+                found = true;
+                break;
+            }
+        }
+        if (found && part < 0) break;
+    }
+    if (!found) {
+        err = std::string(Tr("找不到「返回旧系统」的目标分区：根下没有完整系统、"
+                             "~old\\Windows 也不存在。\n")) +
+              Tr("可用 `list` 确认后加 --disk N --part M 指定。");
+        LogError("return-old: target not found");
+        return 4;
+    }
+    LogInfo("return-old target: disk=" + std::to_string(target.diskIndex) +
+            " part=" + std::to_string(target.partNumber) + " letter=" +
+            W2U(target.letter) + ":");
+    return StageReturnOld(target, err, needReboot);
+}
+
 // 读"已安装菜单项"绑定的镜像/目标：<exeDir>\restore-task.conf（UTF-8，key=value）。
 bool ReadMenuBinding(std::wstring* imagePath, int* imageIndex,
                      unsigned long long* targetOffset,
@@ -2055,6 +2407,112 @@ void DeleteMenuBinding() {
     std::wstring pend = LogBaseDir() + L"\\logs\\pending-restore.txt";
     SetFileAttributesW(pend.c_str(), FILE_ATTRIBUTE_NORMAL);
     DeleteFileW(pend.c_str());
+}
+
+// 一键重试（P3 / PIT-148）：从 <exeDir>\restore-task.conf 重建请求并
+// StageRestore。仅 A/B 类失败可走此路（调用方已用 RescueStepRetryable 把关）；
+// keepOld 恒 false（重试要备返请走正常流程，见 ops.h）。
+int RetryStagedRestore(std::string& err, bool* needReboot) {
+    err.clear();
+    if (needReboot) *needReboot = false;
+    // ① 读 conf（key=value；TaskConfGet 已处理注释/转义，见 task.cpp）
+    std::wstring confPath = ExeDir() + L"\\restore-task.conf";
+    std::string text;
+    {
+        HANDLE h = CreateFileW(confPath.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                               nullptr, OPEN_EXISTING, 0, nullptr);
+        if (h == INVALID_HANDLE_VALUE) {
+            err = Tr("重试失败：程序目录没有 restore-task.conf，请重新执行还原");
+            LogError("retry: conf missing: " + W2U(confPath));
+            return 2;
+        }
+        char buf[4096];
+        DWORD n = 0;
+        while (ReadFile(h, buf, sizeof(buf), &n, nullptr) && n > 0)
+            text.append(buf, n);
+        CloseHandle(h);
+    }
+    // ② 只允许 action=restore（returnold 另有入口；混用会把任务改坏）
+    std::string action = TaskConfGet(text, "action");
+    if (!action.empty() && action != "restore") {
+        err = Tr("重试失败：上次任务不是还原（") + action +
+              Tr("），请重新执行「返回旧系统」");
+        LogError("retry: non-restore action=" + action);
+        return 2;
+    }
+    std::string img = TaskConfGet(text, "image_path");
+    if (img.empty()) {
+        err = Tr("重试失败：restore-task.conf 缺 image_path，请重新执行还原");
+        LogError("retry: conf missing image_path");
+        return 2;
+    }
+    // ③ 按 offset/size/serial 匹配当前磁盘表（盘符可能变、sdX 字母不可靠）
+    std::string offS = TaskConfGet(text, "target_offset");
+    std::string szS = TaskConfGet(text, "target_size");
+    std::string serialS = TaskConfGet(text, "target_disk_serial");
+    unsigned long long off = offS.empty() ? 0 : strtoull(offS.c_str(), nullptr, 10);
+    unsigned long long sz = szS.empty() ? 0 : strtoull(szS.c_str(), nullptr, 10);
+    if (!off) {
+        err = Tr("重试失败：restore-task.conf 缺 target_offset，请重新执行还原");
+        LogError("retry: conf missing target_offset");
+        return 2;
+    }
+    PartitionInfo target;
+    DiskInfo tdisk;
+    bool found = false;
+    for (const auto& d : EnumerateDisks()) {
+        if (!serialS.empty() && W2U(d.serial) != serialS) continue;
+        for (const auto& p : d.parts) {
+            if (p.offsetBytes != off) continue;
+            if (sz && p.sizeBytes && p.sizeBytes != sz) continue;
+            target = p;
+            tdisk = d;
+            found = true;
+            break;
+        }
+        if (found) break;
+    }
+    if (!found) {
+        err = Tr("重试失败：按契约 offset/size 找不到目标分区（磁盘表已变化？）");
+        LogError("retry: target not found offset=" + offS + " size=" + szS +
+                 " serial=" + serialS);
+        return 4;
+    }
+    LogInfo("retry: target disk=" + std::to_string(target.diskIndex) +
+            " part=" + std::to_string(target.partNumber) + " letter=" +
+            W2U(target.letter) + ": offset=" + offS);
+    // ④ 重建请求 → StageRestore（安全检查/契约/引导层全流程复用）
+    RestoreRequest req;
+    req.image = U2W(img);
+    req.disk = (int)tdisk.index;
+    req.part = (int)target.partNumber;
+    req.index = 1;
+    std::string idxS = TaskConfGet(text, "image_index");
+    if (!idxS.empty()) req.index = std::atoi(idxS.c_str());
+    req.repairBoot = TaskConfGet(text, "repair_boot") != "0";
+    std::string eng = TaskConfGet(text, "engine");
+    req.engine = eng.empty() ? "block" : eng;  // 老 conf 缺键 = B 引擎
+    req.keepOld = false;  // 重试要备返请走正常流程（AGENTS 注明边界）
+    bool reboot = false;
+    std::string serr;
+    ErrAdvice adv = ADV_NONE;
+    int rc = StageRestore(req, serr, &reboot, nullptr, &adv);
+    if (rc == 0) {
+        if (needReboot) *needReboot = reboot;
+        AppendHistory("restore-retry", req.image,
+                      L"disk" + std::to_wstring(req.disk) + L" part" +
+                          std::to_wstring(req.part),
+                      0, "ok");
+        LogInfo("retry: staged ok reboot=" + std::string(reboot ? "1" : "0"));
+        return 0;
+    }
+    AppendHistory("restore-retry", req.image,
+                  L"disk" + std::to_wstring(req.disk) + L" part" +
+                      std::to_wstring(req.part),
+                  0, ("failed rc=" + std::to_string(rc)).c_str());
+    err = serr.empty() ? Tr("重试失败（详见日志）") : serr;
+    LogError("retry: StageRestore rc=" + std::to_string(rc) + " " + err);
+    return rc == 4 ? 4 : 1;
 }
 
 // ── 修复引导（docs/15 · P5）──────────────────────────────────────

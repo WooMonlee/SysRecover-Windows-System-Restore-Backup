@@ -133,7 +133,21 @@ void ListingRec(const std::wstring& dir, const std::wstring& rel,
     FindClose(h);
 }
 
-int CollectOneDrive(wchar_t letter, const std::wstring& dstBase) {
+// 复用调用方的磁盘表（调用方没给就枚举一次存进 cache）。
+// 为什么要复用：一次启动里 diag.txt / list.txt / 部署痕迹收集各枚举一遍，
+// 而「每个盘符收一次」还意味着**每个盘符各枚举一遍**（26 个盘符 = 26 次）；
+// 枚举要对每个 PhysicalDriveN 开句柄发 IOCTL，插着慢速 USB2 盘时每次都能
+// 卡住数秒 → 累加成用户看到的"启动 20 秒不出界面"（问题 2，2026-10-12）。
+const std::vector<sysrecover::DiskInfo>& UseDisks(
+    const std::vector<sysrecover::DiskInfo>* in,
+    std::vector<sysrecover::DiskInfo>& cache) {
+    if (in) return *in;
+    cache = sysrecover::EnumerateDisks();
+    return cache;
+}
+
+int CollectOneDrive(wchar_t letter, const std::wstring& dstBase,
+                    const std::vector<sysrecover::DiskInfo>* disks) {
     wchar_t rootBuf[5] = {letter, L':', L'\\', 0};
     std::wstring root = rootBuf;
     if (GetDriveTypeW(rootBuf) != DRIVE_FIXED)
@@ -142,7 +156,8 @@ int CollectOneDrive(wchar_t letter, const std::wstring& dstBase) {
     // 目录名带物理身份（_dNpM）：PE 与正常 Windows 盘符不一致（客户支持包里
     // collected\C 与 list.txt 的盘符互相打架）——配合 drive-map.txt 就能对上号。
     std::wstring identity;
-    for (const auto& d : sysrecover::EnumerateDisks()) {
+    std::vector<sysrecover::DiskInfo> dsCache;
+    for (const auto& d : UseDisks(disks, dsCache)) {
         for (const auto& p : d.parts) {
             if (!p.letter.empty() && towupper(p.letter[0]) == towupper(letter)) {
                 identity = L"_d" + std::to_wstring(d.index) + L"p" +
@@ -610,6 +625,18 @@ std::wstring StatusStepText(const std::string& s) {
         return sysrecover::Tr(L"没有找到还原任务");
     if (s == "interrupted")
         return sysrecover::Tr(L"执行中断");
+    if (s == "caps-missing")
+        return sysrecover::Tr(L"救援环境缺少必需组件");
+    if (s == "unsupported-image")
+        return sysrecover::Tr(L"不支持的系统镜像");
+    if (s == "swap-missing")
+        return sysrecover::Tr(L"新系统解压数据不完整");
+    if (s == "swap-failed")
+        return sysrecover::Tr(L"新系统交换失败");
+    if (s == "returnold-missing")
+        return sysrecover::Tr(L"未找到旧系统数据");
+    if (s == "returnold-failed")
+        return sysrecover::Tr(L"返回旧系统失败");
     return Utf8ToW(s);
 }
 
@@ -617,7 +644,7 @@ std::wstring StatusStepText(const std::string& s) {
 
 namespace sysrecover {
 
-int DiagReportText(std::string& out) {
+int DiagReportText(std::string& out, const std::vector<DiskInfo>* disks) {
     char buf[640];
     snprintf(buf, sizeof(buf), "[diag] admin=%s\n", IsAdmin() ? "yes" : "no");
     out += buf;
@@ -687,6 +714,53 @@ int DiagReportText(std::string& out) {
                         nullptr, nullptr);
     snprintf(buf, sizeof(buf), "[diag] log_dir=%s\n", nl);
     out += buf;
+    // 第三方装机/一键还原工具残留（PIT-139 · 问题 1）：客户问"根目录有
+    // LetRecovery_Scripts，是不是你建的？" —— 本行是**只读**证据：我们从不
+    // 创建、也从不删除这类目录，还原 = 如实写回镜像内容，第三方镜像里带的
+    // 文件会被原样还原出来（由镜像作者的工具生成，与本程序无关）。
+    // 下面另列我们自己的引导资产，方便与之对照。输出保持 ASCII（机器可读）。
+    {
+        static const wchar_t* kThirdParty[] = {
+            L"LetRecovery_Scripts",  // 装机镜像自带的还原脚本目录
+            L"OneKeyGhost", L"OKGHOST",  L"HotInstall",  L"SysHotInstall",
+            L"OneKeyRestore", L"YJDT",   L"SWSetup",     L"SkyInstall",
+            L"PETools",
+        };
+        static const wchar_t* kOurs[] = {L"grldr", L"grldr.mbr", L"menu.lst",
+                                         L"ZJRESTORE"};
+        std::string tp, ours;
+        for (wchar_t letter = L'A'; letter <= L'Z'; ++letter) {
+            wchar_t root[5] = {letter, L':', L'\\', L'\0', L'\0'};
+            if (::GetDriveTypeW(root) != DRIVE_FIXED) continue;
+            std::wstring r(root);
+            auto app = [](std::string& s, wchar_t l, const wchar_t* n) {
+                if (!s.empty()) s += ' ';
+                char tag[8] = {};
+                // 写成 `D:\ZJRESTORE` 而非 `D:ZJRESTORE` —— 后者会被读成
+                // D: 盘上的相对路径，现场看支持包时容易误判（PIT-139）。
+                snprintf(tag, sizeof(tag), "%c:\\", (char)l);
+                char nm[64] = {};
+                WideCharToMultiByte(CP_UTF8, 0, n, -1, nm, sizeof(nm), nullptr,
+                                    nullptr);
+                s += tag;
+                s += nm;
+            };
+            for (const wchar_t* n : kThirdParty)
+                if (::GetFileAttributesW((r + n).c_str()) !=
+                    INVALID_FILE_ATTRIBUTES)
+                    app(tp, letter, n);
+            for (const wchar_t* n : kOurs)
+                if (::GetFileAttributesW((r + n).c_str()) !=
+                    INVALID_FILE_ATTRIBUTES)
+                    app(ours, letter, n);
+        }
+        snprintf(buf, sizeof(buf), "[diag] third-party-tools: %s\n",
+                 tp.empty() ? "(none)" : tp.c_str());
+        out += buf;
+        snprintf(buf, sizeof(buf), "[diag] ours-boot-assets: %s\n",
+                 ours.empty() ? "(none)" : ours.c_str());
+        out += buf;
+    }
     // 存储/USB 控制器清单（用户 2026-10-04 需求，A5）：救援层排查"驱动覆盖/行为
     // 差异"时，必须能知道这台机器用的什么控制器。⚠️ `Enum\PCI` 受 ACL 保护
     //（管理员也读不到，实测），改走 `Control\Class\{设备类GUID}`（可读）：
@@ -858,7 +932,8 @@ int DiagReportText(std::string& out) {
     }
     // 磁盘健康（PIT-086）：SMART 能读时打印关键属性；读不到（NVMe/RAID/USB 桥）明确写
     // unavailable（不是错误，是能力边界）。CAUTION = 我们判定"建议先换盘"。
-    for (const auto& d : sysrecover::EnumerateDisks()) {
+    std::vector<DiskInfo> dsCache;
+    for (const auto& d : UseDisks(disks, dsCache)) {
         sysrecover::DiskHealth h = sysrecover::QueryDiskHealth(d.index);
         char nm[MAX_PATH] = {};
         WideCharToMultiByte(CP_UTF8, 0, d.model.c_str(), -1, nm, sizeof(nm),
@@ -889,11 +964,12 @@ int DiagReportText(std::string& out) {
     return rc;
 }
 
-void DiskListText(std::string& out) {
-    const auto disks = sysrecover::EnumerateDisks();
+void DiskListText(std::string& out, const std::vector<DiskInfo>* disks) {
+    std::vector<DiskInfo> dsCache;
+    const auto& disksRef = UseDisks(disks, dsCache);
     const double gb = 1024.0 * 1024 * 1024;
     char buf[720];
-    for (const auto& d : disks) {
+    for (const auto& d : disksRef) {
         snprintf(buf, sizeof(buf), "Disk %u  %s  %.0fGB  %s%s\r\n", d.index,
                  ToUtf8(d.model.empty() ? std::wstring(L"?") : d.model).c_str(),
                  d.sizeBytes / gb, sysrecover::StyleName(d.style),
@@ -915,14 +991,19 @@ void DiskListText(std::string& out) {
     }
 }
 
-void WriteDiagFiles(const std::wstring& logsDir) {
+void WriteDiagFiles(const std::wstring& logsDir,
+                    const std::vector<DiskInfo>* disks) {
     CreateDirectoryW(logsDir.c_str(), nullptr);
+    // 磁盘表**只枚举一次**，diag 与 list 共用（否则两个文件各枚举一遍；
+    // 慢盘上就是双倍耗时 —— 问题 2 的分阶段耗时日志会把这段打出来）。
+    std::vector<DiskInfo> dsCache;
+    const auto& ds = UseDisks(disks, dsCache);
     std::string diag;
-    DiagReportText(diag);
+    DiagReportText(diag, &ds);
     if (!WriteUtf8File(logsDir + L"\\diag.txt", diag))
         LogWarn("auto diag.txt write failed");
     std::string list;
-    DiskListText(list);
+    DiskListText(list, &ds);
     if (!WriteUtf8File(logsDir + L"\\list.txt", list))
         LogWarn("auto list.txt write failed");
     // 用户 2026-10-04 规格 1：盘/分区表**同时进主日志**（LOG 里就能看到本机
@@ -943,7 +1024,8 @@ void WriteDiagFiles(const std::wstring& logsDir) {
 
 // 救援层失败回执（黑匣子）：见 selfdiag.h。回执由救援层写到每个分区根的
 // ZJRESTORE-status.txt，启动时已随 CollectDeployArtifacts 收进 logs\collected。
-std::wstring CheckLastRescueFailure() {
+RescueNotice CheckLastRescueFailure() {
+    RescueNotice out;
     std::wstring base = LogBaseDir() + L"\\logs";
     std::vector<std::wstring> files;
     FindStatusFiles(base + L"\\collected", 4, files);
@@ -981,19 +1063,21 @@ std::wstring CheckLastRescueFailure() {
     RescueReport rep = DecideRescueReport(times);
     if (rep == RescueReport::TaskNotExecuted) {
         DeleteFileW(pendFile.c_str());
-        std::wstring msg =
-            Tr(L"上次系统还原任务未执行（可能未进入恢复环境）。\n");
-        msg += Tr(L"时间 ") + Utf8ToW(times.pendingTime) + Tr(L"，目标 ") +
-               Utf8ToW(StatusField(pend, "target")) + L"\n";
-        msg += Tr(L"请重试；若反复如此，把 logs 文件夹发给技术支持。");
+        // 救援层从未执行 = A 类（未动目标）→ 可一键重试（PIT-148）。
+        out.retryable = true;
+        out.step = "interrupted";
+        out.msg = Tr(L"上次系统还原任务未执行（可能未进入恢复环境）。\n");
+        out.msg += Tr(L"时间 ") + Utf8ToW(times.pendingTime) + Tr(L"，目标 ") +
+                   Utf8ToW(StatusField(pend, "target")) + L"\n";
+        out.msg += Tr(L"请重试；若反复如此，把 logs 文件夹发给技术支持。");
         LogWarn("restore task staged but never executed: time=" +
                 times.pendingTime);
-        return msg;
+        return out;
     }
     if (pendExists)
         DeleteFileW(pendFile.c_str());  // 救援层跑过（有更新回执）：标记完成使命
     if (rep != RescueReport::RestoreFailed)
-        return std::wstring();
+        return out;
     // 去重：同一回执只提示一次；再次失败/换版本会换 key → 再提示
     std::string key = bestTime + "|" + bestBuild + "|" + bestStep;
     std::wstring marker = base + L"\\.last-rescue-status";
@@ -1003,17 +1087,24 @@ std::wstring CheckLastRescueFailure() {
                                 old.back() == ' '))
             old.pop_back();
         if (old == key)
-            return std::wstring();
+            return out;
     }
     WriteUtf8File(marker, key);
-    std::wstring msg =
-        Tr(L"上次系统还原未成功（") + StatusStepText(bestStep) + Tr(L"）\n");
-    msg += Tr(L"时间 ") + Utf8ToW(bestTime) + Tr(L"，版本 ") +
-           Utf8ToW(bestBuild) + L"\n";
-    msg += Tr(L"日志已收集到 logs\\collected，请把它发给技术支持。");
+    out.step = bestStep;
+    // A/B 类（未动目标 / 引导未验证）→ 可一键重试；C 类只给日志路径（PIT-148）。
+    out.retryable = RescueStepRetryable(bestStep);
+    out.msg = Tr(L"上次系统还原未成功（") + StatusStepText(bestStep) + Tr(L"）\n");
+    out.msg += Tr(L"时间 ") + Utf8ToW(bestTime) + Tr(L"，版本 ") +
+               Utf8ToW(bestBuild) + L"\n";
+    if (out.retryable) {
+        out.msg += Tr(L"可点「一键重试」重新执行还原任务；或打开日志排查。");
+    } else {
+        out.msg += Tr(L"日志已收集到 logs\\collected，请把它发给技术支持。");
+    }
     LogWarn("rescue failure receipt: step=" + bestStep + " time=" + bestTime +
-            " build=" + bestBuild);
-    return msg;
+            " build=" + bestBuild +
+            (out.retryable ? " retryable" : " not-retryable"));
+    return out;
 }
 
 // 收集后清理散落日志（用户 2026-10-04 规格 4：不该到处放这种东西）。
@@ -1074,17 +1165,20 @@ int CleanupStrayLogs() {
     return n;
 }
 
-int CollectDeployArtifacts(const std::wstring& dstDir, wchar_t onlyDrive) {
+int CollectDeployArtifacts(const std::wstring& dstDir, wchar_t onlyDrive,
+                           const std::vector<DiskInfo>* disks) {
     // 先建 collected 这一级：否则 CreateDirectoryW("<logs>\\collected\\C") 会因
     // 父目录不存在而失败 → 收集静默全废（实测踩到）。
     CreateDirectoryW(dstDir.c_str(), nullptr);
     int n = 0;
     // 盘符 ↔ 物理身份对照表：PE 与正常 Windows 盘符不一致，靠这张表对号
     //（用户 2026-10-04 规格 1/6：LOG 里能查到本机所有盘/分区）。
+    // dsCache：整条收集链共用**一次**枚举（含下面 CollectOneDrive 里的身份查询）。
+    std::vector<DiskInfo> dsCache;
     {
         std::string map;
         char buf[512];
-        for (const auto& d : sysrecover::EnumerateDisks()) {
+        for (const auto& d : UseDisks(disks, dsCache)) {
             snprintf(buf, sizeof(buf), "Disk %u  %s  serial=%s  %.1fGB  %s\n",
                      d.index, ToUtf8(d.model).c_str(),
                      ToUtf8(d.serial.empty() ? std::wstring(L"?") : d.serial)
@@ -1110,12 +1204,12 @@ int CollectDeployArtifacts(const std::wstring& dstDir, wchar_t onlyDrive) {
             ++n;
     }
     if (onlyDrive) {
-        n += CollectOneDrive((wchar_t)towupper(onlyDrive), dstDir);
+        n += CollectOneDrive((wchar_t)towupper(onlyDrive), dstDir, &dsCache);
     } else {
         DWORD mask = GetLogicalDrives();
         for (wchar_t c = L'C'; c <= L'Z'; ++c)
             if (mask & (1u << (c - L'A')))
-                n += CollectOneDrive(c, dstDir);
+                n += CollectOneDrive(c, dstDir, &dsCache);
     }
     // ESP 无盘符：mountvol 临时挂上收（含黑匣子回执）
     n += CollectEspFiles(dstDir);

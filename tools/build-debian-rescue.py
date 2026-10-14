@@ -336,7 +336,8 @@ def main():
     for d in ('proc', 'sys', 'dev', 'tmp', 'mnt'):
         os.makedirs(os.path.join(zj.STG, d), exist_ok=True)
     for name, mode in (('init', 0o755), ('zjrestore-lite.sh', 0o755),
-                       ('zjswap.sh', 0o755), ('setup-swap.sh', 0o755),
+                       ('zjswap.sh', 0o755), ('zjswap-undo.sh', 0o755),
+                       ('setup-swap.sh', 0o755), ('zjlog.sh', 0o755),
                        ('ntfs-boot-code.bin', 0o644),
                        ('ntfs-boot-cont.bin', 0o644)):
         s = os.path.join(zj.BOOT, name if name != 'init'
@@ -344,6 +345,20 @@ def main():
         if os.path.exists(s):
             shutil.copy2(s, os.path.join(zj.STG, name))
             zj.MODES[name] = mode
+
+    # P0-B/PIT-145 构建期断言：统一诊断底座必须与消费脚本**成套**进镜像。
+    # 漏打 zjlog.sh → 所有救援脚本启动即 "say: not found"，日志全灭 ——
+    # 这类静默降级正是本项目反复踩的坑，fail-fast 拦在构建期（同 PIT-079 纪律）。
+    if not os.path.exists(os.path.join(zj.STG, 'zjlog.sh')):
+        raise RuntimeError('zjlog: bootfiles/zjlog.sh missing (not packed)')
+    for consumer in ('init', 'zjrestore-lite.sh', 'zjswap.sh',
+                     'zjswap-undo.sh', 'setup-swap.sh'):
+        cp = os.path.join(zj.STG, consumer)
+        if not os.path.exists(cp):
+            raise RuntimeError('zjlog: consumer missing from image: %s' % consumer)
+        with open(cp, encoding='utf-8') as fh:
+            if '. /zjlog.sh' not in fh.read():
+                raise RuntimeError('zjlog: %s does not source /zjlog.sh' % consumer)
 
     # 3b) "印证版"注入（不进产线）：把默认 apply 模式/驱动写进**打包副本**，
     #     用于强制降级实验（ZJ_RESCUE_APPLY_MODE=dir|dirfuse /
