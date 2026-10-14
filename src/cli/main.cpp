@@ -330,6 +330,85 @@ int CmdRepairBoot(const std::vector<std::string>& a) {
     return rc;
 }
 
+// 立即重启（暂存任务的收尾）。用 ExitWindowsEx 直接触发，不用 shutdown.exe 的
+// /t —— 那会弹「一分钟后关闭」对话框。两条路都记返回码（PIT-110 R4）。
+void CmdRebootNow() {
+    HANDLE hToken = nullptr;
+    if (::OpenProcessToken(::GetCurrentProcess(),
+                           TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
+        TOKEN_PRIVILEGES tp = {};
+        tp.PrivilegeCount = 1;
+        if (::LookupPrivilegeValueW(nullptr, SE_SHUTDOWN_NAME,
+                                    &tp.Privileges[0].Luid)) {
+            tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+            ::SetLastError(0);
+            if (!::AdjustTokenPrivileges(hToken, FALSE, &tp, 0, nullptr,
+                                         nullptr) ||
+                ::GetLastError() == ERROR_NOT_ALL_ASSIGNED)
+                sysrecover::LogWarn(
+                    "reboot: enable SeShutdownPrivilege failed err=" +
+                    std::to_string(::GetLastError()));
+        }
+        ::CloseHandle(hToken);
+    }
+    if (!::ExitWindowsEx(EWX_REBOOT | EWX_FORCEIFHUNG,
+                         SHTDN_REASON_MAJOR_APPLICATION |
+                             SHTDN_REASON_MINOR_MAINTENANCE |
+                             SHTDN_REASON_FLAG_PLANNED)) {
+        DWORD e1 = ::GetLastError();
+        std::string out;
+        int rc = sysrecover::RunProcess(sysrecover::SysToolPath(L"shutdown.exe"),
+                                        L"/r /t 0", out);
+        sysrecover::LogWarn("reboot: ExitWindowsEx failed err=" +
+                            std::to_string(e1) + "; shutdown.exe rc=" +
+                            std::to_string(rc) + " out=" + out);
+    } else {
+        sysrecover::LogInfo("reboot: ExitWindowsEx ok");
+    }
+}
+
+// returnold（PIT-139）：把 ~old 的旧系统搬回根目录。
+// Windows 侧只暂存契约(action=returnold) + 部署引导 + 单次启动；目录反向交换
+// 一律在 Linux 救援层完成（在 Windows 里改名正在运行的系统树不可回滚）。
+int CmdReturnOld(const std::vector<std::string>& a) {
+    int disk = std::atoi(Opt(a, "--disk", "-1").c_str());
+    int part = std::atoi(Opt(a, "--part", "-1").c_str());
+    const bool yesFlag = Has(a, "--yes") || Has(a, "-y");
+    bool hasConsole = false;
+    {
+        DWORD mode = 0;
+        hasConsole = GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &mode);
+    }
+    if (!yesFlag && !hasConsole) {
+        // stdin 非控制台：不能悄悄替用户重启机器。
+        std::fprintf(stderr,
+                     Tr("非交互式运行：请加 --yes 确认「返回旧系统」并重启。\n"));
+        return 2;
+    }
+    if (!yesFlag) {
+        std::fprintf(stderr,
+                     Tr("返回旧系统 = 重启进恢复环境，把 ~old 的旧系统搬回根目录。\n"
+                        "当前新系统将被丢弃，无法再使用。\n"
+                        "确认执行？[y/N]: "));
+        char line[32] = {0};
+        if (!std::fgets(line, sizeof(line), stdin) ||
+            !(line[0] == 'y' || line[0] == 'Y')) {
+            std::fprintf(stderr, Tr("已取消（未做任何改动）。\n"));
+            return 6;
+        }
+    }
+    std::string err;
+    bool needReboot = false;
+    int rc = sysrecover::StageReturnOldByDiskPart(disk, part, err, &needReboot);
+    if (rc != 0) {
+        std::fprintf(stderr, "%s\n", err.c_str());
+        return rc;
+    }
+    std::printf(Tr("暂存完成，正在重启执行……\n"));
+    CmdRebootNow();
+    return 0;
+}
+
 int CmdVerify(const std::vector<std::string>& a) {
     std::string image = Opt(a, "--image");
     if (image.empty()) {
@@ -671,6 +750,12 @@ const CmdHelp* CmdHelpTable(size_t* n) {
     {"verify", Tr("verify --image <文件>\n  校验镜像完整性（成功 0，失败 5）。")},
     {"repair-boot",
      Tr("repair-boot [--disk N --part M]\n" "  修复引导（ESP 上的 BCD/bootmgfw）：给**引导坏了的机器**用，不必重装。\n" "  不给 --disk/--part 时自动找系统盘；流程 = bcdboot + 产物校验（docs/15）。")},
+    {"returnold",
+     Tr("returnold [--disk N --part M] [--yes]\n"
+        "  返回旧系统：把 ~old 的旧系统搬回根目录，当前新系统被丢弃。\n"
+        "  暂存后重启进 Linux 救援层执行反向交换（在 Windows 里改名正在运行\n"
+        "  的系统树不可回滚）；不给 --disk/--part 时自动找带 ~old\\Windows 的盘。\n"
+        "  非交互式（批处理/管道）必须加 --yes；交互式会先问一次，取消=退出码 6。")},
     {"extract",
      Tr("extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]\n" "  从镜像里取单个/一组文件（--path 支持通配符、可重复）。")},
     {"history", Tr("history\n  列出操作历史（logs/history.jsonl）。")},
@@ -685,6 +770,7 @@ void PrintAllUsage() {
     std::printf(
         Tr("SysRecover 九转还原 · 命令行\n" "\n" "用法: SysRecover.exe <命令> [选项]      （`SysRecover.exe help <命令>` 看单项）\n" "\n" "命令:\n"         "  list                        列出磁盘/分区/文件系统/盘符/ESP/系统标记\n" "  diag [--zip [--out <zip>]]  自检（固件/Secure Boot/启动项/wimlib）；--zip 导出诊断包\n" "  support [--out <zip>]       一键收集诊断资料（各盘日志+explorer转储+事件日志）打包\n" "  images --file <镜像>        列出镜像里的子镜像（含大小/描述）\n"         "  backup --dest <文件> [--source <目录>] [--compress fast|maximum|recovery]\n" "         [--name <名>] [--append] [--verify] [--esp] [--no-snapshot] [--yes]\n"          "  restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--engine block|swap] [--yes]\n" "  verify --image <文件>       校验镜像完整性\n"
         "  repair-boot [--disk N --part M]   修复引导（ESP 的 BCD/bootmgfw；引导坏了不用重装）\n"
+        "  returnold [--disk N --part M] [--yes]  返回旧系统（把 ~old 搬回根，重启进救援层执行）\n"
         "  extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]\n" "                              从镜像里取单个/一组文件（支持通配符）\n" "  history                     列出操作历史（logs/history.jsonl）\n" "  shortcut --target <exe> [--args <...>] [--name <名>]   建快捷方式\n" "  version                     显示版本\n" "  help [命令]                 本帮助\n" "  --lang <zh|en>              指定界面语言（如: SysRecover.exe --lang en help 用英文）\n" "\n" "退出码: 0 成功 / 1 通用失败 / 2 参数错 / 3 需管理员 / 4 危险目标被拒 / 5 镜像校验失败 / 6 取消\n" "注意: 还原系统盘会重启进救援层，镜像必须放在**本地分区**（救援层访问不到网络）。\n"));
 }
 
@@ -784,21 +870,40 @@ int main() {
     sysrecover::ProgressInit(logsDir);
     // 自诊断与痕迹收集（用户 2026-10-03 规格）：启动即把 diag.txt/list.txt 写进 logs，
     // 并收集各盘上我们留下的部署文件 —— 用户排错只需发 logs 文件夹。
-    sysrecover::WriteDiagFiles(logsDir);
-    sysrecover::CollectDeployArtifacts(logsDir + L"\\collected", 0);
+    // 磁盘表**只枚举一次**，diag/list/收集共用（问题 2，2026-10-12：每个盘符
+    // 各枚举一遍的话，插着慢速 USB2 盘时 CLI 启动也会跟着卡几十秒）。
+    // 枚举单独打点：它是最可能被慢盘拖住的一步（对每个 PhysicalDriveN 开句柄
+    // 发 IOCTL），现场拿日志一眼就能看出是不是它。
+    {
+        std::vector<sysrecover::DiskInfo> disks = sysrecover::EnumerateDisks();
+        sysrecover::StartupPhase("enumerate-disks");
+        sysrecover::WriteDiagFiles(logsDir, &disks);
+        sysrecover::CollectDeployArtifacts(logsDir + L"\\collected", 0, &disks);
+    }
+    sysrecover::StartupPhase("diag+collect");
     // PIT-137（用户 2026-10-08 规格）：每次运行"收完即清"——黑匣子已进
     // logs\collected，各盘根的散件立即清掉（不再到处乱放）。契约/引导文件不动。
     sysrecover::CleanupStrayLogs();
+    sysrecover::StartupPhase("cleanup-stray");
     // 救援层失败回执（黑匣子，用户 2026-10-04 规格 2）：上次还原失败且还没提示过
-    // → 启动就提醒（日志已收进 logs\collected）。
+    // → 启动就提醒（日志已收进 logs\collected）。P3（PIT-148）：A/B 类失败附
+    // "可一键重试"提示（GUI 里是按钮；CLI 静默场景走 GUI 或重新执行 restore）。
     {
-        std::wstring notice = sysrecover::CheckLastRescueFailure();
-        if (!notice.empty())
-            std::fprintf(stderr, "%s\n", W2U8(notice).c_str());
+        sysrecover::RescueNotice notice = sysrecover::CheckLastRescueFailure();
+        if (!notice.msg.empty()) {
+            std::fprintf(stderr, "%s\n", W2U8(notice.msg).c_str());
+            if (notice.retryable)
+                std::fprintf(stderr, "%s\n",
+                             sysrecover::Tr(
+                                 "（可在图形界面选择「一键重试」，或重新执行 "
+                                 "restore）"));
+        }
     }
     // A 引擎残留分流（0.7，用户 2026-10-09 规格；决策表 docs/23 §5）：
     //   Delete → 立即删；Reuse/Redo → 只记日志（还原 swap 分支再接着处理）；
-    //   AskUndo → 询问（--yes 直接撤销；stdin 非控制台 → 保留不动并警告）。
+    //   AskUndo → 询问（PIT-139：「返回旧系统」= 暂存契约 + 重启进救援层；
+    //   **--yes 不再静默撤销** —— 撤销会重启机器，只能由用户显式选，
+    //   提示改用 `SysRecover.exe returnold`；非控制台一律保留不动并警告）。
     {
         const bool yesFlag = Has(args, "--yes") || Has(args, "-y");
         bool hasConsole = false;
@@ -818,9 +923,9 @@ int main() {
                 sysrecover::DeleteSwapLeftover(it);
             } else if (v.action == sysrecover::SwapLeftAction::AskUndo) {
                 // 备返保留的 ~old（.zj-keepold）：--yes 也保留不动（保留是
-                // 用户当初的显式选择，绝不能被 --yes 静默撤销/删除）。
+                // 用户当初的显式选择，绝不能被 --yes 静默改动）。
                 const bool keepOld = it.keepOldMarker && !it.isNew;
-                bool undo = false, del = false;
+                bool ret = false, del = false;
                 if (keepOld) {
                     if (yesFlag) {
                         std::fprintf(stderr,
@@ -829,14 +934,14 @@ int main() {
                     } else if (hasConsole) {
                         std::fprintf(stderr,
                                      Tr("检测到备返保留的旧系统 %s：%s\n"
-                                        "  y = 撤销（搬回旧系统），d = 删除（释放空间），"
+                                        "  r = 返回旧系统（暂存并重启），d = 删除（释放空间），"
                                         "其它键 = 保留不动\n"
                                         "选择 [keep]: "),
                                      tag.c_str(), v.reason.c_str());
                         char line[32] = {0};
                         if (std::fgets(line, sizeof(line), stdin)) {
-                            undo = (line[0] == 'y' || line[0] == 'Y');
-                            del = !undo && (line[0] == 'd' || line[0] == 'D');
+                            ret = (line[0] == 'r' || line[0] == 'R');
+                            del = !ret && (line[0] == 'd' || line[0] == 'D');
                         }
                     } else {
                         std::fprintf(stderr,
@@ -844,16 +949,23 @@ int main() {
                                      tag.c_str());
                     }
                 } else if (yesFlag) {
-                    undo = true;
+                    // PIT-139：不再 --yes 自动撤销。撤销 = 重启进救援层，
+                    // 静默触发会让批量脚本把机器重启，所以只提示。
+                    std::fprintf(stderr,
+                                 Tr("[残留] %s 保留不动（--yes 不会自动重启；"
+                                    "如需返回旧系统请运行: SysRecover.exe returnold）\n"),
+                                 tag.c_str());
+                    sysrecover::LogInfo("swap leftover kept (--yes): " + tag +
+                                        " (" + v.reason + ")");
                 } else if (hasConsole) {
                     std::fprintf(stderr,
                                  Tr("检测到还原残留 %s：%s\n"
-                                    "  y = 撤销（把旧系统搬回根目录），其它键 = 保留不动\n"
+                                    "  y = 返回旧系统（暂存并重启），其它键 = 保留不动\n"
                                     "选择 [y/N]: "),
                                  tag.c_str(), v.reason.c_str());
                     char line[32] = {0};
                     if (std::fgets(line, sizeof(line), stdin))
-                        undo = (line[0] == 'y' || line[0] == 'Y');
+                        ret = (line[0] == 'y' || line[0] == 'Y');
                 } else {
                     std::fprintf(stderr,
                                  Tr("[残留] %s 保留不动（非交互式运行）：%s\n"),
@@ -861,9 +973,32 @@ int main() {
                     sysrecover::LogInfo("swap leftover kept (non-interactive): " +
                                         tag + " (" + v.reason + ")");
                 }
-                if (undo) {
-                    std::string det;
-                    sysrecover::UndoSwapLeftover(it.drive, det);
+                if (ret) {
+                    // 按盘符定位（SwapLeftInfo 只记盘符）→ 走 StageReturnOld。
+                    sysrecover::PartitionInfo target;
+                    bool found = false;
+                    for (const auto& dd : sysrecover::EnumerateDisks())
+                        for (const auto& pp : dd.parts)
+                            if (pp.letter.size() == 1 &&
+                                ::towupper(pp.letter[0]) ==
+                                    ::towupper(it.drive)) {
+                                target = pp;
+                                found = true;
+                            }
+                    if (!found) {
+                        std::fprintf(stderr,
+                                     Tr("找不到 %c: 分区，保留不动。\n"),
+                                     (char)it.drive);
+                        continue;
+                    }
+                    std::string err;
+                    bool needReboot = false;
+                    int rc = sysrecover::StageReturnOld(target, err,
+                                                        &needReboot);
+                    if (rc != 0)
+                        std::fprintf(stderr, "%s\n", err.c_str());
+                    else
+                        CmdRebootNow();
                 } else if (del) {
                     sysrecover::LogInfo("swap leftover: " + tag +
                                         " -> delete (user chose, keepold)");
@@ -912,6 +1047,8 @@ int main() {
         return CmdVerify(args);
     if (args[0] == "repair-boot")
         return CmdRepairBoot(args);
+    if (args[0] == "returnold")
+        return CmdReturnOld(args);
     if (args[0] == "images")
         return CmdImages(args);
     if (args[0] == "extract")

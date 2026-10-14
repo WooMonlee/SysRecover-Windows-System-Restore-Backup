@@ -139,6 +139,9 @@ CMainForm::~CMainForm() {
         m_cancel = true;
         m_worker.join();
     }
+    // 启动后置工作线程（问题 2）：它只做 diag/收集/枚举，无取消位，等它收手
+    //（正常毫秒级；插了慢速 USB2 盘时最坏等于原来 InitWindow 阻塞的那段）。
+    if (m_startWorker.joinable()) m_startWorker.join();
 }
 
 CDuiString CMainForm::GetSkinFolder() { return _T("skin\\"); }
@@ -153,18 +156,13 @@ LPCTSTR CMainForm::GetWindowClassName() const { return _T("SysRecoverUI"); }
 
 void CMainForm::InitWindow() {
     // 日志根（PIT-104/105）：一般=程序目录；软件在系统盘时=<数据盘>\ZJRESTORE
-    //（还原/重装系统盘后日志仍留存）。
+    //（还原/重装系统盘后日志仍留存）。LogInit 必须在第一条 StartupPhase 之前
+    //（阶段耗时日志靠它落盘）。
     std::wstring logsDir = sysrecover::LogBaseDir() + L"\\logs";
     CreateDirectoryW(logsDir.c_str(), nullptr);
     LogInit(logsDir);
     ProgressInit(logsDir);
-    // 自诊断与痕迹收集（用户 2026-10-03 规格）：启动即把 diag.txt/list.txt 写进 logs，
-    // 并收集各盘上我们留下的部署文件 —— 用户排错只需发 logs 文件夹。
-    sysrecover::WriteDiagFiles(logsDir);
-    sysrecover::CollectDeployArtifacts(logsDir + L"\\collected", 0);
-    // PIT-137（用户 2026-10-08 规格）：每次运行"收完即清"——黑匣子已进
-    // logs\collected，各盘根的散件立即清掉（不再到处乱放）。契约/引导文件不动。
-    sysrecover::CleanupStrayLogs();
+    sysrecover::StartupPhase("InitWindow");
     LogInfo("GUI InitWindow");
     // 支持把 .esd/.wim 直接拖进窗口（第一步的输入框）。原生 EDIT 子窗口由
     // CSkinEditUI 转投到这里（见 ui_skin.cpp::EnsureDropTarget），窗口空白处
@@ -177,7 +175,13 @@ void CMainForm::InitWindow() {
     ::ChangeWindowMessageFilterEx(m_hWnd, WM_COPYDATA, MSGFLT_ALLOW, nullptr);
     ::ChangeWindowMessageFilterEx(m_hWnd, 0x0049, MSGFLT_ALLOW, nullptr);
     m_sysDesc = sysrecover::DescribeRunningSystem();  // 备份信息/默认文件名要用
-    PopulatePartitions();
+    // ⚠️ 问题 2（用户 2026-10-12 规格："插了 USB2 盘要等 20 秒才出界面，
+    // 检查请挪到界面显示之后"）：**这里不再做任何可能被慢盘卡住的事** ——
+    // 写 diag/list、收部署痕迹、清理散件、枚举磁盘全部搬到界面显示之后的
+    // 后台线程（WM_STARTUP_LAZY），只留"立即出界面"必需的初始化。
+    // 分区下拉在后台枚举完成前显示占位文案（下面 WM_PARTS_READY 回填）。
+    if (CControlUI* pLoad = m_PaintManager.FindControl(_T("PartLoadingText")))
+        pLoad->SetVisible(true);
     ApplyModeUi();
     RefreshBootMenuBtn();
     SetTimer(m_hWnd, 2, 500, nullptr);  // 路径输入兜底同步（见 WM_TIMER/wParam==2）
@@ -198,7 +202,38 @@ void CMainForm::InitWindow() {
         ::SendMessage(m_tipHwnd, TTM_ADDTOOL, 0, (LPARAM)&m_tipInfo);
         ::SendMessage(m_tipHwnd, TTM_SETMAXTIPWIDTH, 0, 300);
     }
-    // 救援层失败回执检查（用户 2026-10-04 规格 2）：异步（等窗口完全建好再弹）
+    // 救援层失败回执检查（用户 2026-10-04 规格 2）：**等后台收集跑完再查**
+    //（它要扫 logs\collected 里的回执，早了会漏）—— 见 StartupLazyWork 末尾。
+    sysrecover::StartupPhase("InitWindow-ui");
+    ::PostMessage(m_hWnd, WM_STARTUP_LAZY, 0, 0);
+}
+
+// ────────────────── 启动后置工作（问题 2，2026-10-12）──────────────────
+// 用户规格：插着 USB2 盘时启动要等 20 秒才出界面 → 把 diag/list 写入、部署
+// 痕迹收集、散件清理、磁盘枚举**全部挪到界面显示之后**，且在后台线程做。
+// 界面侧只做"必须立刻有"的事；分区下拉期间显示 PartLoadingText 占位。
+void CMainForm::StartupLazyWork() {
+    const std::wstring logsDir = sysrecover::LogBaseDir() + L"\\logs";
+    // 磁盘表**只枚举一次**，diag/list/收集/填下拉共用 —— 一次枚举要对每个
+    // PhysicalDriveN 开句柄发 IOCTL，慢盘上每次都能卡几秒，过去这里
+    // diag(1) + list(1) + 收集(每盘符 1) + 填下拉(1) 各来一遍。
+    sysrecover::StartupPhase("lazy-start");
+    std::vector<DiskInfo> disks = sysrecover::EnumerateDisks();
+    sysrecover::StartupPhase("enumerate-disks");  // 问题 2 的关键计时点
+    sysrecover::WriteDiagFiles(logsDir, &disks);
+    sysrecover::CollectDeployArtifacts(logsDir + L"\\collected", 0, &disks);
+    sysrecover::StartupPhase("diag+collect");
+    // PIT-137（用户 2026-10-08 规格）：每次运行"收完即清"——黑匣子已进
+    // logs\collected，各盘根的散件立即清掉。契约/引导文件不动。
+    sysrecover::CleanupStrayLogs();
+    sysrecover::StartupPhase("cleanup-stray");
+    // 回主线程填分区下拉（lParam 所有权交给 handler，由它 delete）。
+    auto* out = new std::vector<DiskInfo>(std::move(disks));
+    if (!::PostMessage(m_hWnd, WM_PARTS_READY, 0, (LPARAM)out)) {
+        delete out;
+        return;
+    }
+    // 收集完成后再查救援层失败回执（依赖 logs\collected）。
     ::PostMessage(m_hWnd, WM_CHECK_RESCUE, 0, 0);
 }
 
@@ -377,6 +412,48 @@ LRESULT CMainForm::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
     }
     if (msg == WM_CHECK_RESCUE) {
         ShowRescueFailureNotice();
+    }
+    if (msg == WM_STARTUP_LAZY) {
+        // 起后台线程做启动后置工作（diag/收集/清理/枚举 —— 可能被慢速 USB2
+        // 盘卡住，故绝不能在 InitWindow 里同步跑，见 StartupLazyWork）。
+        if (!m_startWorker.joinable())
+            m_startWorker = std::thread([this] { StartupLazyWork(); });
+        return 0;
+    }
+    if (msg == WM_PARTS_READY) {
+        // 后台枚举完成 → 回主线程填分区下拉（handler 接管指针所有权）。
+        auto* disks = reinterpret_cast<std::vector<DiskInfo>*>(lParam);
+        if (disks) {
+            PopulatePartitions(*disks);
+            delete disks;
+        }
+        return 0;
+    }
+    if (msg == WM_RETRY_DONE) {
+        // P3（PIT-148）一键重试完成：成功且需重启 → 自动 shutdown（与正常
+        // 还原暂存一致，PIT-110）；失败 → 弹错误（静默模式也弹，fail-safe）。
+        m_busy = false;
+        KillTimer(m_hWnd, 1);
+        ShowProgress(false);
+        UpdateMainAction();
+        int rc = (int)wParam;
+        bool reboot = lParam != 0;
+        if (rc == 0) {
+            SetStatus(reboot ? Tr(L"重试暂存完成，正在重启...")
+                             : Tr(L"重试完成，无需重启"));
+            if (reboot)
+                RebootNow();
+            else
+                MessageBoxW(m_hWnd, Tr(L"重试完成。重启后即可进入恢复的系统。"),
+                            Tr(L"一键重试"), MB_OK | MB_ICONINFORMATION);
+        } else {
+            std::wstring e = m_retryErr.empty() ? Tr(L"重试失败（详见日志）")
+                                                : U2W(m_retryErr);
+            SetStatus(Tr(L"重试失败"));
+            MessageBoxW(m_hWnd, e.c_str(), Tr(L"一键重试"),
+                        MB_OK | MB_ICONERROR);
+        }
+        return 0;
     }
     if (msg == WM_SR_QUERY_BUSY) {
         // 新实例问「你在忙吗」——忙则不让它关掉本进程（见 instance_dlg.cpp）。
@@ -610,20 +687,76 @@ void CMainForm::OnSupportDone(sysrecover::SupportBundle* rp) {
 // 启动检查：救援层失败回执（黑匣子，用户 2026-10-04 规格 2）。任何失败都要
 // "开机即报"，而不是让用户回忆/录像。回执由救援层写到每个分区根/ESP，启动
 // 收集时已收进 logs\collected；同一回执只提示一次（去重在 CheckLastRescueFailure）。
+// P3（PIT-148，用户 2026-10-14）：A/B 类失败（未动目标/引导未验证）→ 三选框
+// 「知道了 / 打开日志 / 一键重试」；C 类（已动盘）保持原二选框（只给日志路径）。
 void CMainForm::ShowRescueFailureNotice() {
-    std::wstring notice = sysrecover::CheckLastRescueFailure();
-    if (notice.empty())
+    RescueNotice n = CheckLastRescueFailure();
+    if (n.msg.empty())
         return;
-    size_t nl = notice.find(L'\n');
-    SetStatus(nl == std::wstring::npos ? notice : notice.substr(0, nl));
-    int choice = CConfirmDlg::Ask2(m_hWnd, Tr(L"还原结果"), notice,
+    size_t nl = n.msg.find(L'\n');
+    SetStatus(nl == std::wstring::npos ? n.msg : n.msg.substr(0, nl));
+    int choice;
+    if (n.retryable) {
+        // 左=知道了（安全默认）、中=打开日志、右=一键重试；回车/ESC 落"知道了"
+        //（Ask3 的 defaultIdx=0 = 左按钮，见 confirm_dlg.h）。
+        choice = CConfirmDlg::Ask3(
+            m_hWnd, Tr(L"还原结果"), n.msg, Tr(L"知道了"), Tr(L"打开日志"),
+            Tr(L"一键重试"), /*defaultIdx=*/0);
+    } else {
+        choice = CConfirmDlg::Ask2(m_hWnd, Tr(L"还原结果"), n.msg,
                                    Tr(L"知道了"), Tr(L"打开日志文件夹"),
                                    /*defaultIsRight=*/false);
-    if (choice == 1) {
-        std::wstring dir = sysrecover::LogBaseDir() + L"\\logs\\collected";
+        if (choice == 1) {
+            std::wstring dir = LogBaseDir() + L"\\logs\\collected";
+            ::ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr, nullptr,
+                            SW_SHOWNORMAL);
+        }
+        return;
+    }
+    if (choice == 1) {  // 打开日志
+        std::wstring dir = LogBaseDir() + L"\\logs\\collected";
         ::ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr, nullptr,
                         SW_SHOWNORMAL);
+    } else if (choice == 2) {  // 一键重试
+        // 二次确认（fail-safe）：重试会重新暂存 + 可能重启。
+        std::wstring cfm = std::wstring(
+                               Tr(L"将按上次任务参数重新执行还原（镜像→目标分区）。\n")) +
+                           Tr(L"确认继续？");
+        int r = CConfirmDlg::Ask2(m_hWnd, Tr(L"一键重试"), cfm, Tr(L"取消"),
+                                  Tr(L"立即重试"),
+                                  /*defaultIsRight=*/false);  // 默认取消=安全
+        if (r == 1)
+            StartRetryStagedRestore();
     }
+}
+
+// 一键重试（P3 / PIT-148）：读 conf → StageRestore；成功后若需重启则自动
+// shutdown /r（与正常还原暂存一致）。worker 用 BELOW_NORMAL，与既有 worker
+// 同款（PIT-071：别把 UI 饿死）。
+void CMainForm::StartRetryStagedRestore() {
+    if (m_busy)
+        return;
+    m_busy = true;
+    UpdateMainAction();
+    SetStatus(Tr(L"正在重试..."));
+    SetProgress(0);
+    ShowProgress(true);
+    m_start = std::chrono::steady_clock::now();
+    SetTimer(m_hWnd, 1, 1000, nullptr);
+    LogInfo("GUI retry start");
+    if (m_worker.joinable())
+        m_worker.join();
+    m_cancel = false;
+    m_retryErr.clear();
+    m_worker = std::thread([this] {
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        bool reboot = false;
+        std::string err;
+        int rc = RetryStagedRestore(err, &reboot);
+        m_retryErr = err;
+        last_err_ = err;
+        PostMessage(WM_RETRY_DONE, (WPARAM)rc, (LPARAM)(reboot ? 1 : 0));
+    });
 }
 
 // ────────────────── 忙时关闭 / 终止并退出（2026-09-20 用户规格） ──────────────────
@@ -990,7 +1123,7 @@ void CMainForm::ToggleBootMenu() {
 
 // ────────────────── 分区枚举 ──────────────────
 
-void CMainForm::PopulatePartitions() {
+void CMainForm::PopulatePartitions(const std::vector<DiskInfo>& disks) {
     CComboUI* pCombo =
         static_cast<CComboUI*>(m_PaintManager.FindControl(_T("PartitionBox")));
     if (!pCombo) return;
@@ -999,7 +1132,7 @@ void CMainForm::PopulatePartitions() {
     m_parts.clear();
     m_selPart = -1;
     int selDefault = -1;
-    for (const auto& disk : EnumerateDisks()) {
+    for (const auto& disk : disks) {
         for (const auto& part : disk.parts) {
             if (part.isEsp || part.isMsr || part.isRecovery || disk.isRemovable)
                 continue;

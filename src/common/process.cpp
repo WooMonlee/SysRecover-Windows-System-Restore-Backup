@@ -3,7 +3,11 @@
 
 #include <windows.h>
 
+#include <atomic>
+#include <cstdio>
 #include <vector>
+
+#include "logger.h"
 
 namespace sysrecover {
 namespace {
@@ -98,6 +102,17 @@ bool StartupTimingEnabled() {
     wchar_t v[16] = {};
     DWORD n = GetEnvironmentVariableW(L"SYSRECOVER_STARTUP_TIMING", v, 16);
     return n > 0 && n < 16 && v[0] == L'1';
+}
+
+void StartupPhase(const char* name) {
+    // 原子：GUI 的启动后台线程与主线程都会调（见问题 2 的分阶段耗时日志）。
+    static std::atomic<uint64_t> last{0};
+    const uint64_t now = MsSinceProcessStart();
+    const uint64_t prev = last.exchange(now);
+    char buf[224];
+    snprintf(buf, sizeof(buf), "startup phase %s: +%llu ms (t=%llu ms)", name,
+             (unsigned long long)(now - prev), (unsigned long long)now);
+    LogInfo(buf);
 }
 
 int RunProcess(const std::wstring& exe, const std::wstring& args,

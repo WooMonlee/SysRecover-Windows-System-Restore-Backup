@@ -5,6 +5,11 @@ build/*.exe
 # 构建/会话临时产物（字符串账本 tools/extract-strings.py、冒烟输出、草稿等）
 build/*.tsv
 build/*.txt
+build/*.ps1
+build/*.c
+build/gui-smoke/
+# 手工导出的发布 zip 快照（交付物以 dist/ 为准；zip/sha256/NOTES 不入库）
+/release/
 build-x86/
 *.o
 *.d

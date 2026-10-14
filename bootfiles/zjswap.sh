@@ -18,12 +18,16 @@
 set -u
 
 T="${1:?target dev}"; M="${2:?mount point}"
-say(){ echo "SWAP: $*" 1>&2; }
+# say/mnt_ntfs 单源（P0-B/PIT-145）：SWAP: 前缀是断言契约；挂载带 timeout 60
+# （PIT-112 挂死纪律），错误落 /tmp/zjmnt.err 不再被 2>/dev/null 静默吞掉。
+ZJPREFIX=SWAP
+. /zjlog.sh
 
 mkdir -p "$M"
-if ! mount -t ntfs3 "$T" "$M" 2>/dev/null; then
-    ntfs-3g -o force "$T" "$M" || { say "mount FAILED ($T)"; exit 1; }
-fi
+mnt_ntfs "$T" "$M" || {
+    say "mount FAILED ($T): $(head -1 /tmp/zjmnt.err 2>/dev/null)"
+    exit 1
+}
 
 # ── L1：先验完成标记，再动任何东西（fail-closed）──
 if [ ! -f "$M/~new/.zj-done" ]; then
@@ -72,7 +76,7 @@ for d in "$M/~new"/* "$M/~new"/.[!.]*; do
     mv "$d" "$M/$b" 2>/dev/null || say "WARN: move new $b failed"
 done
 # 删除 ~new 目录（含 .zj-done）
-rm -rf "$M/~new" 2>/dev/null
+rm -rf "$M/~new" 2>/dev/null || say "WARN: remove ~new failed (leftover under $M)"
 sync
 umount "$M" 2>/dev/null
 say "swap done (old tree kept at ~old; first boot should delete it)"

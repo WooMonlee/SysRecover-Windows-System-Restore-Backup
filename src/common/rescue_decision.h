@@ -41,4 +41,29 @@ inline RescueReport DecideRescueReport(const RescueRunTimes& t) {
     return RescueReport::None;
 }
 
+// FAILED 回执的 STEP 原始串 → 该失败**是否可在 Windows 侧一键重试**
+// （P3 / PIT-148，用户 2026-10-14 规格）。
+//
+// A/B 类（可一键重试）：未动目标分区，或只动到引导而未验证 —— 重新暂存
+//   + 重启是安全的；救援层对同类失败本就 fail-fast（mkntfs 之前就退出）：
+//   · no-task             没找到任务日志/conf
+//   · contract-mismatch   契约版本不匹配
+//   · target-not-found    按 offset 找不到目标分区
+//   · caps-missing        救援环境缺必需工具（打包/部署问题）
+//   · image-not-found     扫不到镜像
+//   · unsupported-image   非 Win7+ 系统镜像（Windows 侧 StageRestore 也会拦）
+//   · interrupted         引导/执行中断（脚本没跑完就离开）
+//   · swap-missing        A 引擎找不到 ~new 解压数据（Windows 解压未完成）
+// C 类（不提供一键重试）：目标已被 mkntfs/apply 动过或交换进行中 —— 救援层
+//   已自动重试 ×2；再"一键重试"等于在半成品盘上重来，风险不可控，
+//   应引导用户发日志/走人工支持：
+//   · mkntfs-failed / apply-failed / swap-failed
+//   · returnold-missing / returnold-failed（"返回旧系统"另有入口，非 restore 重试）
+inline bool RescueStepRetryable(const std::string& step) {
+    return step == "no-task" || step == "contract-mismatch" ||
+           step == "target-not-found" || step == "caps-missing" ||
+           step == "image-not-found" || step == "unsupported-image" ||
+           step == "interrupted" || step == "swap-missing";
+}
+
 }  // namespace sysrecover

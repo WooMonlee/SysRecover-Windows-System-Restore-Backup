@@ -253,58 +253,9 @@ void WaitSwapCleanup(wchar_t drive) {
     g_busyCv.wait(lk, [drive] { return g_busy.count(drive) == 0; });
 }
 
-bool UndoSwapLeftover(wchar_t drive, std::string& detail) {
-    std::wstring root = RootPath(drive);
-    std::wstring old = root + L"~old";
-    if (!IsDir(old)) {
-        detail = "~old not found";
-        return false;
-    }
-    BusyMark(drive);
-    int moved = 0, conflict = 0, failed = 0;
-    WIN32_FIND_DATAW fd;
-    HANDLE h = FindFirstFileW((old + L"\\*").c_str(), &fd);
-    if (h != INVALID_HANDLE_VALUE) {
-        do {
-            if (std::wcscmp(fd.cFileName, L".") == 0 ||
-                std::wcscmp(fd.cFileName, L"..") == 0)
-                continue;
-            std::wstring src = old + L"\\" + fd.cFileName;
-            std::wstring dst = root + fd.cFileName;
-            if (GetFileAttributesW(dst.c_str()) != INVALID_FILE_ATTRIBUTES) {
-                ++conflict;  // 根下已有同名 → 留在 ~old，不覆盖
-                LogWarn("undo swap: conflict, keep in ~old: " + ToUtf8(dst));
-                continue;
-            }
-            if (MoveFileW(src.c_str(), dst.c_str())) {
-                ++moved;
-            } else {
-                ++failed;
-                LogWarn("undo swap: move failed (err=" +
-                        std::to_string(GetLastError()) + "): " + ToUtf8(src));
-            }
-        } while (FindNextFileW(h, &fd));
-        FindClose(h);
-    }
-    RemoveDirectoryW(old.c_str());  // 空才成功；有冲突残留则保留
-    // 撤销备返：.zj-keepold 标记会随搬迁回到根目录 —— 用户已选择撤销保留语义，
-    // 立即删掉它，否则下次启动扫描又会把它当"备返残留"再问一遍。
-    {
-        std::wstring marker = root + L".zj-keepold";
-        if (GetFileAttributesW(marker.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            if (DeleteFileW(marker.c_str()))
-                LogInfo("undo swap: keepold marker removed");
-            else
-                LogWarn("undo swap: keepold marker remove failed err=" +
-                        std::to_string(GetLastError()));
-        }
-    }
-    detail = "moved=" + std::to_string(moved) +
-             " conflict=" + std::to_string(conflict) +
-             " failed=" + std::to_string(failed);
-    BusyUnmark(drive);
-    LogInfo("undo swap leftover on " + DriveStr(drive) + ": " + detail);
-    return conflict == 0 && failed == 0;
-}
+// ⚠️ `UndoSwapLeftover` 已移除（PIT-139）：它曾是「返回旧系统」的 Windows 侧
+// 实现 —— 根下同名一律 conflict 却把返回值写成 `conflict==0 && failed==0`，
+// 于是「一有同名就报失败、其实一个字节都没搬」；且在 Windows 里改名正在运行的
+// 系统树本就不可回滚。取代者见 ops::StageReturnOld + bootfiles/zjswap-undo.sh。
 
 }  // namespace sysrecover

@@ -5,12 +5,18 @@
 # 控制台无中文字库 → 消息全 ASCII。日志尽量持久化到非目标分区（重启后可取）。
 set -u
 LOG=/tmp/zjrestore.log
+# export：zjswap-undo.sh（子进程）要把 SWAPUNDO 行追加进同一份日志，否则
+# 反向交换失败时 /tmp 已清、控制台已滚 → 现场一行证据都没有（PIT-141）。
+export LOG
 # 注意：控制台输出一律走 **stderr**（1>&2）——函数返回值/设备名等靠 stdout，
 # 而 `ESP_DEV=$(find_esp_dev)` 这类命令替换会捕获函数内**所有 stdout**；若
 # say 走 stdout，"mnt <dev>" 屏幕标记会被一起捕获污染 ESP_DEV（2026-10-05 客户
 # 实测：esp mount failed 'ZJ:   mnt /dev/sda1 /dev/sda1'）。stderr 同样打到控制台，
 # 屏幕/串口日志不受影响。
-say(){ echo "ZJ: $*" 1>&2; echo "$(date '+%F %T') $*" >> "$LOG"; }
+# say 单源实现收进 /zjlog.sh（P0-B/PIT-145）：控制台 "ZJ: " 前缀不变（断言
+# 契约），文件行改带前缀时间戳 —— 5 个救援脚本合并成一条可分辨的时间线。
+ZJPREFIX=ZJ
+. /zjlog.sh
 # 黑匣子探测表（2026-10-04 客户失败的教训）：每个分区的 mount/open 结果都记在
 # 这里（与 init 共用同一文件），失败时随日志写到所有可写面 —— "为什么找不到"
 # 从此有据可查（客户那次只剩屏幕视频、扫描阶段没有任何文件证据）。
@@ -25,6 +31,11 @@ STEP=boot
 # ZJRESTORE-logs/ 并**保持挂载**，整个流程持续镜像日志（防中途断电/被杀导致
 # "哪里都没有日志"）。收集（日志按钮）后会连同其它散落日志一起清掉。
 BB_HOME=""
+# 目标分区设备：**在脚本开头就置空**（PIT-138）。zz-blackbox 模式会在
+# "解析目标分区"之前就调用 bb_home_drop / bb_esp_drop(→find_esp_dev)，而后者
+# 里有裸引用 —— set -u 下引用未定义变量会直接 rc=2，导致 init 的兜底黑匣子
+# 写盘失败（2026-10-12 现场：`blackbox sweep start` 之后没有任何落盘）。
+TARGET_DEV=""
 # zz-blackbox：init 在"脚本没跑/没来得及写盘"时调用的黑匣子模式（见函数区）。
 ZZ_BLACKBOX=0
 [ "${1:-}" = "zz-blackbox" ] && ZZ_BLACKBOX=1
@@ -119,6 +130,11 @@ IMAGE_INDEX=$(get_task image_index)
 # Windows 暂存时从镜像内容发现后写进契约；0/缺省 = 镜像里没有（绝大多数任务）。
 ESP_INDEX=$(get_task esp_index)
 case "$ESP_INDEX" in ''|0) ESP_INDEX="" ;; esac
+# ZJEA 修复子镜像的 index（PIT-122）。**必须与 esp_index 一起在开头解析**：
+# A 引擎（engine=swap）带子镜像时要在"镜像扫描"之前就能判断要不要找镜像
+# （PIT-138：原实现在脚本尾部才读 → 前面判不到）。
+EA_INDEX=$(get_task ea_index)
+case "$EA_INDEX" in ''|0) EA_INDEX="" ;; esac
 REPAIR_BOOT=$(get_task repair_boot)
 PT_TYPE=$(get_task pt_type)
 TARGET_OFFSET=$(get_task target_offset)
@@ -259,7 +275,8 @@ find_soft_dir(){
     SOFT_MNT=""
     for _d in $(list_parts); do
         [ -b "$_d" ] || continue
-        case "$_d" in *sr*|*loop*|*cdrom*) continue ;; esac
+        # fd/floppy 也跳过（QEMU 软驱无软件目录，挂它纯浪费时间）
+        case "$_d" in *sr*|*loop*|*cdrom*|*fd*|*floppy*) continue ;; esac
         [ "$_d" = "${TARGET_DEV:-}" ] && continue
         is_mounted "$_d" && continue
         mkdir -p /tmp/zj_soft
@@ -373,16 +390,23 @@ bb_drop(){
 bb_mount(){
     mkdir -p /tmp/zj_bb
     umount /tmp/zj_bb 2>/dev/null
+    # 每次调用重置错误收集（失败原因不再丢 /dev/null —— 全败时回吐给日志，PIT-147）
+    : > /tmp/zjbb.err
     _fs=$(timeout 20 blkid -s TYPE -o value "$1" 2>/dev/null)
     case "$_fs" in
-        vfat|fat|fat32) timeout 20 mount -t vfat "$1" /tmp/zj_bb 2>/dev/null && return 0 ;;
-        exfat) timeout 20 mount -t exfat "$1" /tmp/zj_bb 2>/dev/null && return 0 ;;
+        vfat|fat|fat32) timeout 20 mount -t vfat "$1" /tmp/zj_bb 2>/tmp/zjbb.err && return 0 ;;
+        exfat) timeout 20 mount -t exfat "$1" /tmp/zj_bb 2>/tmp/zjbb.err && return 0 ;;
         ntfs|"")
-            timeout 30 mount -t ntfs3 "$1" /tmp/zj_bb 2>/dev/null && return 0
-            timeout 30 ntfs-3g -o force "$1" /tmp/zj_bb 2>/dev/null && return 0
-            [ -n "$_fs" ] || { timeout 20 mount -t vfat "$1" /tmp/zj_bb 2>/dev/null && return 0; } ;;
-        *) timeout 20 mount "$1" /tmp/zj_bb 2>/dev/null && return 0 ;;
+            timeout 30 mount -t ntfs3 "$1" /tmp/zj_bb 2>/tmp/zjbb.err && return 0
+            timeout 30 ntfs-3g -o force "$1" /tmp/zj_bb 2>>/tmp/zjbb.err && return 0
+            [ -n "$_fs" ] || { timeout 20 mount -t vfat "$1" /tmp/zj_bb 2>>/tmp/zjbb.err && return 0; } ;;
+        *) timeout 20 mount "$1" /tmp/zj_bb 2>/tmp/zjbb.err && return 0 ;;
     esac
+    if [ -s /tmp/zjbb.err ]; then
+        say "bb_mount failed: $1 (fs=${_fs:-?}) $(head -n 2 /tmp/zjbb.err | tr '\n' ' ')"
+    else
+        say "bb_mount failed: $1 (fs=${_fs:-?})"
+    fi
     return 1
 }
 bb_sweep(){
@@ -393,7 +417,7 @@ bb_sweep(){
     fi
     for _d in $(list_parts); do
         [ -b "$_d" ] || continue
-        case "$_d" in *loop*|*ram*|*sr*) continue ;; esac
+        case "$_d" in *loop*|*ram*|*sr*|*fd*|*floppy*) continue ;; esac
         grep -qx "$_d" "$BB_DONE" 2>/dev/null && continue
         # 已经挂着的（镜像/软件/目标分区）直接用现挂载点，别再挂一次
         _mp=$(awk -v d="$_d" '$1==d{print $2; exit}' /proc/mounts 2>/dev/null)
@@ -443,10 +467,23 @@ bb_home_drop(){
         dump_console
     fi
     if [ -z "$BB_HOME" ]; then
+        # 同一次引导里前一次已认领的兜底窝直接复用：否则 zz-blackbox 二次进入时
+        # 它还挂着（会被下面 is_mounted 跳过），其它分区又都被占 → 拿不到日志面
+        # （PIT-138 现场：init 报 `WARN: no writable surface found for logs`）。
+        _hb=$(awk '$2=="/tmp/zj_home2"{print $1; exit}' /proc/mounts 2>/dev/null)
+        if [ -n "$_hb" ] && mkdir -p /tmp/zj_home2/ZJRESTORE-logs 2>/dev/null; then
+            BB_HOME=/tmp/zj_home2/ZJRESTORE-logs
+            say "fallback log home (reused): $_hb -> ZJRESTORE-logs/"
+        fi
+    fi
+    if [ -z "$BB_HOME" ]; then
         for _d in $(list_parts); do
             [ -b "$_d" ] || continue
-            case "$_d" in *loop*|*ram*|*sr*|*cdrom*) continue ;; esac
-            [ "$_d" = "$TARGET_DEV" ] && continue
+            case "$_d" in *loop*|*ram*|*sr*|*cdrom*|*fd*|*floppy*) continue ;; esac
+            # ⚠️ 必须 `${TARGET_DEV:-}`：zz-blackbox 模式下本函数在"解析目标分区"
+            #    之前就被调用，裸引用未定义变量会让 set -u 直接 rc=2 → init 的兜底
+            #    黑匣子写盘失败（PIT-138，2026-10-12 现场）。
+            [ "$_d" = "${TARGET_DEV:-}" ] && continue
             is_mounted "$_d" && continue
             mkdir -p /tmp/zj_home2
             if mnt_dev "$_d" /tmp/zj_home2; then
@@ -476,6 +513,39 @@ bb_final(){
         bb_esp_drop
     fi
     stop_log_mirror
+    # ── P3（PIT-148）失败退场决策：按 STAGE 决定 reboot / retry / menu ──
+    if [ "$RESULT" = "FAILED" ] && [ "${ZZ_BLACKBOX:-0}" != "1" ]; then
+        case $STAGE in
+            0)
+                say "recover decision: reboot (target untouched, STEP=$STEP)"
+                echo reboot > /tmp/zj-recover-decision
+                ;;
+            1)
+                say "recover decision: menu (system files in place, boot files unverified)"
+                echo menu > /tmp/zj-recover-decision
+                ;;
+            2)
+                say "recover decision: reboot (boot files verified, new system should boot)"
+                echo reboot > /tmp/zj-recover-decision
+                ;;
+            3|4)
+                _n=$(cat /tmp/zj-retry 2>/dev/null || echo 0)
+                _n=$((_n + 1))
+                echo "$_n" > /tmp/zj-retry
+                if [ "$_n" -le 2 ]; then
+                    say "recover decision: retry (attempt $_n/2, stage=$STAGE STEP=$STEP)"
+                    echo retry > /tmp/zj-recover-decision
+                else
+                    say "recover decision: menu (retries exhausted, stage=$STAGE)"
+                    echo menu > /tmp/zj-recover-decision
+                fi
+                ;;
+            *)
+                say "recover decision: menu (unknown stage=$STAGE)"
+                echo menu > /tmp/zj-recover-decision
+                ;;
+        esac
+    fi
 }
 trap 'bb_final' EXIT
 # zz-blackbox 模式：init 调 `zjrestore-lite.sh zz-blackbox <reason>`；只做全盘
@@ -492,6 +562,14 @@ if [ "$ZZ_BLACKBOX" = "1" ]; then
     exit 0
 fi
 
+# ── P3 失败自动回退（PIT-148）：目标可启动性阶段标记 ──
+# STAGE 由主流程在关键跃迁处更新；EXIT trap（bb_final）在 RESULT=FAILED 时据它
+# 写 /tmp/zj-recover-decision（reboot|retry|menu），由 init 自动退场——不再把
+# 用户丢在裸 # shell：
+#   0=未动目标  1=文件已就位但引导未验证  2=引导已验证（可启动）
+#   3=已格式化未 apply（B 引擎，可安全重跑）  4=returnold 进行中（phase 可续做）
+STAGE=0
+
 # ── 目标分区：优先用 S99 传入的设备，但**必须过 offset 校验** ──
 # 为什么要校验（2026-10-04）：参照机日志里出现过 `target from log location:
 # /dev/sda1` 而契约目标在别的设备 —— 只要哪个分区根上残留一份 _zjresy*.log
@@ -506,13 +584,15 @@ dev_offset(){
     if [ -n "$_st" ]; then echo $((_st * 512)); return 0; fi
     _sec=$(timeout 30 blkid -s PART_ENTRY_OFFSET -o value "$1" 2>/dev/null)
     if [ -n "$_sec" ]; then echo $((_sec * 512)); return 0; fi
-    # 兜底：blkid 没给出时读 MBR 分区表（先验扇区 0 的 55aa；整盘名用 sysfs 父目录）
+    # 兜底：blkid 没给出时读 MBR 分区表（先验扇区 0 的 55aa；整盘名用 sysfs 父目录）。
+    # 每个外部命令都套 timeout：读软驱/坏块设备上的裸 dd 会在 TCG 里阻塞几十秒
+    # 而上层毫无输出（PIT-142：returnold 演练卡在本函数，日志停在 match by offset）。
     _name=$(basename "$1")
     _disk="/dev/$(basename "$(dirname "$(readlink -f "/sys/class/block/$_name")")")"
-    _sig=$(dd if="$_disk" bs=1 skip=510 count=2 2>/dev/null | od -A n -t x1 | tr -d ' \n')
+    _sig=$(timeout 10 dd if="$_disk" bs=1 skip=510 count=2 2>/dev/null | od -A n -t x1 | tr -d ' \n')
     _num=$(echo "$_name" | grep -oE '[0-9]+$')
     [ "$_sig" = "55aa" ] && [ -n "$_num" ] && [ -b "$_disk" ] || return 1
-    _lba=$(dd if="$_disk" bs=1 skip=$((446 + (_num - 1) * 16 + 8)) count=4 2>/dev/null | od -A n -t u4 | tr -d ' ')
+    _lba=$(timeout 10 dd if="$_disk" bs=1 skip=$((446 + (_num - 1) * 16 + 8)) count=4 2>/dev/null | od -A n -t u4 | tr -d ' ')
     [ -n "$_lba" ] || return 1
     echo $((_lba * 512))
 }
@@ -524,9 +604,15 @@ dev_size(){
 }
 target_by_offset(){
     TARGET_DEV=""
+    # 先把候选设备打出来：这一段是"日志缺失/被拒后"的唯一路径，一旦卡住或
+    # 空转，没有这行就只能看到上一条 say（PIT-142 现场：日志停在 "match by
+    # offset" 之后零输出，无从判断是扫到 fd0 卡住还是 list_parts 为空）。
+    say "  target_by_offset: scanning (parts=$(list_parts 2>/dev/null | tr '\n' ' '))"
     for _d in $(list_parts); do
         [ -b "$_d" ] || continue
-        case "$_d" in *sr*|*loop*|*cdrom*) continue ;; esac
+        # sr/loop/cdrom 之外补 fd/floppy：QEMU 模拟软驱 /dev/fd0 上的裸 dd 会
+        # 阻塞几十秒且零输出（PIT-142 现场诱因之一；真实目标永不可能是软驱）。
+        case "$_d" in *sr*|*loop*|*cdrom*|*fd*|*floppy*) continue ;; esac
         _off=$(dev_offset "$_d")
         if [ -z "$_off" ]; then
             say "  (skip $_d: no offset)"
@@ -589,7 +675,7 @@ claim_bb_home(){
     fi
     for _d in $(list_parts); do
         [ -b "$_d" ] || continue
-        case "$_d" in *loop*|*ram*|*sr*|*cdrom*) continue ;; esac
+        case "$_d" in *loop*|*ram*|*sr*|*cdrom*|*fd*|*floppy*) continue ;; esac
         [ "$_d" = "$TARGET_DEV" ] && continue
         is_mounted "$_d" && continue
         mkdir -p /tmp/zj_home
@@ -614,7 +700,159 @@ claim_bb_home(){
     say "WARN: no fallback log home found (all non-target mounts failed)"
     return 1
 }
+
+# ── 能力自检（P1，PIT-146）：动手之前先验证"本环境能不能干这件事" ──
+# 用户 2026-10-14 口径：不能老是"出问题 → 卡 # → 用户发日志 → 补一个"——
+# 打包缺件（wimlib/mkntfs/ntfs-3g/blkid 被裁）、引导脚本缺失这类**源头缺陷**，
+# 必须在 mkntfs/apply/改名之前以结构化 CAPS 行报告失败，而不是中途 rc=xxx 才发现。
+# 致命项缺失 → RESULT=FAILED STEP=caps-missing 退出（此时还没碰目标分区）；
+# 非致命（内存小 / offset 空 / 日志出口未 claim）→ 仅 `CAPS warn:` 照常继续。
+_capbin(){ # $1=命令：不存在 / 无法执行(126/127) 视为缺失；--version 返回其它码不误判
+    command -v "$1" >/dev/null 2>&1 || return 1
+    timeout 10 "$1" --version >/dev/null 2>&1
+    case $? in 126|127) return 1 ;; esac
+    return 0
+}
+_wim_ok(){ # wimlib 解析与 L758 同口径（PATH → /tmp/zjtools 老底座兜底）
+    _wl="$(command -v wimlib-imagex 2>/dev/null)"
+    [ -n "$_wl" ] || _wl=/tmp/zjtools/wimlib-imagex
+    [ -f "$_wl" ] || return 1
+    timeout 10 "$_wl" --version >/dev/null 2>&1
+    case $? in 126|127) return 1 ;; esac
+    return 0
+}
+caps_selfcheck(){
+    _bad=""
+    _warn=""
+    if [ -b "$TARGET_DEV" ]; then
+        # count=0 = 只做 O_WRONLY 打开探测、零字节写入（无副作用，不开销）——
+        # 提前暴露"目标只读/被写保护"，否则要等 mkntfs 才以怪异 rc 失败
+        if ! dd if=/dev/zero of="$TARGET_DEV" bs=512 count=0 2>/dev/null; then
+            _bad="$_bad target-write"
+        fi
+    else
+        _bad="$_bad target-not-blockdev"
+    fi
+    _capbin blkid   || _bad="$_bad blkid"      # mnt_dev 认文件系统（busybox 版已按 PIT-047 移除）
+    _capbin ntfs-3g || _bad="$_bad ntfs-3g"    # B 引擎 libntfs-3g 写卷 + 各挂载兜底 + undo FUSE 专用
+    if [ "$UNDO_MARK" = "1" ]; then
+        # 反向交换：只要 undo 脚本 + 挂载能力（不碰镜像/mkntfs/wimlib）
+        [ -f /zjswap-undo.sh ] || _bad="$_bad zjswap-undo.sh"
+    elif [ "$ENGINE" = "swap" ]; then
+        # A 引擎主交换：zjswap.sh；契约带 ESP/EA 子镜像时仍需 wimlib 解包（PIT-138）
+        [ -f /zjswap.sh ] || _bad="$_bad zjswap.sh"
+        if [ -n "$ESP_INDEX" ] || [ -n "$EA_INDEX" ]; then
+            _wim_ok || _bad="$_bad wimlib-imagex(needed-by-esp/ea)"
+        fi
+    else
+        # B 引擎：wimlib + mkntfs
+        _wim_ok || _bad="$_bad wimlib-imagex"
+        _capbin mkntfs || _bad="$_bad mkntfs"
+    fi
+    # 块设备可见（存储模块已载）：target 已找到通常意味着非空，仍防打包/驱动回归
+    [ -n "$(list_parts)" ] || _bad="$_bad blockdevs(none-visible)"
+    # 非致命观察项
+    [ -n "$TARGET_OFFSET" ] || _warn="$_warn task(target_part_offset-empty)"
+    _mt=$(awk '/^MemTotal/{print $2}' /proc/meminfo 2>/dev/null)
+    if [ -n "$_mt" ] && [ "$_mt" -lt 409600 ]; then
+        _warn="$_warn mem($((_mt / 1024))MB<400,PIT-113)"
+    fi
+    if [ -z "$BB_HOME" ] && [ -z "$SOFT_MNT" ]; then
+        # claim_bb_home 没 claim 到：末尾 bb_final 还会全盘扫一次，但中途失败的
+        # 证据可能只在屏幕/内存里 → 响亮警告
+        _warn="$_warn log-home(none-claimed)"
+    fi
+    say "CAPS engine=$ENGINE undo=$UNDO_MARK target=$TARGET_DEV"
+    [ -n "$_warn" ] && say "CAPS warn:$_warn"
+    if [ -n "$_bad" ]; then
+        say "CAPS result=MISSING:$_bad"
+        say "ERROR: rescue environment incomplete -> abort BEFORE touching target (initramfs packaging?)"
+        RESULT=FAILED
+        STEP=caps-missing
+        persist_log
+        exit 1
+    fi
+    say "CAPS result=ok"
+    return 0
+}
 claim_bb_home
+
+# ── 返回旧系统（action=returnold，PIT-139）──
+# A 引擎 keepOld 备返的撤销：Windows 侧只做「暂存契约 + 部署引导 + 单次启动 +
+# 重启」，目录反向交换（根 -> ~/.new 后丢弃；~/.old -> 根）**一律在这里完成** ——
+# 在 Windows 里改名正在运行的系统树不可回滚，见 docs/23 §5（方案 C）。
+# 放在镜像扫描**之前**：这条路不需要镜像、不 mkntfs、不 wimlib apply。
+# 前置失败安全由 zjswap-undo.sh 把守（~/.old 缺失/不含 Windows → exit 2 绝不碰盘）。
+ACTION=$(get_task action)
+UNDO_MARK=0
+if [ "$ACTION" = "returnold" ]; then
+    UNDO_MARK=1
+    say "action=returnold: reverse swap on target (no image, no mkntfs, no apply)"
+elif [ "$ACTION" = "restore" ] || [ -z "$ACTION" ]; then
+    # 安全网（PIT-139 T3）：契约里写着 restore/空，目标上却留着自家反向交换
+    # 的阶段标记 —— 典型是"返回旧系统"被中断后，用户又在 Windows 侧重新
+    # 暂存了一次普通还原。此时不接管就会先 mkntfs 把 ~old（仅存的旧系统）
+    # 抹掉；接管则先完成反向交换，用户再重来一次还原即可。
+    # （契约文件本身由 zjswap-undo.sh L5 留在根，正常续做不走这条 ——
+    #  那条路径契约里仍是 action=returnold。）
+    # （BIOS 下引导命脉 grldr/grldr.mbr/menu.lst 由 zjswap-undo.sh 留在根，
+    #  正是为了这一刻仍能进救援层。）
+    _ud=/tmp/zj_undo_chk
+    mkdir -p "$_ud"
+    if timeout 60 mount -t ntfs3 "$TARGET_DEV" "$_ud" 2>/dev/null || mnt_dev "$TARGET_DEV" "$_ud"; then
+        if [ -f "$_ud/~new/.zj-undo-phase" ]; then
+            UNDO_MARK=1
+            say "safety net: ~/.new/.zj-undo-phase found on target -> resume return-old"
+        fi
+        umount "$_ud" 2>/dev/null
+    fi
+fi
+
+# 能力自检（P1，PIT-146）：returnold / A 引擎交换 / B 引擎格式化三条路全覆盖 ——
+# 在动 target（改名/mkntfs/apply）之前确认环境能力，缺件则带 CAPS 报告 fail-closed
+caps_selfcheck
+
+if [ $UNDO_MARK -eq 1 ]; then
+    STEP=returnold-swap
+    STAGE=4
+    ZJSWAPU="$(command -v zjswap-undo.sh 2>/dev/null)"
+    [ -n "$ZJSWAPU" ] || ZJSWAPU=/zjswap-undo.sh
+    if [ ! -f "$ZJSWAPU" ]; then
+        RESULT=FAILED; STEP=returnold-missing
+        say "ERROR: zjswap-undo.sh not found in initramfs"
+        persist_log
+        exit 1
+    fi
+    # 反向交换是**同一卷上的大规模 rename + rm**；后台日志镜像每 2s 还在
+    # 往同一卷（$BB_HOME 常在目标分区上）写文件 —— 并发写入者与批量删除
+    # 并存没有好处，先停（PIT-141）。收尾的 persist_log 会按需重新拉起。
+    stop_log_mirror
+    _s0=$(date +%s)
+    sh "$ZJSWAPU" "$TARGET_DEV" /tmp/zj_swap_undo_mnt
+    _urc=$?
+    _s1=$(date +%s)
+    say "return-old rc=$_urc elapsed=$((_s1 - _s0))s"
+    if [ $_urc -ne 0 ]; then
+        RESULT=FAILED; STEP=returnold-failed
+        case $_urc in
+            2) say "~old absent or has no Windows -> nothing to return; target untouched" ;;
+            3) say "leftover ~new present -> previous return-old interrupted; re-run from the boot menu" ;;
+            *) say "zjswap-undo.sh failed rc=$_urc" ;;
+        esac
+        say_dmesg
+        persist_log
+        exit 1
+    fi
+    # 引导补救已由本段隐式完成：旧系统的 bootmgr/Boot/Windows 随 ~/.old 回到根，
+    # 与它们是配套的一套（BIOS）；UEFI 下 ESP 全程未动，BCD 仍指向分区 GUID +
+    # \Windows，而 \Windows 现在又是旧系统了 —— 两条链都不需要再跑 bootfix。
+    # （bootfix 载荷在 L5 已随 ~/.new 被删除，此时再跑必失败，故直接收尾。）
+    say "RETURN-OLD DONE: old system back at root; new tree discarded"
+    RESULT=OK
+    STEP=done
+    persist_log
+    exit 0
+fi
 
 # 过了引导阶段：删掉目标分区根目录的引导期日志（/init 跑脚本前写的，PIT-059）。
 # 成功还原会把目标分区格式化，它本来也会消失；如果它还在，说明引导阶段就没走完，
@@ -630,19 +868,30 @@ fi
 # ── 定位镜像文件（扫描所有分区找 IMAGE_PATH；跳过目标分区）──
 # 拆成函数 + 两轮扫描：模块加载后磁盘/分区可能出现晚、或某个分区瞬时打不开
 # （2026-09-04 客户"image not found"快速退出的最大嫌疑）——第二轮给一次机会。
-# A 引擎（engine=swap）不需要镜像文件：Windows 侧已解压完成，这里只做交换。
+# A 引擎（engine=swap）**主 apply 不需要**镜像文件：Windows 侧已解压完成，这里
+# 只做交换；但契约带 esp_index/ea_index 时子镜像仍要从镜像里解 —— 见下方
+# "A 引擎带子镜像"补扫段（PIT-138）。
 IMG_FILE=""
 IMG_REL=$(echo "$IMAGE_PATH" | cut -d: -f2- | tr '\\' '/' | sed 's|^/*||')
 SRC_M="/tmp/zj_img"
 mkdir -p "$SRC_M"
 : > /tmp/zj_img.fail
-if [ "$ENGINE" != "swap" ]; then
+# WIMLIB **无条件**提前解析（PIT-138，2026-10-12 现场日志定位）：A 引擎（swap）
+# 不 apply 主镜像，但契约带 esp_index/ea_index 时仍要用它解子镜像。原实现只在
+# B 引擎分支里赋值 → swap 下 `$WIMLIB` 未定义，`set -u` 直接 rc=2 中断在 ESP 段
+# （现场：swap rc=0 → `restore esp subimage idx=2` → 之后既无 `esp restored`
+# 也无 `RESTORE DONE`、无状态回执，init 报 `restore script returned (rc=2)`）。
+# 位置：新底座（Alpine）在 /usr/bin/wimlib-imagex；旧底座（BG-Rescue）在
+# /tmp/zjtools/wimlib-imagex（S99zjrestore 预置）。两种都兼容。
+WIMLIB="$(command -v wimlib-imagex 2>/dev/null)"
+[ -n "$WIMLIB" ] || WIMLIB=/tmp/zjtools/wimlib-imagex
 scan_image(){
     for _d in $(list_parts); do
         [ -b "$_d" ] || continue
         # ⚠️ 这里**不能**跳过光驱（sr*）：镜像可能就在光盘/ISO 上（用户 2026-09-23
-        #    反馈）。只跳过 loop/ram 这类伪设备。目标分区扫描那边才该跳过 sr*。
-        case "$_d" in *loop*|*ram*) continue ;; esac
+        #    反馈）。只跳过 loop/ram 这类伪设备；fd/floppy 也跳（WIM 最小也有几 MB，
+        #    软盘装不下镜像）。目标分区扫描那边才该跳过 sr*。
+        case "$_d" in *loop*|*ram*|*fd*|*floppy*) continue ;; esac
         [ "$_d" = "$TARGET_DEV" ] && continue
         _rem=""; is_removable "$(basename "$_d")" && _rem="1"
         # 已挂着的（软件目录/兜底日志窝）直接查现挂载点，别再挂一次
@@ -677,6 +926,7 @@ scan_image(){
     done
     return 1
 }
+if [ "$ENGINE" != "swap" ]; then
 scan_image
 if [ -z "$IMG_FILE" ]; then
     say "image not found on first pass -> retry after 3s"
@@ -704,10 +954,8 @@ persist_log
 #   ⚠️ Linux 侧 wimlib 路径匹配**区分大小写**（Windows 侧不区分）：真实镜像
 #      里是 `System32`（大写 S），必须**双大小写各探一次**，否则会误拒（2026-10-06 实测）。
 # 带 timeout：探测卡住/超时按"跳过"处理（fail-open，只记日志不误杀）。
-# ⚠️ WIMLIB 变量在后面的 apply 段才赋值 —— 预检在前，必须**提前解析**
-#    （set -u 下引用未定义变量会直接 rc=2 退出，2026-10-06 实测踩到）。
-WIMLIB="$(command -v wimlib-imagex 2>/dev/null)"
-[ -n "$WIMLIB" ] || WIMLIB=/tmp/zjtools/wimlib-imagex
+# ⚠️ `$WIMLIB` 已在本段之前**无条件**解析（PIT-138），此处直接可用
+#    （set -u 下引用未定义变量会直接 rc=2 退出，2026-10-06 / 2026-10-12 实测踩到）。
 mkdir -p /tmp/zj_pc
 _pc_ok=0
 for _p in '/Windows/System32/winload.exe' '/Windows/system32/winload.exe'; do
@@ -729,6 +977,30 @@ else
     exit 1
 fi
 fi # end engine != swap (image scan + precheck)
+
+# ── A 引擎带子镜像：补一次镜像扫描（PIT-138，2026-10-12 现场日志定位）──
+# 上面那段只在 `ENGINE != swap` 时跑，所以 swap 下 IMG_FILE 恒为 "" ——
+# 即使下面 ESP/EA 段跑起来也拿不到镜像路径。这里给 A 引擎补上：
+# 找得到 → 照常解子镜像；找不到 → **只 WARN 并跳过子镜像，不中断主 swap**
+# （子镜像失败本就是非致命的，与 ESP 段的既有语义一致）。
+if [ "$ENGINE" = "swap" ]; then
+    if [ -n "$ESP_INDEX" ] || [ -n "$EA_INDEX" ]; then
+        scan_image
+        if [ -z "$IMG_FILE" ]; then
+            say "image not found on first pass -> retry after 3s"
+            sleep 3
+            scan_image
+        fi
+        if [ -z "$IMG_FILE" ]; then
+            say "WARN: image not found -> skip ESP/EA subimage restore (main swap unaffected)"
+            ESP_INDEX=""
+            EA_INDEX=""
+        else
+            STEP=image-found
+            persist_log
+        fi
+    fi
+fi
 
 # ── ESP 子镜像（方案 C，用户 2026-09-30 规格 / 无忧 66 楼）──
 # 主镜像里可能含名为 ESP 的子镜像（备份时勾选 --esp 并入，契约键 esp_index）。
@@ -771,6 +1043,7 @@ if [ "$ENGINE" = "swap" ]; then
         exit 1
     fi
     say "swap done: ~new -> root, old -> ~old"
+    STAGE=1
     # 未格式化 → PBR 原封不动（与 keep 模式同款处理：只在扇区 1 全 0 时才重写）
     KEPT_FS=1
     TARGET_FS=ntfs
@@ -851,7 +1124,10 @@ if [ "$KEPT_FS" = "0" ]; then
     # 退回 mkntfs（非 NTFS 目标）。起始 LBA = 契约 target_part_offset/512：
     # BPB 的「隐藏扇区数」(0x1C) 必须等于它，否则 Windows 引导代码读盘会整体读偏。
     START_LBA=$(( ${TARGET_OFFSET:-0} / 512 ))
-    [ "$START_LBA" -gt 0 ] 2>/dev/null || START_LBA=2048
+    [ "$START_LBA" -gt 0 ] 2>/dev/null || {
+        START_LBA=2048
+        say "WARN: START_LBA invalid (target_part_offset='${TARGET_OFFSET:-empty}') -> use 2048"
+    }
     say "mkntfs $TARGET_DEV (start_lba=$START_LBA)"
     umount "$TARGET_DEV" 2>/dev/null
     timeout 30 dd if="$TARGET_DEV" of=/tmp/pbr_orig.bin bs=512 count=1 2>/dev/null
@@ -863,6 +1139,7 @@ if [ "$KEPT_FS" = "0" ]; then
         say_dmesg
     fi
     [ $mkfs_rc -eq 0 ] || { RESULT=FAILED; STEP=mkntfs-failed; say "ERROR: mkntfs rc=$mkfs_rc"; exit 1; }
+    STAGE=3
     _b0=$((START_LBA & 0xFF)); _b1=$(((START_LBA >> 8) & 0xFF))
     _b2=$(((START_LBA >> 16) & 0xFF)); _b3=$(((START_LBA >> 24) & 0xFF))
     printf "\\$(printf '%03o' $_b0)\\$(printf '%03o' $_b1)\\$(printf '%03o' $_b2)\\$(printf '%03o' $_b3)" \
@@ -888,10 +1165,7 @@ APPLY_MODE=${ZJ_APPLY_MODE:-block}
 APPLY_FS=${ZJ_APPLY_FS:-auto}
 STEP=applying
 say "apply image -> $TARGET_DEV (index $IMAGE_INDEX, mode=$APPLY_MODE fs=$APPLY_FS)"
-# wimlib 位置：新底座（Alpine）在 /usr/bin/wimlib-imagex；旧底座（BG-Rescue）在
-# /tmp/zjtools/wimlib-imagex（S99zjrestore 预置）。两种都兼容。
-WIMLIB="$(command -v wimlib-imagex 2>/dev/null)"
-[ -n "$WIMLIB" ] || WIMLIB=/tmp/zjtools/wimlib-imagex
+# wimlib 位置已在镜像扫描段之前**无条件**解析（PIT-138），此处只打印确认。
 say "wimlib: $WIMLIB"
 # 诊断：内存 / 镜像大小 / 目标容量（wimlib 卡住时先看这些）
 say "mem: $(free 2>/dev/null | tr '\n' ' ')"
@@ -951,7 +1225,11 @@ fi
 for _p in /sys/module/nvme_core/parameters/io_timeout /sys/module/nvme/parameters/io_timeout; do
     if [ -w "$_p" ]; then
         _old=$(cat "$_p" 2>/dev/null)
-        echo 1 > "$_p" 2>/dev/null && say "nvme io_timeout: ${_old}s -> $(cat "$_p" 2>/dev/null)s ($_p)"
+        if echo 1 > "$_p" 2>/dev/null; then
+            say "nvme io_timeout: ${_old}s -> $(cat "$_p" 2>/dev/null)s ($_p)"
+        else
+            say "WARN: cannot set nvme io_timeout ($_p): 30s completion stalls may persist (PIT-055)"
+        fi
         break
     fi
 done
@@ -1056,6 +1334,7 @@ fi
 
 STEP=apply-done
 say "apply done"
+STAGE=1
 fi # end engine != swap (B-engine prepare+apply)
 
 # ── 引导补全：把 \bootmgr + \Boot\* 拷进目标分区（万能镜像常缺 \Boot\BCD）──
@@ -1081,6 +1360,7 @@ if [ -f /tmp/bootfix/bootmgr ]; then
         sync
         if [ -f "$BFM/Boot/BCD" ] && [ -f "$BFM/bootmgr" ]; then
             say "bootfix BCD+bootmgr verified on target"
+            STAGE=2
         else
             say "ERROR: bootfix BCD/bootmgr NOT on target after copy"
         fi
@@ -1250,8 +1530,7 @@ fi
 # 机理（CSE 声明 / gpt.ini 版本递增 / RunStartupScriptSync+SyncForegroundPolicy
 # 同步策略 / 预登录执行 / 每引导重跑 / 文件可写性）已 QEMU 全链实测（PIT-123）。
 # 没有 ea_index 时整段不跑（绝大多数任务不带）。
-EA_INDEX=$(get_task ea_index)
-case "$EA_INDEX" in ''|0) EA_INDEX="" ;; esac
+# （EA_INDEX 在脚本开头与 ESP_INDEX 一起解析，见契约解析段。）
 if [ -n "$EA_INDEX" ]; then
     STEP=ea
     say "ea subimage: index=$EA_INDEX (deploy first-boot EA restore)"
@@ -1408,7 +1687,7 @@ cleanup_after_success(){
     for _d in $(list_parts); do
         [ -b "$_d" ] || continue
         [ "$_d" = "$TARGET_DEV" ] && continue
-        case "$_d" in *sr*|*loop*|*cdrom*) continue ;; esac
+        case "$_d" in *sr*|*loop*|*cdrom*|*fd*|*floppy*) continue ;; esac
         is_mounted "$_d" && continue
         mkdir -p /tmp/zj_cl
         if mnt_dev "$_d" /tmp/zj_cl; then
@@ -1442,11 +1721,17 @@ RESULT=OK; STEP=done
 persist_log          # 把完整日志落到 <软件目录>\logs\（cleanup 会保留该子目录）
 # 成功回执也必须落**软件目录**（BIOS 机器没有 ESP；UEFI 的 ESP 写入也可能失败）：
 # 否则 Windows 侧看不到"已成功"，会把待执行标记误报成"任务未执行"（0.6.29 规则）。
+_rcpt=0
 if [ -n "$SOFT_MNT" ] && [ -d "$SOFT_MNT/$SD_REL" ]; then
     mkdir -p "$SOFT_MNT/$SD_REL/logs" 2>/dev/null
-    bb_status_text > "$SOFT_MNT/$SD_REL/logs/ZJRESTORE-status.txt" 2>/dev/null
+    bb_status_text > "$SOFT_MNT/$SD_REL/logs/ZJRESTORE-status.txt" 2>/dev/null && _rcpt=1
 fi
-[ -n "$BB_HOME" ] && bb_status_text > "$BB_HOME/ZJRESTORE-status.txt" 2>/dev/null
+if [ -n "$BB_HOME" ]; then
+    bb_status_text > "$BB_HOME/ZJRESTORE-status.txt" 2>/dev/null && _rcpt=1
+fi
+# 两个直写点全失败 = 哪都没有"成功回执"（若连 ESP 也没落上，下次 Windows 启动
+# 会把 pending 标记误报成"任务未执行"）—— 响亮记一笔，别静默（PIT-147）
+[ "$_rcpt" = 1 ] || say "WARN: status receipt NOT written (soft-dir & bb-home both failed)"
 bb_esp_drop
 sync
 stop_log_mirror      # 停掉后台日志镜像循环

@@ -8,6 +8,14 @@
 namespace sysrecover {
 
 struct RestoreTask {
+    // 任务动作（PIT-139，2026-10-13）："restore"=还原（默认）；
+    // "returnold"=返回旧系统（A 引擎 keepOld 备返的撤销，方案 C）——
+    //   Windows 侧只暂存 + 部署引导 + 单次启动 + 重启，**目录反向交换一律在
+    //   Linux 救援层完成**（Windows 里改名正在运行的系统树不可回滚，见 docs/23 §5）。
+    // 只是**新增取值**、不是新增字段 → 增量键，不升 contract_version；
+    // 旧救援层不认识 returnold 会落进 engine=swap → zjswap.sh 查不到 ~new/.zj-done
+    // → exit 2 报"old system untouched"（fail-closed，绝不 mkntfs）。
+    std::string action = "restore";
     std::wstring imagePath;      // 镜像绝对路径
     std::wstring imagePartGuid;  // 镜像所在分区 GUID（MBR 下可空）
     std::wstring imageRelPath;   // 镜像相对路径（正斜杠，供 Linux 侧）
@@ -35,6 +43,10 @@ struct RestoreTask {
     // 还原引擎（0.7，docs/23）：""/block = B 引擎（Linux apply）；swap = A 引擎
     // （救援层只做改名交换，不 apply —— 见 bootfiles/zjswap.sh）。
     std::string engine;
+    // 备返（PIT-122 后 A 引擎保留 ~old）：true = 交换后保留 ~old + 管理快捷方式；
+    // false = 开机 RunOnce 静默删 ~old。Windows 侧消费（PIT-148 一键重试用），
+    // Linux 救援层不读 —— 增量键，不升 contract_version。
+    bool keepOld = false;
     // _zjresy 恢复日志附加字段（对齐旧 C# WriteRestoreLog，Phase 5 补）
     std::wstring targetDiskName;   // 磁盘型号
     uint64_t targetDiskSize = 0;   // 整盘字节数

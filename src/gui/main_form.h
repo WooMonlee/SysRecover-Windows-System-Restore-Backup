@@ -39,8 +39,24 @@ using namespace DuiLib;
 #define WM_SUPPORT_DONE    (WM_APP + 14)
 // 启动时检查救援层失败回执（黑匣子）：见 ShowRescueFailureNotice。
 #define WM_CHECK_RESCUE    (WM_APP + 15)
+// 启动后置工作（问题 2，用户 2026-10-12 规格："USB 盘插入时启动 20 秒才出
+// 界面，要把检查挪到界面显示之后"）：InitWindow 只建窗，这几件事 PostMessage
+// 过来后**在后台线程**做，做完再 PostMessage 结果回主线程。
+//   WM_STARTUP_LAZY：起后台线程（diag.txt/list.txt + 部署痕迹收集 + 散件清理
+//                    + 磁盘枚举）——这三样都可能被慢速 USB2 设备卡住。
+//   WM_PARTS_READY ：lParam = new std::vector<DiskInfo>，线程枚举完成 → 主线程
+//                    用它填分区下拉（handler 里 delete 接管所有权）。
+#define WM_STARTUP_LAZY    (WM_APP + 16)
+#define WM_PARTS_READY     (WM_APP + 17)
+// P3（PIT-148）「一键重试」worker 完成：wParam=rc, lParam=needReboot(0/1)；
+// 失败原因在 m_retryErr（worker 线程写、主线程读，PostMessage 前已落成员）。
+#define WM_RETRY_DONE      (WM_APP + 18)
 
-namespace sysrecover { struct PartitionInfo; struct SupportBundle; }
+namespace sysrecover {
+struct PartitionInfo;
+struct SupportBundle;
+struct DiskInfo;
+}
 
 class CMainForm : public WindowImplBase {
 public:
@@ -63,7 +79,11 @@ public:
     virtual CControlUI* CreateControl(LPCTSTR pstrClass) override;
 
 private:
-    void PopulatePartitions();
+    // 分区下拉填充：磁盘表由调用方传入（启动时来自后台线程的 WM_PARTS_READY，
+    // 省掉在 UI 线程上重复 EnumerateDisks —— 问题 2，2026-10-12）。
+    void PopulatePartitions(const std::vector<sysrecover::DiskInfo>& disks);
+    // 启动后置工作（后台线程体，见 WM_STARTUP_LAZY）：diag/痕迹收集/清理/枚举。
+    void StartupLazyWork();
     void BrowseWimFile();
     void BrowseSaveFile();
     // 「搜索」按钮（还原模式）：扫附近目录的 .esd/.wim（imgsearch.cpp），把最新一个
@@ -95,7 +115,8 @@ private:
     void OnSupportDone(sysrecover::SupportBundle* r);
     // 启动时（收集完 diag/list/痕迹后）检查救援层失败回执（用户 2026-10-04
     // 规格 2）：有未报告的失败 → 弹 3 行提示，「打开日志文件夹」直达 collected。
-    void ShowRescueFailureNotice();
+    void ShowRescueFailureNotice();  // P3（PIT-148）：A/B 类失败 → Ask3 + 一键重试
+    void StartRetryStagedRestore();  // 一键重试 worker 入口（读 conf → StageRestore）
     void RebootNow();
     bool AskBusyClose();          // 忙时关闭：true = 用户选了「终止并退出」
     // BitLocker 提醒（有加密卷时提醒"没密钥则数据无法恢复"）：true = 继续
@@ -133,6 +154,7 @@ private:
 
     // worker 线程
     std::thread       m_worker;
+    std::thread       m_startWorker;  // 启动后置工作线程（问题 2；析构里 join）
     std::atomic<bool> m_cancel{false};
     std::atomic<bool> m_busy{false};
     std::atomic<bool> m_cancelling{false};  // 「终止并退出」流程已启动（防重入/重复弹框）
@@ -145,6 +167,9 @@ private:
     bool              m_workerEsp = false; // StartBackupAsync 用：是否把 ESP 并入主镜像
     std::string       last_err_;        // worker 错误回传
     sysrecover::ErrAdvice last_adv_ = sysrecover::ADV_NONE;  // worker 建议码回传
+    // P3（PIT-148）「一键重试」worker 错误回传（PostMessage 前已落成员，
+    // 主线程 WM_RETRY_DONE 读 —— 不传指针，避免生命周期问题）。
+    std::string       m_retryErr;
     // 进度节流（100ms）
     std::chrono::steady_clock::time_point m_lastProgressPost;
     // 最近一次**真正发出**的阶段原串（worker 线程写）：阶段名一变就放行、不再

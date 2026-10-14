@@ -28,7 +28,9 @@ mkdir -p /proc /sys /dev /tmp /mnt
 LOG=/tmp/zjrestore.log
 # 控制台输出走 stderr（与 zjrestore-lite.sh 同款）：防止 `$(...)` 命令替换把
 # 日志行当成函数返回值捕获（2026-10-05 客户实测教训）。
-say(){ echo "SR: $*" 1>&2; echo "$(date '+%F %T') $*" >> "$LOG"; }
+# say 单源实现收进 /zjlog.sh（P0-B/PIT-145）；SR: 前缀是断言/录像取证契约。
+ZJPREFIX=SR
+. /zjlog.sh
 # 黑匣子探测表（与 zjrestore-lite.sh 共用同一文件）：每个分区的 mount 结果都
 # 记下来，失败时随日志写到所有可写面 —— "为什么找不到任务/镜像"有据可查。
 PROBE=/tmp/zj-probe.txt
@@ -123,7 +125,11 @@ say "nvme dmesg: $(dmesg 2>/dev/null | grep -iE 'nvme|pcie' | tail -n 5 | tr '\n
 for _p in /sys/module/nvme_core/parameters/io_timeout /sys/module/nvme/parameters/io_timeout; do
     if [ -w "$_p" ]; then
         _old=$(cat "$_p" 2>/dev/null)
-        echo 1 > "$_p" 2>/dev/null && say "nvme io_timeout: ${_old}s -> $(cat "$_p" 2>/dev/null)s"
+        if echo 1 > "$_p" 2>/dev/null; then
+            say "nvme io_timeout: ${_old}s -> $(cat "$_p" 2>/dev/null)s"
+        else
+            say "WARN: cannot set nvme io_timeout ($_p): 30s completion stalls may persist (PIT-055)"
+        fi
         break
     fi
 done
@@ -254,6 +260,8 @@ scan_for_log(){
     _fb_log=""; _fb_dev=""
     for _d in $(list_parts); do
         [ -b "$_d" ] || continue
+        # 软驱不可能有契约/镜像（PIT-142 现场 fd0 白跑一遍）
+        case "$_d" in *fd*|*floppy*) continue ;; esac
         _sz=$(cat "/sys/class/block/$(basename "$_d")/size" 2>/dev/null)
         _off=$(blkid -s PART_ENTRY_OFFSET -o value "$_d" 2>/dev/null)
         _rem=""; is_removable "$(basename "$_d")" && _rem="1"
@@ -304,10 +312,19 @@ scan_for_log
 if [ ! -f /tmp/restore-task.conf ]; then
     for _d in $(list_parts); do
         [ -b "$_d" ] || continue
+        case "$_d" in *fd*|*floppy*) continue ;; esac
         mkdir -p "$ZJ_M"
         if mnt_dev "$_d" "$ZJ_M"; then
             _c=$(find "$ZJ_M" -maxdepth 4 -name restore-task.conf 2>/dev/null | head -1)
-            [ -n "$_c" ] && { cp "$_c" /tmp/restore-task.conf 2>/dev/null; say "found conf: $_c"; }
+            if [ -n "$_c" ]; then
+                # 只有 cp 真成功才说 found（否则"found conf"会骗人：/tmp 里其实
+                # 没有、下游还要白找一轮）—— cp 失败必须留下 WARN（PIT-147）
+                if cp "$_c" /tmp/restore-task.conf 2>/dev/null; then
+                    say "found conf: $_c"
+                else
+                    say "WARN: conf copy failed: $_c (fall back to task log)"
+                fi
+            fi
             umount "$ZJ_M" 2>/dev/null
             [ -f /tmp/restore-task.conf ] && break
         fi
@@ -321,6 +338,13 @@ fi
 # 即全量 modprobe 再扫一遍，把"名单漏了驱动"这条路兜住。
 # 代价：手动从常驻菜单进救援（无任务）时也会多花 ~30-45s 扫一遍 —— 可接受（救援本就低频）。
 if [ -z "$found_log" ]; then
+    # conf 已找到 = 分区可枚举 = 存储驱动没问题 → 任务线索（log 或 conf）至少有
+    # 一条，sweep 只在**两条全丢**时才有意义（H-02 的本意是"分区不可见才补驱动"）。
+    # 实测：sweep 4000 模块×2 遍在 TCG 下要 60-120s，卡在演练 120s 捕获窗边缘
+    # → 时有时无的假失败（conf 明明在，白扫 2 分钟还没跑到脚本）。
+    if [ -f /tmp/restore-task.conf ]; then
+        say "no task log but conf found -> skip module sweep (partitions enumerable)"
+    else
     say "no task log -> sweeping ALL modules, then rescan"
     for _pass in 1 2; do
         for _k in $(find /lib/modules/"$(uname -r)"/kernel -type f \( -name '*.ko.gz' -o -name '*.ko.xz' -o -name '*.ko' \) | sort); do
@@ -332,6 +356,7 @@ if [ -z "$found_log" ]; then
     sleep 3
     say "after sweep, block devs: $(ls /sys/class/block 2>/dev/null | tr '\n' ' ')"
     scan_for_log
+    fi
 fi
 
 # ── 2c) 引导补全文件（Windows 侧生成到 <恢复目录>\bootfix\：\bootmgr + \Boot\BCD）──
@@ -341,14 +366,20 @@ fi
 if [ ! -f /tmp/bootfix/bootmgr ]; then
     for _d in $(list_parts); do
         [ -b "$_d" ] || continue
+        case "$_d" in *fd*|*floppy*) continue ;; esac
         say "  scan $_d for bootfix"
         mkdir -p "$ZJ_M"
         if mnt_dev "$_d" "$ZJ_M"; then
             _bf=$(find "$ZJ_M" -maxdepth 4 -type f -path "*bootfix/bootmgr" 2>/dev/null | head -1)
             if [ -n "$_bf" ]; then
                 mkdir -p /tmp/bootfix
-                cp -r "$(dirname "$_bf")"/* /tmp/bootfix/ 2>/dev/null
-                say "found bootfix dir: $(dirname "$_bf")"
+                # cp 成功才报 found（失败时 "found bootfix dir" 与 /tmp 里空盘
+                # 矛盾过一次 —— 改成显式 WARN，别再骗人）（PIT-147）
+                if cp -r "$(dirname "$_bf")"/* /tmp/bootfix/ 2>/dev/null; then
+                    say "found bootfix dir: $(dirname "$_bf")"
+                else
+                    say "WARN: bootfix copy failed: $(dirname "$_bf")"
+                fi
             fi
             umount "$ZJ_M" 2>/dev/null
             [ -f /tmp/bootfix/bootmgr ] && break
@@ -367,7 +398,8 @@ if [ -n "$TARGET_DEV" ] && [ -b "$TARGET_DEV" ]; then
     mkdir -p /tmp/zj_bl
     if mnt_dev "$TARGET_DEV" /tmp/zj_bl; then
         cp "$LOG" /tmp/zj_bl/zjrestore-boot.log 2>/dev/null \
-            && say "boot-phase log -> target root"
+            && say "boot-phase log -> target root" \
+            || say "WARN: boot-phase log NOT written to target root (only screen/RAM left)"
         sync
         umount /tmp/zj_bl 2>/dev/null
     fi
@@ -375,23 +407,34 @@ fi
 
 # ── 2d) 测试钩子（内核 cmdline，仅供实验室/"印证版"；产线不带这些参数）──
 #   zjapply=block|dir|dirfuse   zjfs=ntfs3|fuse|auto   zjtarget=format|keep
-#   zjsetup=1                   跑 setup-swap.sh（A 引擎 swap 演练盘初始化）
+#   zjsetup=1|2|3               跑 setup-swap.sh（A 引擎 swap/returnold 演练盘初始化）
+#                                1 = 交换前态（旧系统在根 + ~/.new）→ 接下来跑正向 swap
+#                                2 = 交换后态（新系统在根 + ~/.old）→ 接下来跑 returnold
+#                                3 = 交换后 + 反向交换已中断（phase=2）→ 接下来跑续做
+#   zjbulk=N                    与 zjsetup 同用：往待删的那棵树里塞 N 个小文件
+#                                （PIT-142 规模演练 —— 演练盘一直是 3 个标记文件的
+#                                小树，真实 Windows 是 10 万级文件，rm/mv 的规模路径
+#                                从来没被压测过，"rm -rf ~new 失败"因此复现不出来）
 # （zjapply=dir/dirfuse 仅供实验室复现"目录写"对比；产线用户流程永远是 block）
-ZJ_SETUP=0
+ZJ_SETUP=""
+ZJ_BULK=""
 for _kv in $(cat /proc/cmdline 2>/dev/null); do
     case "$_kv" in
         zjapply=*)    export ZJ_APPLY_MODE="${_kv#zjapply=}" ;;
         zjfs=*)       export ZJ_APPLY_FS="${_kv#zjfs=}" ;;
         zjtarget=*)   export ZJ_TARGET_MODE="${_kv#zjtarget=}" ;;
-        zjsetup=1)    ZJ_SETUP=1 ;;
+        zjsetup=*)    ZJ_SETUP="${_kv#zjsetup=}" ;;
+        zjbulk=*)     ZJ_BULK="${_kv#zjbulk=}" ;;
     esac
 done
 
-# ── 2e) A 引擎 swap 演练盘初始化（zjsetup=1，仅实验室）──
-if [ "$ZJ_SETUP" = "1" ]; then
-    say "setup mode: running setup-swap.sh"
+# ── 2e) A 引擎 swap 演练盘初始化（zjsetup=N，仅实验室）──
+if [ -n "$ZJ_SETUP" ]; then
+    # bulk 放在括号外：既有断言匹配 "(mode=N)" 字面，别把它拆坏
+    say "setup mode: running setup-swap.sh (mode=$ZJ_SETUP) bulk=${ZJ_BULK:-0}"
     if [ -x /setup-swap.sh ]; then
-        /bin/sh /setup-swap.sh
+        # timeout：造 N 万文件 + mkntfs + sync 在救援层是分钟级（不加的话挂死无痕迹）
+        timeout 900 /bin/sh /setup-swap.sh "$ZJ_SETUP" "${ZJ_BULK:-0}"
         _src=$?
         say "setup-swap.sh returned (rc=$_src)"
     else
@@ -402,16 +445,115 @@ if [ "$ZJ_SETUP" = "1" ]; then
     exit 0
 fi
 
+# ── P3（PIT-148）失败自动回退工具函数 ──
+# 屏幕只保证 ASCII（PIT-061：内核字体无中文字形），中文解释由 Windows 侧
+# 启动报告提供；此处全部 say 走 zjlog.sh 单源（文件日志同步落盘）。
+emit_result(){
+    if [ "$_ran" = "1" ]; then
+        if [ "$_rc" -eq 0 ]; then
+            say "RESULT: restore finished ok (rc=0)"
+        else
+            say "RESULT: restore FAILED (rc=$_rc)"
+        fi
+    else
+        say "RESULT: no restore task on this machine (all partitions scanned)"
+    fi
+    _wrote=0; [ -s /tmp/zj-bb.done ] && _wrote=1
+    if [ "$_wrote" = "1" ]; then
+        say "logs written to: ZJRESTORE-last.log + ZJRESTORE-status.txt (disk roots / ESP \\EFI\\ZJRESTORE\\logs / software logs dir)"
+        if [ "$_ran" = "1" ] && [ "$_rc" -ne 0 ]; then
+            # 屏幕会滚动：失败时把日志尾部**再打一遍**，保证现场最后一屏自带关键线索
+            #（用户 2026-10-05 规格：任何失败都要能"从记录中评估"）。
+            # 先取快照再打头，避免"头部被 tail 自己读进去"（尾块最后一行变成本行）。
+            _tl=$(tail -n 20 /tmp/zjrestore.log 2>/dev/null)
+            say "---- log tail (last 20 lines) ----"
+            echo "$_tl" | while IFS= read -r _l; do say "  |$_l"; done
+            say "---- end ----"
+        fi
+    else
+        # 没有任何可写分区：屏幕是唯一证据面（用户 2026-10-05 规格）
+        say "WARN: no writable surface found"
+        _tl=$(tail -n 25 /tmp/zjrestore.log 2>/dev/null)
+        _km=$(dmesg 2>/dev/null | tail -n 20)
+        say "===== PHOTOGRAPH THIS SCREEN (no logs could be written to disk) ====="
+        say "---- last log lines ----"
+        echo "$_tl" | while IFS= read -r _l; do say "  |$_l"; done
+        say "---- kernel messages ----"
+        echo "$_km" | while IFS= read -r _l; do say "  |$_l"; done
+        say "===== end (photograph this screen) ====="
+    fi
+}
+reboot_now(){
+    say "AUTO-RECOVER: rebooting now (open SysRecover on next Windows start for the report)"
+    sync
+    sleep 2
+    reboot -f
+    sleep 8
+    reboot -f
+}
+menu_loop(){
+    _mi=0
+    while [ $_mi -lt 3 ]; do
+        _mi=$((_mi + 1))
+        say "==== SysRecover recovery menu (round $_mi/3) ===="
+        say "[1] Retry restore once more"
+        say "[2] Reboot now"
+        say "[3] Expert shell"
+        say "choice? auto-[2] in 120s"
+        _ch=
+        read -t 120 -r _ch || _ch=
+        case "$_ch" in
+            1)
+                /bin/sh /zjrestore-lite.sh "$TARGET_DEV"
+                _rc=$?
+                say "restore script returned (rc=$_rc)"
+                if [ "$_rc" -eq 0 ]; then
+                    reboot_now
+                fi
+                ;;
+            2) reboot_now ;;
+            3) break ;;
+            *) break ;;
+        esac
+    done
+    say "entering rescue shell"
+    exec /bin/sh
+}
+
 # ── 3) 执行还原（有日志或 conf 即可）──
-# 不 exec：脚本若中途失败，落到 shell 便于排查，也避免 PID1 退出触发 panic。
+# P3（PIT-148）：失败不再直接落裸 shell —— lite 的 EXIT trap 按 STAGE 写
+# /tmp/zj-recover-decision（reboot|retry|menu），此处按决策自动退场：
+#   retry = 原地重跑整个脚本（B 引擎重格式化重 apply；returnold 按 phase 续做）
+#   reboot = 目标上现成系统可引导（未动目标 或 bootfix 已验证），回 Windows 收报告
+#   menu   = 引导状态不确定 → 引导菜单，不再给裸 #
 _ran=0
 if [ -x /zjrestore-lite.sh ] && { [ -n "$found_log" ] || [ -f /tmp/restore-task.conf ]; }; then _ran=1; fi
 _rc=0
+_rt=0
 if [ "$_ran" = "1" ]; then
     say "run restore: target=${TARGET_DEV:-<from offset>}"
-    /bin/sh /zjrestore-lite.sh "$TARGET_DEV"
-    _rc=$?
-    say "restore script returned (rc=$_rc)"
+    while :; do
+        /bin/sh /zjrestore-lite.sh "$TARGET_DEV"
+        _rc=$?
+        say "restore script returned (rc=$_rc)"
+        [ "$_rc" -eq 0 ] && break
+        _dec=$(cat /tmp/zj-recover-decision 2>/dev/null)
+        case "$_dec" in
+            retry)
+                _rt=$((_rt + 1))
+                say "AUTO-RECOVER: retry restore after failure (attempt $_rt)"
+                rm -f /tmp/zj-recover-decision
+                continue
+                ;;
+            reboot)
+                emit_result
+                reboot_now
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
 fi
 # 黑匣子兜底：脚本没跑（找不到任务）、或跑挂了没来得及写盘 → 调脚本的
 # zz-blackbox 模式把日志+探测表+状态写到所有可写面（逻辑单源，不重复实现）。
@@ -422,38 +564,16 @@ if [ ! -s /tmp/zj-bb.done ]; then
     /bin/sh /zjrestore-lite.sh zz-blackbox "$_why"
     [ -s /tmp/zj-bb.done ] || say "WARN: no writable surface found for logs"
 fi
-if [ "$_ran" = "1" ]; then
-    if [ "$_rc" -eq 0 ]; then
-        say "RESULT: restore finished ok (rc=0)"
-    else
-        say "RESULT: restore FAILED (rc=$_rc)"
-    fi
-else
-    say "RESULT: no restore task on this machine (all partitions scanned)"
+emit_result
+# 没有任务 = 不是失败：回原系统（10s 给人工断电的机会）
+if [ "$_ran" = "0" ]; then
+    say "no restore task on this machine -> reboot in 10s (power off now to stay)"
+    sleep 10
+    reboot_now
 fi
-_wrote=0; [ -s /tmp/zj-bb.done ] && _wrote=1
-if [ "$_wrote" = "1" ]; then
-    say "logs written to: ZJRESTORE-last.log + ZJRESTORE-status.txt (disk roots / ESP \\EFI\\ZJRESTORE\\logs / software logs dir)"
-    if [ "$_ran" = "1" ] && [ "$_rc" -ne 0 ]; then
-        # 屏幕会滚动：失败时把日志尾部**再打一遍**，保证现场最后一屏自带关键线索
-        #（用户 2026-10-05 规格：任何失败都要能"从记录中评估"）。
-        # 先取快照再打头，避免"头部被 tail 自己读进去"（尾块最后一行变成本行）。
-        _tl=$(tail -n 20 /tmp/zjrestore.log 2>/dev/null)
-        say "---- log tail (last 20 lines) ----"
-        echo "$_tl" | while IFS= read -r _l; do say "  |$_l"; done
-        say "---- end ----"
-    fi
-else
-    # 没有任何可写分区：屏幕是唯一证据面（用户 2026-10-05 规格）
-    say "WARN: no writable surface found"
-    _tl=$(tail -n 25 /tmp/zjrestore.log 2>/dev/null)
-    _km=$(dmesg 2>/dev/null | tail -n 20)
-    say "===== PHOTOGRAPH THIS SCREEN (no logs could be written to disk) ====="
-    say "---- last log lines ----"
-    echo "$_tl" | while IFS= read -r _l; do say "  |$_l"; done
-    say "---- kernel messages ----"
-    echo "$_km" | while IFS= read -r _l; do say "  |$_l"; done
-    say "===== end (photograph this screen) ====="
+# 脚本成功路径自带 reboot -f；万一没走掉，这里兜底
+if [ "$_rc" -eq 0 ]; then
+    reboot_now
 fi
-say "entering rescue shell"
-exec /bin/sh
+# 失败退场：按决策走菜单；无决策（异常路径）也走菜单 —— 永不给裸 # shell
+menu_loop
