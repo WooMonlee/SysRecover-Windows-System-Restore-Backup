@@ -24,6 +24,141 @@ namespace { std::wstring U2W8(const std::string& s) {
     return w;
 } }  // namespace
 
+// ── 删除进度窗口（启动期 AskUndo 用；主窗尚未创建，状态栏不可用）──────────
+// 极简 Win32 窗口：标题 + 一行文本（「正在删除旧系统… 已删 N 个文件」）。
+// 删除线程 PostMessage 更新文本，完成后 PostQuitMessage 退出模态循环。
+namespace {
+
+#define WM_DEL_PROGRESS (WM_APP + 20)  // wParam=ok, lParam=fail
+#define WM_DEL_DONE     (WM_APP + 21)  // wParam=stillThere (0/1)
+
+const wchar_t* kDelProgClass = L"SysRecoverDelProg";
+HFONT g_delFont = nullptr;
+
+LRESULT CALLBACK DelProgWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hwnd, &ps);
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            HBRUSH bg = CreateSolidBrush(RGB(0xf7, 0xf9, 0xfc));
+            FillRect(hdc, &rc, bg);
+            DeleteObject(bg);
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, RGB(0x1b, 0x24, 0x32));
+            if (g_delFont) SelectObject(hdc, g_delFont);
+            wchar_t buf[256];
+            int len = GetWindowTextW(hwnd, buf, 256);
+            RECT tr = {16, 40, rc.right - 16, rc.bottom - 16};
+            DrawTextW(hdc, buf, len, &tr, DT_LEFT | DT_WORDBREAK);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_CLOSE:
+            // 删除期间不允许关窗（防半途中止）
+            return 0;
+        case WM_DEL_PROGRESS: {
+            wchar_t t[256];
+            // 格式串含中文 → 必须 Tr()（i18n 门禁 C1）
+            swprintf(t, 256,
+                     Tr(L"正在删除旧系统…\n已删除 %ld 个文件，失败 %ld 个"),
+                     (long)wp, (long)lp);
+            SetWindowTextW(hwnd, t);
+            InvalidateRect(hwnd, nullptr, TRUE);
+            return 0;
+        }
+        case WM_DEL_DONE:
+            DestroyWindow(hwnd);
+            PostQuitMessage(0);
+            return 0;
+        default:
+            return DefWindowProcW(hwnd, msg, wp, lp);
+    }
+}
+
+// 模态运行删除：起工作线程 → 消息循环收进度 → 完成后返回「~old 是否仍在」。
+// 返回 true=已删完（dir 已消失），false=仍有残留。
+bool RunDeleteWithProgress(HWND owner, const sysrecover::SwapLeftInfo& it) {
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = DelProgWndProc;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.lpszClassName = kDelProgClass;
+    RegisterClassExW(&wc);
+
+    // 字体：微软雅黑 14
+    if (!g_delFont)
+        g_delFont = CreateFontW(-18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
+
+    // 屏幕居中，420x160
+    int sw = GetSystemMetrics(SM_CXSCREEN);
+    int sh = GetSystemMetrics(SM_CYSCREEN);
+    HWND hwnd = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW, kDelProgClass,
+        Tr(L"删除旧系统"),
+        WS_POPUP | WS_CAPTION | WS_SYSMENU,
+        (sw - 420) / 2, (sh - 160) / 2, 420, 160, owner, nullptr,
+        GetModuleHandleW(nullptr), nullptr);
+    if (!hwnd) return false;
+
+    // 初始文案
+    SetWindowTextW(hwnd, Tr(L"正在删除旧系统…\n准备中…"));
+    ShowWindow(hwnd, SW_SHOW);
+    UpdateWindow(hwnd);
+
+    // 工作线程：删除 + PostMessage 进度
+    struct Ctx {
+        sysrecover::SwapLeftInfo info;
+        HWND hwnd;
+    };
+    auto* ctx = new Ctx{it, hwnd};
+    HANDLE hThread = CreateThread(
+        nullptr, 0,
+        [](LPVOID p) -> DWORD {
+            auto* c = static_cast<Ctx*>(p);
+            sysrecover::DeleteSwapLeftover(
+                c->info, [hwnd = c->hwnd](long ok, long fail, long) {
+                    PostMessageW(hwnd, WM_DEL_PROGRESS, (WPARAM)ok,
+                                 (LPARAM)fail);
+                });
+            // 删完复核目录是否还在
+            std::wstring dir =
+                std::wstring(1, c->info.drive) +
+                (c->info.isNew ? L":\\~new" : L":\\~old");
+            bool still =
+                GetFileAttributesW(dir.c_str()) != INVALID_FILE_ATTRIBUTES;
+            PostMessageW(c->hwnd, WM_DEL_DONE, still ? 1 : 0, 0);
+            delete c;
+            return 0;
+        },
+        ctx, 0, nullptr);
+    if (!hThread) {
+        DestroyWindow(hwnd);
+        return false;
+    }
+    CloseHandle(hThread);
+
+    // 模态消息循环（直到 WM_DEL_DONE → DestroyWindow → PostQuitMessage）
+    MSG msg;
+    while (GetMessageW(&msg, nullptr, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    // 从 WM_QUIT 的 wParam 取不出 stillThere（已 destroy）→ 用目录复核
+    std::wstring dir = std::wstring(1, it.drive) +
+                       (it.isNew ? L":\\~new" : L":\\~old");
+    return GetFileAttributesW(dir.c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+}  // namespace
+
 using namespace DuiLib;
 
 namespace {
@@ -356,21 +491,9 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
                     } else if (r == 2) {
                         sysrecover::LogInfo("swap leftover: " + tagN +
                                             " -> delete (user chose, keepold)");
-                        // 同步删（不异步）：~old 常是整棵旧系统树，异步删
-                        // 时用户立刻关窗/还原会看到「点了没反应」；同步删完
-                        // 再给结果框，删不掉也当场说清。
-                        {
-                            HCURSOR hc = LoadCursor(nullptr, IDC_WAIT);
-                            HCURSOR prev =
-                                SetCursor(hc);
-                            sysrecover::DeleteSwapLeftover(it);
-                            SetCursor(prev);
-                        }
-                        const std::wstring stillDir =
-                            std::wstring(1, it.drive) + L":\\~old";
-                        const bool stillThere =
-                            GetFileAttributesW(stillDir.c_str()) !=
-                            INVALID_FILE_ATTRIBUTES;
+                        // 删除 + 进度窗口（~old 是整棵旧系统树，可能几分钟；
+                        // 主窗尚未创建，状态栏不可用 → 用临时进度窗）。
+                        bool stillThere = RunDeleteWithProgress(h, it);
                         std::wstring doneMsg =
                             stillThere
                                 ? std::wstring(

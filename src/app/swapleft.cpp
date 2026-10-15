@@ -116,7 +116,8 @@ bool ForceDeleteItem(const std::wstring& p, bool isDir, DelStat& st) {
     return false;
 }
 
-void DeleteRec(const std::wstring& dir, DelStat& st) {
+void DeleteRec(const std::wstring& dir, DelStat& st,
+               const DeleteProgressFn* progress) {
     // 属性不为 0 的目录先归一，否则 RemoveDirectory 也可能被拒
     SetFileAttributesW(dir.c_str(), FILE_ATTRIBUTE_NORMAL);
     WIN32_FIND_DATAW fd;
@@ -137,7 +138,7 @@ void DeleteRec(const std::wstring& dir, DelStat& st) {
                 continue;
             }
             if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-                DeleteRec(p, st);
+                DeleteRec(p, st, progress);
                 continue;
             }
             // 普通文件：清属性 → 夺权 → 再删
@@ -149,6 +150,10 @@ void DeleteRec(const std::wstring& dir, DelStat& st) {
                     LogWarn("swap leftover del fail: " + ToUtf8(p) +
                             " err=" + std::to_string(GetLastError()));
             }
+            // 进度：每 200 个文件回调一次（大树删除可显示进度）
+            if (progress && *progress &&
+                ((st.ok + st.fail) % 200) == 0)
+                (*progress)(st.ok, st.fail, st.taken);
         } while (FindNextFileW(h, &fd));
         FindClose(h);
     }
@@ -346,7 +351,7 @@ bool ProbeSwapNew(wchar_t drive, SwapLeftInfo& out) {
     return ProbeDrive(drive, true, out);
 }
 
-void DeleteSwapLeftover(const SwapLeftInfo& i) {
+void DeleteSwapLeftover(const SwapLeftInfo& i, DeleteProgressFn progress) {
     if (!i.drive) return;
     std::wstring dir = RootPath(i.drive) + (i.isNew ? L"~new" : L"~old");
     BusyMark(i.drive);
@@ -361,7 +366,7 @@ void DeleteSwapLeftover(const SwapLeftInfo& i) {
         EnablePriv(L"SeBackupPrivilege");
         EnablePriv(L"SeRestorePrivilege");
         DelStat st;
-        DeleteRec(dir, st);
+        DeleteRec(dir, st, progress ? &progress : nullptr);
         // 删完复核：~old 仍在 = 没删干净（用户实测「点了删除没反应」就是
         // 这里静默失败）——必须留账，否则下次启动又弹框、还原还被门禁拦。
         if (IsDir(dir)) {
@@ -378,6 +383,8 @@ void DeleteSwapLeftover(const SwapLeftInfo& i) {
                     " fail=" + std::to_string(st.fail) +
                     " taken=" + std::to_string(st.taken));
         }
+        // 最后回调一次（小树可能一次都没到 200 的阈值）
+        if (progress) progress(st.ok, st.fail, st.taken);
     }
     BusyUnmark(i.drive);
 }
