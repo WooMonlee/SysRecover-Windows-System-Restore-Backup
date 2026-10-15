@@ -22,26 +22,6 @@ namespace sysrecover {
 
 namespace {
 
-// ops.cpp 的 DeleteTreeRec 在匿名命名空间（内链，外部链接不到）→ 本文件自带
-void DeleteRec(const std::wstring& dir) {
-    WIN32_FIND_DATAW fd;
-    HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
-    if (h != INVALID_HANDLE_VALUE) {
-        do {
-            if (std::wcscmp(fd.cFileName, L".") == 0 ||
-                std::wcscmp(fd.cFileName, L"..") == 0)
-                continue;
-            std::wstring p = dir + L"\\" + fd.cFileName;
-            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-                DeleteRec(p);
-            else
-                DeleteFileW(p.c_str());
-        } while (FindNextFileW(h, &fd));
-        FindClose(h);
-    }
-    RemoveDirectoryW(dir.c_str());
-}
-
 // W2U 没有头声明（各 TU 匿名命名空间自带副本，i18n.h 只有 Tr）→ 本文件自带
 std::string ToUtf8(const std::wstring& w) {
     if (w.empty()) return std::string();
@@ -51,6 +31,66 @@ std::string ToUtf8(const std::wstring& w) {
     if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, &s[0], n, nullptr,
                                    nullptr);
     return s;
+}
+
+// ops.cpp 的 DeleteTreeRec 在匿名命名空间（内链，外部链接不到）→ 本文件自带。
+// 用户 2026-10-15 实测「删除旧系统」无效：~old 是完整旧系统树，含
+//   ① READONLY/SYSTEM 属性文件（DeleteFileW 直接失败）
+//   ② junction（Users\...\Application Data 等）—— 递归进去会删错目标或撞句柄
+//   ③ 失败静默、无计数，调用方看不出删没删掉
+// 修法：清属性 → 判 reparse point 只删链接本身 → 计数 + 失败路径日志。
+struct DelStat {
+    long ok = 0;
+    long fail = 0;
+};
+
+void DeleteRec(const std::wstring& dir, DelStat& st) {
+    // 属性不为 0 的目录先归一，否则 RemoveDirectory 也可能被拒
+    SetFileAttributesW(dir.c_str(), FILE_ATTRIBUTE_NORMAL);
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (std::wcscmp(fd.cFileName, L".") == 0 ||
+                std::wcscmp(fd.cFileName, L"..") == 0)
+                continue;
+            std::wstring p = dir + L"\\" + fd.cFileName;
+            // junction/symlink：只删链接本身，绝不递归进目标
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+                SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_NORMAL);
+                if (RemoveDirectoryW(p.c_str()) || DeleteFileW(p.c_str()))
+                    ++st.ok;
+                else
+                    ++st.fail;
+                continue;
+            }
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                DeleteRec(p, st);
+                continue;
+            }
+            // 普通文件：失败则清属性重试一次
+            if (DeleteFileW(p.c_str())) {
+                ++st.ok;
+            } else {
+                SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_NORMAL);
+                if (DeleteFileW(p.c_str()))
+                    ++st.ok;
+                else {
+                    ++st.fail;
+                    if (st.fail <= 8)  // 别刷屏：最多打 8 条失败路径
+                        LogWarn("swap leftover del fail: " + ToUtf8(p) +
+                                " err=" + std::to_string(GetLastError()));
+                }
+            }
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    SetFileAttributesW(dir.c_str(), FILE_ATTRIBUTE_NORMAL);
+    if (!RemoveDirectoryW(dir.c_str())) {
+        ++st.fail;
+        LogWarn("swap leftover rmdir fail: " + ToUtf8(dir) +
+                " err=" + std::to_string(GetLastError()));
+    }
 }
 
 std::mutex g_busyMx;
@@ -240,7 +280,24 @@ void DeleteSwapLeftover(const SwapLeftInfo& i) {
     LogInfo("swap leftover delete: " + DriveStr(i.drive) +
             (i.isNew ? " ~new" : " ~old") + " (age " +
             std::to_string(i.ageHours) + "h)");
-    if (IsDir(dir)) DeleteRec(dir);
+    if (IsDir(dir)) {
+        DelStat st;
+        DeleteRec(dir, st);
+        // 删完复核：~old 仍在 = 没删干净（用户实测「点了删除没反应」就是
+        // 这里静默失败）——必须留账，否则下次启动又弹框、还原还被门禁拦。
+        if (IsDir(dir)) {
+            LogWarn("swap leftover delete incomplete: " + DriveStr(i.drive) +
+                    (i.isNew ? " ~new" : " ~old") +
+                    " ok=" + std::to_string(st.ok) +
+                    " fail=" + std::to_string(st.fail) +
+                    " (dir still present)");
+        } else {
+            LogInfo("swap leftover delete done: " + DriveStr(i.drive) +
+                    (i.isNew ? " ~new" : " ~old") +
+                    " ok=" + std::to_string(st.ok) +
+                    " fail=" + std::to_string(st.fail));
+        }
+    }
     BusyUnmark(i.drive);
 }
 
