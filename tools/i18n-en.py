@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：468/469 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：469/473 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n建议：以管理员身份运行（本程序要读写分区与引导）。': '\n\nAdvice: run as administrator (this program reads and writes partitions and boot data).',
@@ -132,9 +132,10 @@ EN = {
     '删除启动还原未完全成功': 'Removing Boot Restore Was Not Fully Successful',
     '删除恢复环境的启动项与 ZJRESTORE 文件；不动系统与数据': 'Deletes the recovery boot entry and the ZJRESTORE files; system and data are untouched.',
     '删除旧系统': 'Delete Old OS',
+    '删除未完全成功，~old 仍有残留。\n': 'Deletion was incomplete; ~old still remains.\n',
     '删除菜单': 'Del Menu',
     '即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n该分区上的所有数据将丢失！%ls\n目标分区当前未被占用，将立即就地还原，不需要重启。': 'The image will be restored to drive %ls: (disk %u partition %u).\nAll data on this partition will be LOST!%ls\nThe target partition is not in use; restore will start in place with no reboot.',
-    '即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n还原后重启，是解压镜像后重启修复引导，可以恢复到现在状态\n重启后还原，是重启格式化%ls: 盘后还原镜像，无法恢复现在状态': 'The image will be restored to drive %ls: (disk %u partition %u).\nRestart & restore: extracts the image, then reboots to fix boot; you can roll back.\nRestore now: reboots, formats drive %ls:, then restores; rollback is NOT possible.',
+    '即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n还原后重启，是解压镜像后重启修复引导，可以恢复到现在状态\n重启后还原，是重启格式化%ls: 盘后还原镜像，无法恢复现在状态': 'Restore image to %ls: (disk %u partition %u).\nRestore & Reboot: extract now; reboot fixes boot; can roll back.\nReboot & Restore: reboot; formats %ls:; restores; no rollback.',
     '卷影复制服务(VSS)': 'Volume Shadow Copy Service (VSS)',
     '发现中断残留：': 'Interrupted leftover found: ',
     '发现备返保留的旧系统：': 'Found an old system kept by Keep-Old: ',
@@ -234,6 +235,7 @@ EN = {
     '当前系统': 'System',
     '影子副本提供程序(swprv)': 'Shadow Copy Provider (swprv)',
     '待定扇区（读失败待重映射）': 'Pending sectors (read failures awaiting remap)',
+    '或重启后再删（还原前必须清干净）。': 'or reboot then delete again (must be clean before restore).',
     '所有文件': 'All files',
     '打开日志': 'Open Logs',
     '打开日志文件夹': 'Open Log Folder',
@@ -284,6 +286,7 @@ EN = {
     '无法限制 CPU：程序已在其它任务对象中（err=%lu）': 'Cannot limit CPU: the process already belongs to another job object (err=%lu)',
     '日志': 'Logs',
     '日志已收集到 logs\\collected，请把它发给技术支持。': 'Logs have been collected into logs\\collected; please send it to support.',
+    '旧系统已删除，释放磁盘空间。': 'The old system was deleted; disk space freed.',
     '时间 ': 'Time ',
     '是否复制到 ': 'Copy to ',
     '是否重启进安全模式再测一次？': 'Reboot into Safe Mode and test again?',
@@ -406,7 +409,7 @@ EN = {
     '返回旧系统 = 重启把旧系统搬回根目录；': 'Return to old system',
     '返回旧系统 = 重启进恢复环境，把 ~old 的旧系统搬回根目录。\n当前新系统将被丢弃，无法再使用。\n确认执行？[y/N]: ': 'Return to old system',
     '返回旧系统失败': 'Return to old system failed',
-    '还原后重启': 'Restore Then Reboot',
+    '还原后重启': 'Restore & Reboot',
     '还原失败(rc=%d)：%ls\n': 'Restore failed (rc=%d): %ls\n',
     '还原完成\n': 'Restore complete\n',
     '还原完成（用时 ': 'Restore finished (took ',
@@ -422,9 +425,10 @@ EN = {
     '选择要备份为镜像的源分区（移动盘已隐藏）': 'Removable drives & system partitions hidden',
     '选择要安装恢复镜像的目标分区（移动盘已隐藏）': 'Removable drives & system partitions hidden',
     '选择镜像与目标分区后开始；还原系统盘会重启进恢复环境，非系统盘就地还原': 'Choose an image and target; the system disk restore reboots into rescue, others run in place',
+    '部分文件可能被占用；可稍后重试，': 'Some files may be locked; retry later,',
     '重启后在启动菜单选「SysRecover」还原？\n镜像：%ls（第 %d 个）\n目标：%ls: 盘 —— 选中即格式化该分区': 'Pick "SysRecover" in the boot menu to restore?\nImage: %ls (#%d)\nTarget: %ls: — selecting it formats this partition',
     '重启后按 F12 选「SysRecover」还原？\n镜像：%ls（第 %d 个）\n目标：%ls: 盘 —— 选中即格式化该分区': 'Press F12 and pick "SysRecover" to restore?\nImage: %ls (#%d)\nTarget: %ls: — selecting it formats this partition',
-    '重启后还原': 'Reboot Then Restore',
+    '重启后还原': 'Reboot & Restore',
     '重启进安全模式再测': 'Safe Mode + Retest',
     '重映射扇区': 'Reallocated sectors',
     '重试失败': 'Retry failed',

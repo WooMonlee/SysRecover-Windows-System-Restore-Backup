@@ -356,7 +356,32 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
                     } else if (r == 2) {
                         sysrecover::LogInfo("swap leftover: " + tagN +
                                             " -> delete (user chose, keepold)");
-                        sysrecover::DeleteSwapLeftoverAsync(it);
+                        // 同步删（不异步）：~old 常是整棵旧系统树，异步删
+                        // 时用户立刻关窗/还原会看到「点了没反应」；同步删完
+                        // 再给结果框，删不掉也当场说清。
+                        {
+                            HCURSOR hc = LoadCursor(nullptr, IDC_WAIT);
+                            HCURSOR prev =
+                                SetCursor(hc);
+                            sysrecover::DeleteSwapLeftover(it);
+                            SetCursor(prev);
+                        }
+                        const std::wstring stillDir =
+                            std::wstring(1, it.drive) + L":\\~old";
+                        const bool stillThere =
+                            GetFileAttributesW(stillDir.c_str()) !=
+                            INVALID_FILE_ATTRIBUTES;
+                        std::wstring doneMsg =
+                            stillThere
+                                ? std::wstring(
+                                      Tr(L"删除未完全成功，~old 仍有残留。\n"))
+                                  + Tr(L"部分文件可能被占用；可稍后重试，") +
+                                      L"\n" +
+                                      Tr(L"或重启后再删（还原前必须清干净）。")
+                                : std::wstring(Tr(L"旧系统已删除，释放磁盘空间。"));
+                        MessageBoxW(h, doneMsg.c_str(),
+                                    Tr(L"删除旧系统"),
+                                    stillThere ? MB_ICONWARNING : MB_ICONINFORMATION);
                     } else {
                         sysrecover::LogInfo("swap leftover kept by user: " +
                                             tagN + " (keepold)");
