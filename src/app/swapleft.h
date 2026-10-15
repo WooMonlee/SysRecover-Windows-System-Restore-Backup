@@ -5,6 +5,7 @@
 //     · 刚发生的 → 接着处理（完整 ~new 复用免重解压；~old 补做清理）；
 //     · 拿不准（交换中断态）→ 问用户（GUI 弹框 / CLI 询问）。
 // 决策表见 docs/23 §5；纯逻辑 DecideSwapLeftover 与磁盘 IO 分离。
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -47,8 +48,13 @@ std::vector<SwapLeftInfo> ScanSwapLeftovers();
 // 单盘探测 ~new（还原暂存时判定能否复用）：找到返回 true
 bool ProbeSwapNew(wchar_t drive, SwapLeftInfo& out);
 
-// 同步删除（带 busy 登记，WaitSwapCleanup 可等）+ 记日志
-void DeleteSwapLeftover(const SwapLeftInfo& i);
+// 删除进度回调（ok=已删文件数, fail=失败数, taken=靠夺权删掉的数）
+using DeleteProgressFn = std::function<void(long ok, long fail, long taken)>;
+
+// 同步删除（带 busy 登记，WaitSwapCleanup 可等）+ 记日志。
+// progress 非空时每删约 200 个文件回调一次（大树删除可显示进度）。
+void DeleteSwapLeftover(const SwapLeftInfo& i,
+                        DeleteProgressFn progress = nullptr);
 // 后台线程删除（GUI 启动期用，避免大树删除卡住开窗）
 void DeleteSwapLeftoverAsync(const SwapLeftInfo& i);
 // 等某盘的后台删除收尾（还原暂存进 swap 分支前调用，防并发踩踏）

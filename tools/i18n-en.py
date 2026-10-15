@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：469/473 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：473/475 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n建议：以管理员身份运行（本程序要读写分区与引导）。': '\n\nAdvice: run as administrator (this program reads and writes partitions and boot data).',
@@ -316,6 +316,8 @@ EN = {
     '检测到还原残留': 'Restore Leftover Detected',
     '检测到还原残留 %s：%s\n  y = 返回旧系统（暂存并重启），其它键 = 保留不动\n选择 [y/N]: ': 'Detected restore leftover %s: %s\n  y = return to old system (stage + reboot), any other key = keep as is\nChoice [y/N]: ',
     '正在修复引导（bcdboot + 产物校验）……': 'Repairing boot (bcdboot + artifact verification)...',
+    '正在删除旧系统…\n准备中…': 'Deleting old system...\nPreparing...',
+    '正在删除旧系统…\n已删除 %ld 个文件，失败 %ld 个': 'Deleting old system...\n%ld file(s) deleted, %ld failed',
     '正在备份...': 'Backing up...',
     '正在安装启动还原菜单（写入契约 + 部署救援环境）...': 'Installing the boot restore menu (writing the task contract + deploying the rescue environment)...',
     '正在收集日志与诊断信息…': 'Collecting logs and diagnostics...',
