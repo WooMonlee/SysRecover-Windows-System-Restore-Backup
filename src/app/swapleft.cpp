@@ -8,6 +8,7 @@
 #include "swapleft.h"
 
 #include <windows.h>
+#include <aclapi.h>
 
 #include <condition_variable>
 #include <cstring>
@@ -42,7 +43,78 @@ std::string ToUtf8(const std::wstring& w) {
 struct DelStat {
     long ok = 0;
     long fail = 0;
+    long taken = 0;  // 多少个是靠提权夺权后才删掉的
 };
+
+// 启用指定特权（管理员默认持有但未启用）
+void EnablePriv(const wchar_t* name) {
+    HANDLE tok = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(),
+                          TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &tok))
+        return;
+    TOKEN_PRIVILEGES tp = {};
+    tp.PrivilegeCount = 1;
+    if (LookupPrivilegeValueW(nullptr, name, &tp.Privileges[0].Luid)) {
+        tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+        AdjustTokenPrivileges(tok, FALSE, &tp, sizeof(tp), nullptr, nullptr);
+    }
+    CloseHandle(tok);
+}
+
+// 取得所有权 + 给 Administrators 完全控制（对齐 takeown /f /r + icacls /grant）。
+// ~old 里有 TrustedInstaller 拥有的系统目录，普通管理员连删都删不了。
+void TakeOwnershipAndGrant(const std::wstring& path) {
+    // 1) 把 owner 换成 Administrators
+    SID_IDENTIFIER_AUTHORITY ntAuth = SECURITY_NT_AUTHORITY;
+    BYTE adminSidBuf[SECURITY_MAX_SID_SIZE] = {};
+    DWORD sidSize = sizeof(adminSidBuf);
+    PSID adminSid = (PSID)adminSidBuf;
+    if (!CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr, adminSid,
+                            &sidSize))
+        return;
+    SetNamedSecurityInfoW(const_cast<LPWSTR>(path.c_str()), SE_FILE_OBJECT,
+                          OWNER_SECURITY_INFORMATION, adminSid, nullptr,
+                          nullptr, nullptr);
+
+    // 2) 追加 Administrators 完全控制 ACE（保留原有 ACE，避免误伤）
+    EXPLICIT_ACCESSW ea = {};
+    ea.grfAccessPermissions = GENERIC_ALL;
+    ea.grfAccessMode = SET_ACCESS;
+    ea.grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
+    ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+    ea.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
+    ea.Trustee.ptstrName = (LPWSTR)adminSid;
+
+    PACL oldDacl = nullptr;
+    GetNamedSecurityInfoW(const_cast<LPWSTR>(path.c_str()), SE_FILE_OBJECT,
+                          DACL_SECURITY_INFORMATION, nullptr, nullptr, &oldDacl,
+                          nullptr, nullptr);
+    PACL newDacl = nullptr;
+    SetEntriesInAclW(1, &ea, oldDacl, &newDacl);
+    if (newDacl) {
+        SetNamedSecurityInfoW(const_cast<LPWSTR>(path.c_str()),
+                              SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+                              nullptr, nullptr, newDacl, nullptr);
+        LocalFree(newDacl);
+    }
+    if (oldDacl) LocalFree(oldDacl);
+}
+
+// 删除失败时的三级降级：清属性 → 夺权+完全控制 → 再删。成功记 taken。
+bool ForceDeleteItem(const std::wstring& p, bool isDir, DelStat& st) {
+    SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_NORMAL);
+    BOOL ok = isDir ? RemoveDirectoryW(p.c_str()) : DeleteFileW(p.c_str());
+    if (ok) return true;
+    // 夺权 + 授完全控制（管理员场景下绝大多数 ACL 拒绝由此解除）
+    TakeOwnershipAndGrant(p);
+    SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_NORMAL);
+    ok = isDir ? RemoveDirectoryW(p.c_str()) : DeleteFileW(p.c_str());
+    if (ok) {
+        ++st.taken;
+        return true;
+    }
+    return false;
+}
 
 void DeleteRec(const std::wstring& dir, DelStat& st) {
     // 属性不为 0 的目录先归一，否则 RemoveDirectory 也可能被拒
@@ -57,8 +129,8 @@ void DeleteRec(const std::wstring& dir, DelStat& st) {
             std::wstring p = dir + L"\\" + fd.cFileName;
             // junction/symlink：只删链接本身，绝不递归进目标
             if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
-                SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_NORMAL);
-                if (RemoveDirectoryW(p.c_str()) || DeleteFileW(p.c_str()))
+                if (ForceDeleteItem(p, true, st) ||
+                    ForceDeleteItem(p, false, st))
                     ++st.ok;
                 else
                     ++st.fail;
@@ -68,28 +140,29 @@ void DeleteRec(const std::wstring& dir, DelStat& st) {
                 DeleteRec(p, st);
                 continue;
             }
-            // 普通文件：失败则清属性重试一次
-            if (DeleteFileW(p.c_str())) {
+            // 普通文件：清属性 → 夺权 → 再删
+            if (ForceDeleteItem(p, false, st)) {
                 ++st.ok;
             } else {
-                SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_NORMAL);
-                if (DeleteFileW(p.c_str()))
-                    ++st.ok;
-                else {
-                    ++st.fail;
-                    if (st.fail <= 8)  // 别刷屏：最多打 8 条失败路径
-                        LogWarn("swap leftover del fail: " + ToUtf8(p) +
-                                " err=" + std::to_string(GetLastError()));
-                }
+                ++st.fail;
+                if (st.fail <= 8)
+                    LogWarn("swap leftover del fail: " + ToUtf8(p) +
+                            " err=" + std::to_string(GetLastError()));
             }
         } while (FindNextFileW(h, &fd));
         FindClose(h);
     }
     SetFileAttributesW(dir.c_str(), FILE_ATTRIBUTE_NORMAL);
     if (!RemoveDirectoryW(dir.c_str())) {
-        ++st.fail;
-        LogWarn("swap leftover rmdir fail: " + ToUtf8(dir) +
-                " err=" + std::to_string(GetLastError()));
+        TakeOwnershipAndGrant(dir);
+        SetFileAttributesW(dir.c_str(), FILE_ATTRIBUTE_NORMAL);
+        if (!RemoveDirectoryW(dir.c_str())) {
+            ++st.fail;
+            LogWarn("swap leftover rmdir fail: " + ToUtf8(dir) +
+                    " err=" + std::to_string(GetLastError()));
+        } else {
+            ++st.taken;
+        }
     }
 }
 
@@ -281,6 +354,12 @@ void DeleteSwapLeftover(const SwapLeftInfo& i) {
             (i.isNew ? " ~new" : " ~old") + " (age " +
             std::to_string(i.ageHours) + "h)");
     if (IsDir(dir)) {
+        // 启用特权：~old 里有 TrustedInstaller 拥有的系统目录，普通管理员
+        // 连删都删不了 —— 必须启用 SeTakeOwnershipPrivilege + SeBackup/
+        // SeRestorePrivilege 才能夺权后删除（对齐 takeown /f）。
+        EnablePriv(L"SeTakeOwnershipPrivilege");
+        EnablePriv(L"SeBackupPrivilege");
+        EnablePriv(L"SeRestorePrivilege");
         DelStat st;
         DeleteRec(dir, st);
         // 删完复核：~old 仍在 = 没删干净（用户实测「点了删除没反应」就是
@@ -290,12 +369,14 @@ void DeleteSwapLeftover(const SwapLeftInfo& i) {
                     (i.isNew ? " ~new" : " ~old") +
                     " ok=" + std::to_string(st.ok) +
                     " fail=" + std::to_string(st.fail) +
+                    " taken=" + std::to_string(st.taken) +
                     " (dir still present)");
         } else {
             LogInfo("swap leftover delete done: " + DriveStr(i.drive) +
                     (i.isNew ? " ~new" : " ~old") +
                     " ok=" + std::to_string(st.ok) +
-                    " fail=" + std::to_string(st.fail));
+                    " fail=" + std::to_string(st.fail) +
+                    " taken=" + std::to_string(st.taken));
         }
     }
     BusyUnmark(i.drive);
