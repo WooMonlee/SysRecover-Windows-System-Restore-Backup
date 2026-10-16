@@ -83,6 +83,42 @@ LRESULT CALLBACK DelProgWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 // 返回 true=~old 仍在（未删完/失败），false=已删完（dir 已消失）。
 // ⚠️ 两处失败路径（建窗/CreateThread 失败）必须 return true ——
 // 返回 false 会被调用方当成"已删成功"，提示误导用户。
+
+// 0.7.54 诊断：真实删除工作放在独立函数。
+// 现场证据（1016-4）：日志停在 tree delete begin、无 crash dump、窗口一闪消失
+// = 进程在 DeleteRec 内死亡。MinGW 不支持 MSVC 的 __try/__except →
+// 改用 AddVectoredExceptionHandler：异常发生时先把异常码用纯 Win32 写进
+// 主日志，再继续搜索（最终仍会被未处理过滤器/系统终止，但留了线索）。
+static LONG WINAPI DelWorkerVeh(PEXCEPTION_POINTERS ep) {
+    static LONG busy = 0;
+    if (InterlockedExchange(&busy, 1) != 0)
+        return EXCEPTION_CONTINUE_SEARCH;  // 防重入（异常处理里再崩就放行）
+    if (!ep || !ep->ExceptionRecord)
+        return EXCEPTION_CONTINUE_SEARCH;
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+    void* addr = ep->ExceptionRecord->ExceptionAddress;
+    // 只记录"看起来致命"的异常码，避免 C++ 内部 EH（0xE06D7363 等）噪音
+    if (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_STACK_OVERFLOW ||
+        code == EXCEPTION_ILLEGAL_INSTRUCTION ||
+        code == EXCEPTION_PRIV_INSTRUCTION ||
+        code == EXCEPTION_IN_PAGE_ERROR) {
+        char buf[96];
+        int n = snprintf(buf, sizeof(buf),
+                         "[VEH] delete worker exception code=0x%08lX addr=%p\r\n",
+                         (unsigned long)code, addr);
+        if (n > 0)
+            sysrecover::LogSehNote(buf, (unsigned long)n);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+static void DoDeleteWork(const sysrecover::SwapLeftInfo& info, HWND hwnd) {
+    sysrecover::DeleteSwapLeftover(
+        info, [hwnd](long ok, long fail, long) {
+            PostMessageW(hwnd, WM_DEL_PROGRESS, (WPARAM)ok, (LPARAM)fail);
+        });
+}
+
 bool RunDeleteWithProgress(HWND owner, const sysrecover::SwapLeftInfo& it) {
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
@@ -132,11 +168,12 @@ bool RunDeleteWithProgress(HWND owner, const sysrecover::SwapLeftInfo& it) {
         nullptr, 0,
         [](LPVOID p) -> DWORD {
             auto* c = static_cast<Ctx*>(p);
-            sysrecover::DeleteSwapLeftover(
-                c->info, [hwnd = c->hwnd](long ok, long fail, long) {
-                    PostMessageW(hwnd, WM_DEL_PROGRESS, (WPARAM)ok,
-                                 (LPARAM)fail);
-                });
+            // VEH 兜底（0.7.54）：删除线程内致命异常先落一条再放行 —
+            // 崩溃过滤器若没写出 dump 也留线索。线程结束时移除。
+            PVOID veh = AddVectoredExceptionHandler(1, DelWorkerVeh);
+            DoDeleteWork(c->info, c->hwnd);
+            if (veh)
+                RemoveVectoredExceptionHandler(veh);
             // 删完复核目录是否还在
             std::wstring dir =
                 std::wstring(1, c->info.drive) +

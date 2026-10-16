@@ -48,6 +48,7 @@ struct DelStat {
     long fail = 0;
     long taken = 0;  // 多少个是靠提权夺权后才删掉的
     long long lastLogMs = 0;  // 上次进度日志时刻（GetTickCount64）
+    long forceLogged = 0;  // ForceDeleteItem 已留证次数（前 20 次逐条）
 };
 
 // \\?\ 扩展长度前缀：绕过 MAX_PATH=260 限制（WinSxS/AppData 深层路径必需）
@@ -76,9 +77,16 @@ void EnablePriv(const wchar_t* name) {
 // 取得所有权 + 给 Administrators 完全控制（对齐 takeown /f /r + icacls /grant）。
 // ~old 里有 TrustedInstaller 拥有的系统目录，普通管理员连删都删不了。
 void TakeOwnershipAndGrant(const std::wstring& path) {
+    // 诊断（0.7.54）：前 10 次逐条 begin/done —— 根因不明时定位"死在哪次夺权"
+    static long g_takeownN = 0;
+    const bool logStep = g_takeownN < 10;
+    if (logStep) {
+        ++g_takeownN;
+        LogInfo("swap leftover takeown begin #" + std::to_string(g_takeownN) +
+                ": " + ToUtf8(path));
+    }
     std::wstring ep = ExtPath(path);  // \\?\ 前缀，绕过 MAX_PATH
     // 1) 把 owner 换成 Administrators
-    SID_IDENTIFIER_AUTHORITY ntAuth = SECURITY_NT_AUTHORITY;
     BYTE adminSidBuf[SECURITY_MAX_SID_SIZE] = {};
     DWORD sidSize = sizeof(adminSidBuf);
     PSID adminSid = (PSID)adminSidBuf;
@@ -111,10 +119,19 @@ void TakeOwnershipAndGrant(const std::wstring& path) {
         LocalFree(newDacl);
     }
     if (oldDacl) LocalFree(oldDacl);
+    if (logStep)
+        LogInfo("swap leftover takeown done #" + std::to_string(g_takeownN) +
+                ": " + ToUtf8(path));
 }
 
 // 删除失败时的三级降级：清属性 → 夺权+完全控制 → 再删。成功记 taken。
 bool ForceDeleteItem(const std::wstring& p, bool isDir, DelStat& st) {
+    // 诊断（0.7.54）：前 20 次逐条 —— 定位"死在哪个文件/哪种操作"
+    if (st.forceLogged < 20) {
+        ++st.forceLogged;
+        LogInfo("swap leftover force-del #" + std::to_string(st.forceLogged) +
+                ": " + ToUtf8(p) + (isDir ? " [dir]" : " [file]"));
+    }
     std::wstring ep = ExtPath(p);  // \\?\ 前缀，绕过 MAX_PATH
     SetFileAttributesW(ep.c_str(), FILE_ATTRIBUTE_NORMAL);
     BOOL ok = isDir ? RemoveDirectoryW(ep.c_str()) : DeleteFileW(ep.c_str());
@@ -136,6 +153,10 @@ bool ForceDeleteItem(const std::wstring& p, bool isDir, DelStat& st) {
 
 void DeleteRec(const std::wstring& dir, DelStat& st,
                const DeleteProgressFn* progress, int depth) {
+    // 诊断（0.7.54）：根与第一层子目录必留一条 —— 判断"进了哪个目录后死的"
+    if (depth <= 1)
+        LogInfo("swap leftover rec enter: " + ToUtf8(dir) +
+                " depth=" + std::to_string(depth));
     // 属性不为 0 的目录先归一，否则 RemoveDirectory 也可能被拒
     std::wstring edir = ExtPath(dir);
     SetFileAttributesW(edir.c_str(), FILE_ATTRIBUTE_NORMAL);
@@ -449,6 +470,33 @@ void DeleteSwapLeftover(const SwapLeftInfo& i, DeleteProgressFn progress) {
         // 根目录预夺权：~old 整棵树常为 TrustedInstaller 所有，先给根授
         // Administrators 完全控制（子项在 ForceDeleteItem/DeleteRec 里逐个夺）。
         TakeOwnershipAndGrant(dir);
+        // 诊断（0.7.54）：列出 ~old 顶层条目（前 20 + 总数）——看清"在删什么"
+        {
+            WIN32_FIND_DATAW fd;
+            HANDLE h = FindFirstFileW((ExtPath(dir) + L"\\*").c_str(), &fd);
+            if (h != INVALID_HANDLE_VALUE) {
+                int n = 0;
+                std::string listing;
+                do {
+                    if (std::wcscmp(fd.cFileName, L".") == 0 ||
+                        std::wcscmp(fd.cFileName, L"..") == 0)
+                        continue;
+                    if (n < 20) {
+                        if (n) listing += ", ";
+                        listing += ToUtf8(fd.cFileName);
+                        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+                            listing += "/";
+                    }
+                    ++n;
+                } while (FindNextFileW(h, &fd));
+                FindClose(h);
+                LogInfo("swap leftover tree top (" + std::to_string(n) +
+                        " entries): " + listing);
+            } else {
+                LogWarn("swap leftover tree top enum fail: err=" +
+                        std::to_string(GetLastError()));
+            }
+        }
         DelStat st;
         DeleteRec(dir, st, progress ? &progress : nullptr, 0);
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
