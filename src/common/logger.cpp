@@ -213,4 +213,19 @@ void LogWarn(const std::string& msg) { Write("WARN", msg, stdout); }
 void LogError(const std::string& msg) { Write("ERROR", msg, stderr); }
 void LogFileInfo(const std::string& msg) { WriteFileOnly("INFO", msg); }
 
+void LogSehNote(const char* text, unsigned long len) {
+    if (g_logFile.empty() || !text || !len)
+        return;
+    // 有意不用 EnterCriticalSection：SEH 里若主线程正持有该锁会死锁；
+    // 偶发交错可接受（诊断行，非正式日志格式）。
+    HANDLE h = CreateFileW(g_logFile.c_str(), FILE_APPEND_DATA,
+                           FILE_SHARE_READ, nullptr, OPEN_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h != INVALID_HANDLE_VALUE) {
+        DWORD written = 0;
+        WriteFile(h, text, len, &written, nullptr);
+        CloseHandle(h);
+    }
+}
+
 }  // namespace sysrecover

@@ -12,5 +12,8 @@ void LogError(const std::string& msg);
 // 只写日志文件、不回显控制台（给"进 LOG 备查"的冗长输出用，如启动盘表；
 // 避免污染 CLI 的 stdout/脚本解析）。
 void LogFileInfo(const std::string& msg);
+// SEH 异常处理器专用：只做 CreateFile/WriteFile，不用 C++ 字符串、不进锁 ——
+// 堆损坏/栈溢出场景下仍尽量能落一条（调用方负责拼好文本与换行）。
+void LogSehNote(const char* text, unsigned long len);
 
 }  // namespace sysrecover
