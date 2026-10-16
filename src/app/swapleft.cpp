@@ -11,6 +11,7 @@
 #include <aclapi.h>
 
 #include <condition_variable>
+#include <chrono>
 #include <cstring>
 #include <cstdlib>
 #include <mutex>
@@ -18,6 +19,7 @@
 #include <thread>
 
 #include "../common/logger.h"
+#include "../common/relocate.h"
 
 namespace sysrecover {
 
@@ -128,13 +130,22 @@ bool ForceDeleteItem(const std::wstring& p, bool isDir, DelStat& st) {
 }
 
 void DeleteRec(const std::wstring& dir, DelStat& st,
-               const DeleteProgressFn* progress) {
+               const DeleteProgressFn* progress, int depth) {
     // 属性不为 0 的目录先归一，否则 RemoveDirectory 也可能被拒
     std::wstring edir = ExtPath(dir);
     SetFileAttributesW(edir.c_str(), FILE_ATTRIBUTE_NORMAL);
     WIN32_FIND_DATAW fd;
     HANDLE h = FindFirstFileW((edir + L"\\*").c_str(), &fd);
-    if (h != INVALID_HANDLE_VALUE) {
+    if (h == INVALID_HANDLE_VALUE) {
+        DWORD err = GetLastError();
+        // ERROR_FILE_NOT_FOUND / ERROR_PATH_NOT_FOUND = 目录已空/已删（正常）
+        // 其余 = 真失败（权限/路径/句柄），必须留账
+        if (err != ERROR_FILE_NOT_FOUND && err != ERROR_PATH_NOT_FOUND)
+            LogWarn("swap leftover enum fail: " + ToUtf8(dir) +
+                    " err=" + std::to_string(err) +
+                    " depth=" + std::to_string(depth));
+    } else {
+        long localCount = 0;
         do {
             if (std::wcscmp(fd.cFileName, L".") == 0 ||
                 std::wcscmp(fd.cFileName, L"..") == 0)
@@ -150,7 +161,7 @@ void DeleteRec(const std::wstring& dir, DelStat& st,
                 continue;
             }
             if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-                DeleteRec(p, st, progress);
+                DeleteRec(p, st, progress, depth + 1);
                 continue;
             }
             // 普通文件：清属性 → 夺权 → 再删
@@ -162,21 +173,33 @@ void DeleteRec(const std::wstring& dir, DelStat& st,
                     LogWarn("swap leftover del fail: " + ToUtf8(p) +
                             " err=" + std::to_string(GetLastError()));
             }
+            ++localCount;
             // 进度：每 200 个文件回调一次（大树删除可显示进度）
             if (progress && *progress &&
                 ((st.ok + st.fail) % 200) == 0)
                 (*progress)(st.ok, st.fail, st.taken);
+            // 大目录每 2000 个打一条日志（防"看起来卡死"误判）
+            if (localCount % 2000 == 0)
+                LogInfo("swap leftover del progress: ok=" + std::to_string(st.ok) +
+                        " fail=" + std::to_string(st.fail) +
+                        " taken=" + std::to_string(st.taken) +
+                        " cur=" + ToUtf8(dir));
         } while (FindNextFileW(h, &fd));
         FindClose(h);
     }
     SetFileAttributesW(edir.c_str(), FILE_ATTRIBUTE_NORMAL);
     if (!RemoveDirectoryW(edir.c_str())) {
+        DWORD rerr = GetLastError();
+        // ERROR_DIR_NOT_EMPTY = 还有子文件没删完（递归里失败过）
+        // 其余 = 权限/句柄问题
         TakeOwnershipAndGrant(dir);
         SetFileAttributesW(edir.c_str(), FILE_ATTRIBUTE_NORMAL);
         if (!RemoveDirectoryW(edir.c_str())) {
             ++st.fail;
             LogWarn("swap leftover rmdir fail: " + ToUtf8(dir) +
-                    " err=" + std::to_string(GetLastError()));
+                    " err=" + std::to_string(GetLastError()) +
+                    " first_err=" + std::to_string(rerr) +
+                    " depth=" + std::to_string(depth));
         } else {
             ++st.taken;
         }
@@ -363,14 +386,43 @@ bool ProbeSwapNew(wchar_t drive, SwapLeftInfo& out) {
     return ProbeDrive(drive, true, out);
 }
 
+// 删除 ~old 前把根下的契约文件（_zjresy*.log / restore-task.conf|json）备份到
+// 软件 logs\ 目录 —— 契约记录了「上次还原到哪块盘/哪个分区/哪个镜像」，
+// 删掉后现场无从查证；备份成本几乎为零（几 KB）。
+void BackupContractsBeforeDelete(const std::wstring& oldRoot) {
+    std::wstring logsDir = LogBaseDir() + L"\\logs";
+    CreateDirectoryW(logsDir.c_str(), nullptr);
+    int copied = 0;
+    const wchar_t* pats[] = {L"_zjresy*.log", L"restore-task.conf",
+                             L"restore-task.json"};
+    for (const wchar_t* pat : pats) {
+        WIN32_FIND_DATAW fd;
+        HANDLE h = FindFirstFileW((oldRoot + L"\\" + pat).c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            std::wstring src = oldRoot + L"\\" + fd.cFileName;
+            std::wstring dst = logsDir + L"\\" + fd.cFileName;
+            SetFileAttributesW(dst.c_str(), FILE_ATTRIBUTE_NORMAL);
+            if (CopyFileW(src.c_str(), dst.c_str(), FALSE)) ++copied;
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    if (copied)
+        LogInfo("contracts backed up before ~old delete: " +
+                std::to_string(copied) + " file(s) -> logs/");
+}
+
 void DeleteSwapLeftover(const SwapLeftInfo& i, DeleteProgressFn progress) {
     if (!i.drive) return;
     std::wstring dir = RootPath(i.drive) + (i.isNew ? L"~new" : L"~old");
     BusyMark(i.drive);
+    auto t0 = std::chrono::steady_clock::now();
     LogInfo("swap leftover delete: " + DriveStr(i.drive) +
             (i.isNew ? " ~new" : " ~old") + " (age " +
             std::to_string(i.ageHours) + "h)");
     if (IsDir(dir)) {
+        // 备份契约文件（仅 ~old；~new 没有契约）
+        if (!i.isNew) BackupContractsBeforeDelete(dir);
         // 启用特权：~old 里有 TrustedInstaller 拥有的系统目录，普通管理员
         // 连删都删不了 —— 必须启用 SeTakeOwnershipPrivilege + SeBackup/
         // SeRestorePrivilege 才能夺权后删除（对齐 takeown /f）。
@@ -378,7 +430,10 @@ void DeleteSwapLeftover(const SwapLeftInfo& i, DeleteProgressFn progress) {
         EnablePriv(L"SeBackupPrivilege");
         EnablePriv(L"SeRestorePrivilege");
         DelStat st;
-        DeleteRec(dir, st, progress ? &progress : nullptr);
+        DeleteRec(dir, st, progress ? &progress : nullptr, 0);
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now() - t0)
+                      .count();
         // 删完复核：~old 仍在 = 没删干净（用户实测「点了删除没反应」就是
         // 这里静默失败）——必须留账，否则下次启动又弹框、还原还被门禁拦。
         if (IsDir(dir)) {
@@ -387,16 +442,22 @@ void DeleteSwapLeftover(const SwapLeftInfo& i, DeleteProgressFn progress) {
                     " ok=" + std::to_string(st.ok) +
                     " fail=" + std::to_string(st.fail) +
                     " taken=" + std::to_string(st.taken) +
+                    " elapsed=" + std::to_string(ms) + "ms" +
                     " (dir still present)");
         } else {
             LogInfo("swap leftover delete done: " + DriveStr(i.drive) +
                     (i.isNew ? " ~new" : " ~old") +
                     " ok=" + std::to_string(st.ok) +
                     " fail=" + std::to_string(st.fail) +
-                    " taken=" + std::to_string(st.taken));
+                    " taken=" + std::to_string(st.taken) +
+                    " elapsed=" + std::to_string(ms) + "ms");
         }
         // 最后回调一次（小树可能一次都没到 200 的阈值）
         if (progress) progress(st.ok, st.fail, st.taken);
+    } else {
+        LogWarn("swap leftover delete: " + DriveStr(i.drive) +
+                (i.isNew ? " ~new" : " ~old") +
+                " dir not found (already gone?)");
     }
     BusyUnmark(i.drive);
 }
