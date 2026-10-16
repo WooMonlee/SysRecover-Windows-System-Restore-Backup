@@ -47,6 +47,7 @@ struct DelStat {
     long ok = 0;
     long fail = 0;
     long taken = 0;  // 多少个是靠提权夺权后才删掉的
+    long long lastLogMs = 0;  // 上次进度日志时刻（GetTickCount64）
 };
 
 // \\?\ 扩展长度前缀：绕过 MAX_PATH=260 限制（WinSxS/AppData 深层路径必需）
@@ -124,6 +125,10 @@ bool ForceDeleteItem(const std::wstring& p, bool isDir, DelStat& st) {
     ok = isDir ? RemoveDirectoryW(ep.c_str()) : DeleteFileW(ep.c_str());
     if (ok) {
         ++st.taken;
+        // 夺权成功是"看起来卡死"的主因（每个 TI 目录都要 SetNamedSecurityInfo
+        // 递归 + 再删），前 8 次留证 —— 有了它才能判断"慢但在动"还是"真卡死"
+        if (st.taken <= 8)
+            LogInfo("swap leftover takeown-then-delete ok: " + ToUtf8(p));
         return true;
     }
     return false;
@@ -145,7 +150,6 @@ void DeleteRec(const std::wstring& dir, DelStat& st,
                     " err=" + std::to_string(err) +
                     " depth=" + std::to_string(depth));
     } else {
-        long localCount = 0;
         do {
             if (std::wcscmp(fd.cFileName, L".") == 0 ||
                 std::wcscmp(fd.cFileName, L"..") == 0)
@@ -173,17 +177,26 @@ void DeleteRec(const std::wstring& dir, DelStat& st,
                     LogWarn("swap leftover del fail: " + ToUtf8(p) +
                             " err=" + std::to_string(GetLastError()));
             }
-            ++localCount;
             // 进度：每 200 个文件回调一次（大树删除可显示进度）
             if (progress && *progress &&
                 ((st.ok + st.fail) % 200) == 0)
                 (*progress)(st.ok, st.fail, st.taken);
-            // 大目录每 2000 个打一条日志（防"看起来卡死"误判）
-            if (localCount % 2000 == 0)
-                LogInfo("swap leftover del progress: ok=" + std::to_string(st.ok) +
+            // 进度日志：**全局**计数每 500 条 或 距上次 ≥10s 心跳（任一满足即打）。
+            // 不再按单目录 localCount —— Windows 树单目录极少超 2000，
+            // 删完整棵树也可能全程零日志（0.7.52 之前的盲区，用户现场只见
+            // "contracts backed up" 后无下文）。
+            long globalN = st.ok + st.fail;
+            unsigned long long nowMs = GetTickCount64();
+            if (globalN > 0 &&
+                (globalN % 500 == 0 ||
+                 nowMs - (unsigned long long)st.lastLogMs >= 10000)) {
+                st.lastLogMs = (long long)nowMs;
+                LogInfo("swap leftover del progress: ok=" +
+                        std::to_string(st.ok) +
                         " fail=" + std::to_string(st.fail) +
                         " taken=" + std::to_string(st.taken) +
                         " cur=" + ToUtf8(dir));
+            }
         } while (FindNextFileW(h, &fd));
         FindClose(h);
     }
@@ -429,6 +442,13 @@ void DeleteSwapLeftover(const SwapLeftInfo& i, DeleteProgressFn progress) {
         EnablePriv(L"SeTakeOwnershipPrivilege");
         EnablePriv(L"SeBackupPrivilege");
         EnablePriv(L"SeRestorePrivilege");
+        // 锚点日志：进入删除本体的标志 —— 之前只有 "swap leftover delete"
+        // （决策）与 "contracts backed up"；此后到 delete done/incomplete 之间
+        // 曾是日志盲区（0.7.52），现在 begin + 全局进度日志补齐。
+        LogInfo("swap leftover tree delete begin: " + ToUtf8(dir));
+        // 根目录预夺权：~old 整棵树常为 TrustedInstaller 所有，先给根授
+        // Administrators 完全控制（子项在 ForceDeleteItem/DeleteRec 里逐个夺）。
+        TakeOwnershipAndGrant(dir);
         DelStat st;
         DeleteRec(dir, st, progress ? &progress : nullptr, 0);
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(

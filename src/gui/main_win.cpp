@@ -80,7 +80,9 @@ LRESULT CALLBACK DelProgWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 // 模态运行删除：起工作线程 → 消息循环收进度 → 完成后返回「~old 是否仍在」。
-// 返回 true=已删完（dir 已消失），false=仍有残留。
+// 返回 true=~old 仍在（未删完/失败），false=已删完（dir 已消失）。
+// ⚠️ 两处失败路径（建窗/CreateThread 失败）必须 return true ——
+// 返回 false 会被调用方当成"已删成功"，提示误导用户。
 bool RunDeleteWithProgress(HWND owner, const sysrecover::SwapLeftInfo& it) {
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
@@ -106,12 +108,19 @@ bool RunDeleteWithProgress(HWND owner, const sysrecover::SwapLeftInfo& it) {
         WS_POPUP | WS_CAPTION | WS_SYSMENU,
         (sw - 420) / 2, (sh - 160) / 2, 420, 160, owner, nullptr,
         GetModuleHandleW(nullptr), nullptr);
-    if (!hwnd) return false;
+    if (!hwnd) {
+        sysrecover::LogWarn("swap leftover delete UI: CreateWindowExW failed err=" +
+                            std::to_string(GetLastError()));
+        return true;  // 失败 = ~old 仍在（不能报成"已删成功"）
+    }
 
     // 初始文案
     SetWindowTextW(hwnd, Tr(L"正在删除旧系统…\n准备中…"));
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
+    sysrecover::LogInfo("swap leftover delete UI: progress window shown, dir=" +
+                        std::string(1, (char)it.drive) +
+                        (it.isNew ? ":\\~new" : ":\\~old"));
 
     // 工作线程：删除 + PostMessage 进度
     struct Ctx {
@@ -140,8 +149,10 @@ bool RunDeleteWithProgress(HWND owner, const sysrecover::SwapLeftInfo& it) {
         },
         ctx, 0, nullptr);
     if (!hThread) {
+        sysrecover::LogWarn("swap leftover delete UI: CreateThread failed err=" +
+                            std::to_string(GetLastError()));
         DestroyWindow(hwnd);
-        return false;
+        return true;  // 失败 = ~old 仍在（不能报成"已删成功"）
     }
     CloseHandle(hThread);
 
@@ -151,6 +162,7 @@ bool RunDeleteWithProgress(HWND owner, const sysrecover::SwapLeftInfo& it) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    sysrecover::LogInfo("swap leftover delete UI: message loop exited");
     // 从 WM_QUIT 的 wParam 取不出 stillThere（已 destroy）→ 用目录复核
     std::wstring dir = std::wstring(1, it.drive) +
                        (it.isNew ? L":\\~new" : L":\\~old");
