@@ -39,12 +39,21 @@ std::string ToUtf8(const std::wstring& w) {
 //   ① READONLY/SYSTEM 属性文件（DeleteFileW 直接失败）
 //   ② junction（Users\...\Application Data 等）—— 递归进去会删错目标或撞句柄
 //   ③ 失败静默、无计数，调用方看不出删没删掉
-// 修法：清属性 → 判 reparse point 只删链接本身 → 计数 + 失败路径日志。
+//   ④ MAX_PATH=260：深层路径（WinSxS/AppData 等）超限时 FindFirstFileW 直接失败
+// 修法：\\?\ 前缀 + 清属性 → 判 reparse point 只删链接本身 → 计数 + 失败路径日志。
 struct DelStat {
     long ok = 0;
     long fail = 0;
     long taken = 0;  // 多少个是靠提权夺权后才删掉的
 };
+
+// \\?\ 扩展长度前缀：绕过 MAX_PATH=260 限制（WinSxS/AppData 深层路径必需）
+// 已有前缀则原样返回；盘符路径 D:\xx → \\?\D:\xx；UNC 路径 \\server\share → \\?\UNC\server\share
+std::wstring ExtPath(const std::wstring& p) {
+    if (p.rfind(L"\\\\?\\", 0) == 0) return p;
+    if (p.rfind(L"\\\\", 0) == 0) return L"\\\\?\\UNC" + p.substr(1);
+    return L"\\\\?\\" + p;
+}
 
 // 启用指定特权（管理员默认持有但未启用）
 void EnablePriv(const wchar_t* name) {
@@ -64,6 +73,7 @@ void EnablePriv(const wchar_t* name) {
 // 取得所有权 + 给 Administrators 完全控制（对齐 takeown /f /r + icacls /grant）。
 // ~old 里有 TrustedInstaller 拥有的系统目录，普通管理员连删都删不了。
 void TakeOwnershipAndGrant(const std::wstring& path) {
+    std::wstring ep = ExtPath(path);  // \\?\ 前缀，绕过 MAX_PATH
     // 1) 把 owner 换成 Administrators
     SID_IDENTIFIER_AUTHORITY ntAuth = SECURITY_NT_AUTHORITY;
     BYTE adminSidBuf[SECURITY_MAX_SID_SIZE] = {};
@@ -72,7 +82,7 @@ void TakeOwnershipAndGrant(const std::wstring& path) {
     if (!CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr, adminSid,
                             &sidSize))
         return;
-    SetNamedSecurityInfoW(const_cast<LPWSTR>(path.c_str()), SE_FILE_OBJECT,
+    SetNamedSecurityInfoW(const_cast<LPWSTR>(ep.c_str()), SE_FILE_OBJECT,
                           OWNER_SECURITY_INFORMATION, adminSid, nullptr,
                           nullptr, nullptr);
 
@@ -86,13 +96,13 @@ void TakeOwnershipAndGrant(const std::wstring& path) {
     ea.Trustee.ptstrName = (LPWSTR)adminSid;
 
     PACL oldDacl = nullptr;
-    GetNamedSecurityInfoW(const_cast<LPWSTR>(path.c_str()), SE_FILE_OBJECT,
+    GetNamedSecurityInfoW(const_cast<LPWSTR>(ep.c_str()), SE_FILE_OBJECT,
                           DACL_SECURITY_INFORMATION, nullptr, nullptr, &oldDacl,
                           nullptr, nullptr);
     PACL newDacl = nullptr;
     SetEntriesInAclW(1, &ea, oldDacl, &newDacl);
     if (newDacl) {
-        SetNamedSecurityInfoW(const_cast<LPWSTR>(path.c_str()),
+        SetNamedSecurityInfoW(const_cast<LPWSTR>(ep.c_str()),
                               SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
                               nullptr, nullptr, newDacl, nullptr);
         LocalFree(newDacl);
@@ -102,13 +112,14 @@ void TakeOwnershipAndGrant(const std::wstring& path) {
 
 // 删除失败时的三级降级：清属性 → 夺权+完全控制 → 再删。成功记 taken。
 bool ForceDeleteItem(const std::wstring& p, bool isDir, DelStat& st) {
-    SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_NORMAL);
-    BOOL ok = isDir ? RemoveDirectoryW(p.c_str()) : DeleteFileW(p.c_str());
+    std::wstring ep = ExtPath(p);  // \\?\ 前缀，绕过 MAX_PATH
+    SetFileAttributesW(ep.c_str(), FILE_ATTRIBUTE_NORMAL);
+    BOOL ok = isDir ? RemoveDirectoryW(ep.c_str()) : DeleteFileW(ep.c_str());
     if (ok) return true;
     // 夺权 + 授完全控制（管理员场景下绝大多数 ACL 拒绝由此解除）
     TakeOwnershipAndGrant(p);
-    SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_NORMAL);
-    ok = isDir ? RemoveDirectoryW(p.c_str()) : DeleteFileW(p.c_str());
+    SetFileAttributesW(ep.c_str(), FILE_ATTRIBUTE_NORMAL);
+    ok = isDir ? RemoveDirectoryW(ep.c_str()) : DeleteFileW(ep.c_str());
     if (ok) {
         ++st.taken;
         return true;
@@ -119,9 +130,10 @@ bool ForceDeleteItem(const std::wstring& p, bool isDir, DelStat& st) {
 void DeleteRec(const std::wstring& dir, DelStat& st,
                const DeleteProgressFn* progress) {
     // 属性不为 0 的目录先归一，否则 RemoveDirectory 也可能被拒
-    SetFileAttributesW(dir.c_str(), FILE_ATTRIBUTE_NORMAL);
+    std::wstring edir = ExtPath(dir);
+    SetFileAttributesW(edir.c_str(), FILE_ATTRIBUTE_NORMAL);
     WIN32_FIND_DATAW fd;
-    HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    HANDLE h = FindFirstFileW((edir + L"\\*").c_str(), &fd);
     if (h != INVALID_HANDLE_VALUE) {
         do {
             if (std::wcscmp(fd.cFileName, L".") == 0 ||
@@ -157,11 +169,11 @@ void DeleteRec(const std::wstring& dir, DelStat& st,
         } while (FindNextFileW(h, &fd));
         FindClose(h);
     }
-    SetFileAttributesW(dir.c_str(), FILE_ATTRIBUTE_NORMAL);
-    if (!RemoveDirectoryW(dir.c_str())) {
+    SetFileAttributesW(edir.c_str(), FILE_ATTRIBUTE_NORMAL);
+    if (!RemoveDirectoryW(edir.c_str())) {
         TakeOwnershipAndGrant(dir);
-        SetFileAttributesW(dir.c_str(), FILE_ATTRIBUTE_NORMAL);
-        if (!RemoveDirectoryW(dir.c_str())) {
+        SetFileAttributesW(edir.c_str(), FILE_ATTRIBUTE_NORMAL);
+        if (!RemoveDirectoryW(edir.c_str())) {
             ++st.fail;
             LogWarn("swap leftover rmdir fail: " + ToUtf8(dir) +
                     " err=" + std::to_string(GetLastError()));
