@@ -113,10 +113,19 @@ static LONG WINAPI DelWorkerVeh(PEXCEPTION_POINTERS ep) {
 }
 
 static void DoDeleteWork(const sysrecover::SwapLeftInfo& info, HWND hwnd) {
-    sysrecover::DeleteSwapLeftover(
-        info, [hwnd](long ok, long fail, long) {
-            PostMessageW(hwnd, WM_DEL_PROGRESS, (WPARAM)ok, (LPARAM)fail);
-        });
+    // 0.7.55：C++ 异常兜底 —— std::wstring 分配失败/实现定义异常不该带走进程。
+    // （访问违例是 SEH 不是 C++ 异常，由上方 VEH 捕获；这里只拦得住 C++ 层。）
+    try {
+        sysrecover::DeleteSwapLeftover(
+            info, [hwnd](long ok, long fail, long) {
+                PostMessageW(hwnd, WM_DEL_PROGRESS, (WPARAM)ok, (LPARAM)fail);
+            });
+    } catch (const std::exception& e) {
+        sysrecover::LogWarn(std::string("swap leftover delete: exception: ") +
+                            e.what());
+    } catch (...) {
+        sysrecover::LogWarn("swap leftover delete: unknown C++ exception");
+    }
 }
 
 bool RunDeleteWithProgress(HWND owner, const sysrecover::SwapLeftInfo& it) {
@@ -164,8 +173,12 @@ bool RunDeleteWithProgress(HWND owner, const sysrecover::SwapLeftInfo& it) {
         HWND hwnd;
     };
     auto* ctx = new Ctx{it, hwnd};
+    // 0.7.55 栈加固：DeleteRec 递归删整棵 Windows 树（WinSxS/AppData 深路径），
+    // 每帧 WIN32_FIND_DATAW≈592B + 两个 wstring ≈700B；默认 1MB 栈在极深树
+    // 可栈溢出（EXCEPTION_STACK_OVERFLOW，VEH 0.7.54 可见 code=0xC00000FD）。
+    // 提到 8MB —— 8MB/700B ≈ 12000 层，远超真实 Windows 树深度。
     HANDLE hThread = CreateThread(
-        nullptr, 0,
+        nullptr, 8 * 1024 * 1024,
         [](LPVOID p) -> DWORD {
             auto* c = static_cast<Ctx*>(p);
             // VEH 兜底（0.7.54）：删除线程内致命异常先落一条再放行 —
@@ -581,6 +594,15 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     }
 
     sysrecover::StartupPhase("swap-scan");
+
+    // 0.7.55 窗口置前：启动期弹框（relocate 光盘检测 / AskUndo 残留分流 /
+    // StageReturnOldFlow 内 MessageBox）是模态自绘框，关闭后主窗 Z 序仍可能在
+    // explorer 文件夹窗口之后（用户反馈：确认复制后主窗"藏到文件夹后面"）。
+    // 进主消息循环前强制拉到前台 —— 此时用户刚与我们的弹框交互，拥有前台权。
+    ::SetForegroundWindow(h);
+    ::BringWindowToTop(h);
+    ::SetWindowPos(h, HWND_TOP, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
 
     // 启动耗时自检（进程创建 → 窗口显示）：排障用，设 `SYSRECOVER_STARTUP_TIMING=1` 打开。
     if (sysrecover::StartupTimingEnabled())

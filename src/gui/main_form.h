@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cwctype>
+#include <exception>
 #include <functional>
 #include <string>
 #include <thread>
