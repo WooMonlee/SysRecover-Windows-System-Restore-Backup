@@ -535,6 +535,9 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
                     std::wstring(1, it.drive) + L": " +
                     (it.isNew ? L"~new" : L"~old");
                 if (it.keepOldMarker && !it.isNew) {
+                    // 首启（克隆后第一次进新系统，用户 2026-10-17 规格）：
+                    // 旧日志"搬进程序目录"已在本窗体建窗期做过（main_form.cpp
+                    // ::InitWindow，必须在收痕迹/清散件之前）—— 这里只负责问。
                     // 备返保留的 ~old（用户当初勾了「备返」）→ 三选：
                     // 保留（安全项，回车/ESC 都落这里）/ 返回旧系统 / 删除。
                     // 「返回旧系统」= 重启进 Linux 救援层做反向交换（PIT-139），

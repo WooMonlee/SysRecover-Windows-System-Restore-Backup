@@ -384,6 +384,61 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
     return 0;
 }
 
+// 往离线 ~new 的 SOFTWARE hive 里写一条 RunOnce（新系统**开机自动跑**）——
+//   keepOld=false：跑 zj-swap-cleanup.cmd 静默删 ~old（无人值守默认）；
+//   keepOld=true ：首启自动运行本程序 → 搬日志 + 问「是否删除旧系统」
+//                  （用户 2026-10-17 规格："全自动化完成日志搬迁后再弹删除询问"）。
+// 挂离线 hive 需要 SeBackup/SeRestore 特权（管理员默认持有但要显式启用）。
+// 失败只 WARN 不阻断：程序已在桌面放快捷方式，用户可手动点。
+//   hiveName ：临时挂载名（两个分支互斥，不会同进程冲突）；
+//   valueName：RunOnce 值名（两个分支不同，深夜不会互相覆盖）；
+//   cmd      ：要跑的启动命令行（REG_EXPAND_SZ 时支持 %SystemDrive% 展开）。
+bool InjectOfflineRunOnce(const std::wstring& newDir, const wchar_t* hiveName,
+                          const wchar_t* valueName, const wchar_t* cmd,
+                          DWORD type, const char* what) {
+    auto enablePriv = [](const wchar_t* name) {
+        HANDLE tok = nullptr;
+        if (!OpenProcessToken(GetCurrentProcess(),
+                              TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &tok))
+            return false;
+        TOKEN_PRIVILEGES tp = {};
+        tp.PrivilegeCount = 1;
+        LookupPrivilegeValueW(nullptr, name, &tp.Privileges[0].Luid);
+        tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+        AdjustTokenPrivileges(tok, FALSE, &tp, sizeof(tp), nullptr, nullptr);
+        bool ok = GetLastError() == ERROR_SUCCESS;
+        CloseHandle(tok);
+        return ok;
+    };
+    enablePriv(L"SeBackupPrivilege");
+    enablePriv(L"SeRestorePrivilege");
+    const std::wstring hive = newDir + L"\\Windows\\System32\\config\\SOFTWARE";
+    LONG rc = RegLoadKeyW(HKEY_LOCAL_MACHINE, hiveName, hive.c_str());
+    if (rc != ERROR_SUCCESS) {
+        LogWarn(std::string("A-engine: ") + what +
+                " SOFTWARE hive load failed rc=" + std::to_string(rc));
+        return false;
+    }
+    HKEY hKey = nullptr;
+    const std::wstring sub = std::wstring(hiveName) +
+                             L"\\Microsoft\\Windows\\CurrentVersion\\RunOnce";
+    rc = RegCreateKeyExW(HKEY_LOCAL_MACHINE, sub.c_str(), 0, nullptr, 0,
+                         KEY_WRITE, nullptr, &hKey, nullptr);
+    if (rc == ERROR_SUCCESS) {
+        rc = RegSetValueExW(hKey, valueName, 0, type, (const BYTE*)cmd,
+                            (DWORD)((wcslen(cmd) + 1) * 2));
+        RegCloseKey(hKey);
+    }
+    RegUnLoadKeyW(HKEY_LOCAL_MACHINE, hiveName);
+    if (rc == ERROR_SUCCESS)
+        LogInfo(std::string("A-engine: ") + what +
+                " RunOnce injected into ~new");
+    else
+        LogWarn(std::string("A-engine: ") + what +
+                " RunOnce inject failed rc=" + std::to_string(rc));
+    return rc == ERROR_SUCCESS;
+}
+
 }  // namespace
 
 // 目标分区该走 UEFI/ESP 分支吗？**以目标磁盘分区风格为准**（boot/bootpath.h）：
@@ -1408,6 +1463,15 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
                     LogWarn("A-engine: shortcut create failed: " +
                             W2U(pubDesk));
                 }
+                // 4. RunOnce：新系统**首启自动运行本程序**（用户 2026-10-17 规格）。
+                //    首启流程 = 自动启动 → 把救援层/旧版留在数据盘的日志搬回程序
+                //    目录（MigrateLogsToLogHome）→ 才弹「是否删除旧系统」三选框。
+                //    路径用 %SystemDrive% 让**新系统**自己展开（还原到别的盘也正确；
+                //    含空格的 "Program Files" 必须带引号），REG_EXPAND_SZ 才支持展开。
+                InjectOfflineRunOnce(
+                    newDir, L"ZJFIRSTBOOT", L"ZJSysRecoverFirstBoot",
+                    L"\"%SystemDrive%\\Program Files\\SysRecover\\SysRecoverUI.exe\"",
+                    REG_EXPAND_SZ, "firstboot");
             } else {
                 LogWarn("A-engine: program deploy failed, skip shortcut");
             }
@@ -1441,55 +1505,10 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
                 DWORD wr = 0;
                 WriteFile(hc, kCmd, (DWORD)(sizeof(kCmd) - 2), &wr, nullptr);
                 CloseHandle(hc);
-                const std::wstring hive =
-                    newDir + L"\\Windows\\System32\\config\\SOFTWARE";
-                auto enablePriv = [](const wchar_t* name) {
-                    HANDLE tok = nullptr;
-                    if (!OpenProcessToken(GetCurrentProcess(),
-                                          TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
-                                          &tok))
-                        return false;
-                    TOKEN_PRIVILEGES tp = {};
-                    tp.PrivilegeCount = 1;
-                    LookupPrivilegeValueW(nullptr, name, &tp.Privileges[0].Luid);
-                    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-                    AdjustTokenPrivileges(tok, FALSE, &tp, sizeof(tp), nullptr,
-                                          nullptr);
-                    bool ok = GetLastError() == ERROR_SUCCESS;
-                    CloseHandle(tok);
-                    return ok;
-                };
-                enablePriv(L"SeBackupPrivilege");
-                enablePriv(L"SeRestorePrivilege");
-                const wchar_t kHiveKey[] = L"ZJSWAPCLEANUP";
-                LONG rc = RegLoadKeyW(HKEY_LOCAL_MACHINE, kHiveKey,
-                                      hive.c_str());
-                if (rc == ERROR_SUCCESS) {
-                    HKEY hKey = nullptr;
-                    std::wstring sub = std::wstring(kHiveKey) +
-                                       L"\\Microsoft\\Windows\\CurrentVersion"
-                                       L"\\RunOnce";
-                    rc = RegCreateKeyExW(HKEY_LOCAL_MACHINE, sub.c_str(), 0,
-                                         nullptr, 0, KEY_WRITE, nullptr, &hKey,
-                                         nullptr);
-                    if (rc == ERROR_SUCCESS) {
-                        const wchar_t* cmd =
-                            L"%SystemRoot%\\System32\\zj-swap-cleanup.cmd";
-                        rc = RegSetValueExW(hKey, L"ZJSwapCleanup", 0,
-                                            REG_SZ, (const BYTE*)cmd,
-                                            (DWORD)((wcslen(cmd) + 1) * 2));
-                        RegCloseKey(hKey);
-                    }
-                    RegUnLoadKeyW(HKEY_LOCAL_MACHINE, kHiveKey);
-                    if (rc == ERROR_SUCCESS)
-                        LogInfo("A-engine: RunOnce cleanup injected into ~new");
-                    else
-                        LogWarn("A-engine: RunOnce inject failed rc=" +
-                                std::to_string(rc));
-                } else {
-                    LogWarn("A-engine: SOFTWARE hive load failed rc=" +
-                            std::to_string(rc));
-                }
+                InjectOfflineRunOnce(newDir, L"ZJSWAPCLEANUP",
+                                     L"ZJSwapCleanup",
+                                     L"%SystemRoot%\\System32\\zj-swap-cleanup.cmd",
+                                     REG_SZ, "cleanup");
             } else {
                 LogWarn("A-engine: cleanup cmd write failed err=" +
                         std::to_string(GetLastError()));

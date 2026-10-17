@@ -14,7 +14,12 @@
 namespace {
 
 const wchar_t kCopyDirName[] = L"ZJRESTORE";  // 与恢复目录同名（用户 2026-10-03 定）
+// 救援层的黑匣子兜底窝（PIT-137）：日志文件**直接摊在**该目录根下，不带 logs\ 子目录。
+const wchar_t kFallbackLogDirName[] = L"ZJRESTORE-logs";
 const unsigned long long kSpaceMargin = 32ull << 20;
+
+// 日志根是否"无处可写"（规则 ④）—— 由 LogBaseDir() 每次判定，见 LogHomeDegraded()。
+bool g_logHomeDegraded = false;
 
 std::string ToUtf8(const std::wstring& w) {
     if (w.empty())
@@ -48,6 +53,136 @@ bool HasWindows(const std::wstring& driveRoot) {
     return GetFileAttributesW(
                (driveRoot + L"Windows\\System32\\winload.exe").c_str()) !=
            INVALID_FILE_ATTRIBUTES;
+}
+
+// 是否运行在 WinPE 里（判据与 disk.cpp::IsWinPE 一致：Control\MiniNT 键存在）。
+// 在 common 层重复这一小段是为了守住依赖 DAG（common 不依赖 disk，见 AGENTS §4）。
+bool IsRunningInPe() {
+    HKEY h = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+                      L"SYSTEM\\CurrentControlSet\\Control\\MiniNT", 0, KEY_READ,
+                      &h) != ERROR_SUCCESS)
+        return false;
+    RegCloseKey(h);
+    return true;
+}
+
+// 已安装的程序目录 = `<ProgramFiles>\SysRecover`（规则 ①）。
+// 注意 WOW64：32 位进程读到 `%ProgramFiles%` 仍是**原生** 64 位目录，与我们部署
+// 程序时写的 `C:\Program Files\SysRecover` 一致（不用 %ProgramFiles(x86)%）。
+std::wstring ProgramFilesSysRecoverDir() {
+    wchar_t pf[MAX_PATH] = {};
+    DWORD n = GetEnvironmentVariableW(L"ProgramFiles", pf, MAX_PATH);
+    std::wstring base;
+    if (n > 0 && n < MAX_PATH) {
+        base = pf;
+    } else {
+        wchar_t win[MAX_PATH] = {};
+        DWORD wl = GetWindowsDirectoryW(win, MAX_PATH);
+        if (wl < 2 || win[1] != L':')
+            return {};
+        base = std::wstring(1, win[0]) + L":\\Program Files";
+    }
+    while (!base.empty() && base.back() == L'\\')
+        base.pop_back();
+    return base + L"\\SysRecover";
+}
+
+// 设隐藏属性（用户 2026-10-17："D:\ZJRESTORE 应设置隐藏"）。幂等，失败留证。
+void HideDir(const std::wstring& dir) {
+    DWORD a = GetFileAttributesW(dir.c_str());
+    if (a == INVALID_FILE_ATTRIBUTES)
+        return;  // 目录不存在：无事可做
+    if (a & FILE_ATTRIBUTE_HIDDEN)
+        return;  // 已隐藏
+    if (!SetFileAttributesW(dir.c_str(), a | FILE_ATTRIBUTE_HIDDEN)) {
+        sysrecover::LogWarn("hide dir failed: " + ToUtf8(dir) +
+                            " err=" + std::to_string(GetLastError()));
+        return;
+    }
+    // 复核：FAT/NTFS 都应生效；没生效说明该卷有别的行为，必须留证（否则静默不隐藏）。
+    if (!(GetFileAttributesW(dir.c_str()) & FILE_ATTRIBUTE_HIDDEN))
+        sysrecover::LogWarn("hide dir not sticky: " + ToUtf8(dir));
+    else
+        sysrecover::LogInfo("hide dir ok: " + ToUtf8(dir));
+}
+
+// 目标已存在时改成 `<名> (N)<扩展名>` —— 搬迁**绝不覆盖**已有日志。
+std::wstring UniqueDest(const std::wstring& dst) {
+    if (GetFileAttributesW(dst.c_str()) == INVALID_FILE_ATTRIBUTES)
+        return dst;
+    size_t slash = dst.find_last_of(L'\\');
+    std::wstring dir =
+        (slash == std::wstring::npos) ? std::wstring() : dst.substr(0, slash + 1);
+    std::wstring name = dst.substr(slash + 1);
+    std::wstring stem = name, ext;
+    size_t dot = name.find_last_of(L'.');
+    if (dot != std::wstring::npos && dot > 0) {
+        stem = name.substr(0, dot);
+        ext = name.substr(dot);
+    }
+    for (int n = 2; n < 1000; ++n) {
+        std::wstring cand =
+            dir + stem + L" (" + std::to_wstring(n) + L")" + ext;
+        if (GetFileAttributesW(cand.c_str()) == INVALID_FILE_ATTRIBUTES)
+            return cand;
+    }
+    return dst;
+}
+
+// 只在**空**目录时删掉它（非空时保留 —— 里面可能还有 bootfix/脚本等资产）。
+// 只清 READONLY（RemoveDirectoryW 需要），**保留 HIDDEN** 等其它属性 —— 早先一律清成
+// NORMAL，把刚设好的隐藏位抹掉：D:\ZJRESTORE 非空删不掉，却已经变成不隐藏
+// （2026-10-17 e2e 实测：日志 `hide dir ok: D:\ZJRESTORE` 但盘上 attr=0x10）。
+bool RemoveEmptyDir(const std::wstring& dir) {
+    if (dir.empty())
+        return false;
+    DWORD a = GetFileAttributesW(dir.c_str());
+    if (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_READONLY))
+        SetFileAttributesW(dir.c_str(), a & ~FILE_ATTRIBUTE_READONLY);
+    return RemoveDirectoryW(dir.c_str()) != 0;
+}
+
+struct MigrateCount {
+    int moved = 0;
+    int failed = 0;
+};
+
+// 递归把 src 下所有文件**移动**到 dst（保留子目录结构）；不覆盖同名文件
+// （见 UniqueDest）；跨卷/被占用时退化为"复制 + 登记下次启动删除"。
+void MoveTreeMerge(const std::wstring& src, const std::wstring& dst,
+                   MigrateCount& c) {
+    CreateDirectoryW(dst.c_str(), nullptr);
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((src + L"\\*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE)
+        return;
+    do {
+        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L".."))
+            continue;
+        std::wstring s = src + L"\\" + fd.cFileName;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            MoveTreeMerge(s, dst + L"\\" + fd.cFileName, c);
+            continue;
+        }
+        std::wstring d = UniqueDest(dst + L"\\" + fd.cFileName);
+        SetFileAttributesW(s.c_str(), FILE_ATTRIBUTE_NORMAL);
+        if (MoveFileExW(s.c_str(), d.c_str(),
+                        MOVEFILE_COPY_ALLOWED | MOVEFILE_REPLACE_EXISTING)) {
+            ++c.moved;
+            continue;
+        }
+        // 移动失败（跨卷/被打开/权限）→ 复制成功也算搬走，源文件登记开机删除。
+        if (CopyFileW(s.c_str(), d.c_str(), FALSE) &&
+            MoveFileExW(s.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT)) {
+            ++c.moved;
+            continue;
+        }
+        ++c.failed;
+        sysrecover::LogWarn("log migrate: move failed: " + ToUtf8(s) +
+                            " (err=" + std::to_string(GetLastError()) + ")");
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
 }
 
 unsigned long long TreeSizeRec(const std::wstring& dir, bool root) {
@@ -167,15 +302,32 @@ wchar_t SelectRelocateDrive(const std::vector<wchar_t>& candidates,
 unsigned long long AppTreeSize() { return TreeSizeRec(AppDir(), true); }
 
 std::wstring LogBaseDir() {
-    std::wstring root = AppDir();
+    g_logHomeDegraded = false;
+    const std::wstring appRoot = AppDir();
     wchar_t win[MAX_PATH] = {};
-    if (!GetWindowsDirectoryW(win, MAX_PATH))
-        return root;
-    wchar_t sys = (wchar_t)towupper(win[0]);
-    if (root.size() < 2 || (wchar_t)towupper(root[0]) != sys)
-        return root;  // 软件不在系统盘：日志就在程序目录（PIT-104）
-    // 软件在系统盘：找一块数据盘放日志（PIT-105，用户 2026-10-03 规格）——
-    // 还原/重装系统盘会格式化系统盘，日志必须放别的盘才留得住。
+    DWORD winLen = GetWindowsDirectoryW(win, MAX_PATH);
+    const std::wstring winDir = winLen ? std::wstring(win, winLen) : std::wstring();
+    const wchar_t sys =
+        (winLen >= 2 && win[1] == L':') ? (wchar_t)towupper(win[0]) : 0;
+    const bool isPe = IsRunningInPe();
+
+    // 规则 ①（用户 2026-10-17）：已安装 → <系统盘>\Program Files\SysRecover\logs。
+    const std::wstring installDir = ProgramFilesSysRecoverDir();
+    if (UseInstallDirLogHome(installDir, winDir, isPe)) {
+        const std::wstring logs = installDir + L"\\logs";
+        CreateDirectoryW(logs.c_str(), nullptr);
+        if (DirWritable(logs))
+            return installDir;
+    }
+
+    // 规则 ②：程序所在文件夹。PE 例外：PE 的 X:\ 是 RAM 盘（重启即失），
+    // 且软件常常就在 X:\ 上 → 跳过它，让日志落数据盘（PIT-105/107 的 PE 行为）。
+    const bool appOnWinDrive = sys != 0 && appRoot.size() >= 2 &&
+                               (wchar_t)towupper(appRoot[0]) == sys;
+    if (DirWritable(appRoot) && !(isPe && appOnWinDrive))
+        return appRoot;
+
+    // 规则 ③：只读介质（光盘/写保护）→ 除系统盘外第一个可写固定分区 \ZJRESTORE。
     DWORD mask = GetLogicalDrives();
     std::vector<wchar_t> order;
     auto fixedNonSys = [&](wchar_t c) {
@@ -199,11 +351,85 @@ std::wstring LogBaseDir() {
                 continue;
             std::wstring base = drv + kCopyDirName;
             CreateDirectoryW(base.c_str(), nullptr);
-            if (DirWritable(base))
+            if (DirWritable(base)) {
+                HideDir(base);  // 盘根目录不留可见的我们自己的文件夹
                 return base;
+            }
         }
     }
-    return root;  // 没有可写数据盘 → 只能留在系统盘（还原时日志会丢，别无选择）
+
+    // 规则 ④：一个都没有 → 退回程序目录并标记（GUI/CLI 提示日志保不住）。
+    g_logHomeDegraded = true;
+    LogWarn("log home: nowhere writable (app dir + all fixed drives) -> could "
+            "not save logs");
+    return appRoot;
+}
+
+bool UseInstallDirLogHome(const std::wstring& installDir,
+                          const std::wstring& winDir, bool isPe) {
+    if (installDir.size() < 3 || installDir[1] != L':')
+        return false;
+    if (isPe)
+        return false;  // PE 里 Program Files 可能是离线系统盘（还原目标）
+    if (winDir.size() < 2 || winDir[1] != L':')
+        return false;
+    return (wchar_t)towupper(installDir[0]) == (wchar_t)towupper(winDir[0]);
+}
+
+bool LogHomeDegraded() { return g_logHomeDegraded; }
+
+std::string MigrateLogsToLogHome() {
+    // 只在规则 ① 命中（日志根 = 已安装的程序目录）时搬：否则日志根本来就在
+    // 数据盘上（就地运行/U盘），搬过去等于自搬自。
+    wchar_t win[MAX_PATH] = {};
+    DWORD winLen = GetWindowsDirectoryW(win, MAX_PATH);
+    const std::wstring winDir = winLen ? std::wstring(win, winLen) : std::wstring();
+    const std::wstring installDir = ProgramFilesSysRecoverDir();
+    if (!UseInstallDirLogHome(installDir, winDir, IsRunningInPe()))
+        return {};
+    const std::wstring dest = installDir + L"\\logs";
+    CreateDirectoryW(dest.c_str(), nullptr);
+    if (!DirWritable(dest))
+        return {};
+
+    const wchar_t sys = (winDir.size() >= 2 && winDir[1] == L':')
+                            ? (wchar_t)towupper(winDir[0])
+                            : 0;
+    DWORD mask = GetLogicalDrives();
+    MigrateCount c;
+    int sources = 0;
+    for (wchar_t d = L'C'; d <= L'Z'; ++d) {
+        if (!(mask & (1u << (d - L'A'))))
+            continue;
+        if (sys != 0 && (wchar_t)towupper(d) == sys)
+            continue;  // 系统盘不扫（日志根自己就在那儿）
+        wchar_t drv[4] = {d, L':', L'\\', 0};
+        if (GetDriveTypeW(drv) != DRIVE_FIXED)
+            continue;
+        const std::wstring base = std::wstring(drv) + kCopyDirName;      // 软件目录回退
+        const std::wstring fb = std::wstring(drv) + kFallbackLogDirName; // 黑匣子兜底窝
+        if (GetFileAttributesW(base.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            HideDir(base);  // 用户 2026-10-17：<盘>:\ZJRESTORE 设隐藏
+            const std::wstring src = base + L"\\logs";
+            if (GetFileAttributesW(src.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                ++sources;
+                MoveTreeMerge(src, dest, c);
+                if (RemoveEmptyDir(src))
+                    RemoveEmptyDir(base);  // 搬空且 ZJRESTORE 也空了 → 整个删掉
+            }
+            HideDir(base);  // 兜一层：删不掉（还有 bootfix 等）时确保隐藏位在
+        }
+        if (GetFileAttributesW(fb.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            HideDir(fb);
+            ++sources;
+            MoveTreeMerge(fb, dest, c);
+            RemoveEmptyDir(fb);
+        }
+    }
+    // 结尾留证：现场只看这一行就能判断"搬了几个源、成功/失败多少"。
+    return "log migrate: moved=" + std::to_string(c.moved) +
+           " failed=" + std::to_string(c.failed) +
+           " sources=" + std::to_string(sources) + " dest=" + ToUtf8(dest);
 }
 
 RelocatePlan CheckRelocate() {

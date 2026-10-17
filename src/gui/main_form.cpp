@@ -12,6 +12,7 @@
 #include "app/ops.h"
 #include "app/safety.h"
 #include "app/selfdiag.h"
+#include "app/swapleft.h"
 #include "boot/bcd.h"
 #include "boot/grub.h"
 #include "boot/uefi.h"
@@ -162,6 +163,16 @@ void CMainForm::InitWindow() {
     CreateDirectoryW(logsDir.c_str(), nullptr);
     LogInit(logsDir);
     ProgressInit(logsDir);
+    // 克隆（备返）后首次进入新系统：**先**把救援层/旧版本留在数据盘上的日志
+    // 搬进程序目录（用户 2026-10-17 规格），**再**问是否删除旧系统（那个框在
+    // main_win.cpp）。必须放在这里、也就是 StartupLazyWork（收痕迹 + 清散件）
+    // **之前** —— 否则收集器会先把这些文件收进 logs\collected 并清掉源目录，
+    // 搬运"无源可搬"（顺序由 WM_STARTUP_LAZY 在消息循环里才被处理保证）。
+    // 失败只记日志不挡流程（拿不到日志也只是日志少几行）。
+    if (sysrecover::CloneFirstBootPending()) {
+        const std::string mig = sysrecover::MigrateLogsToLogHome();
+        if (!mig.empty()) sysrecover::LogInfo(mig);
+    }
     sysrecover::StartupPhase("InitWindow");
     LogInfo("GUI InitWindow");
     // 支持把 .esd/.wim 直接拖进窗口（第一步的输入框）。原生 EDIT 子窗口由

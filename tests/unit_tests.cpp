@@ -595,6 +595,33 @@ TEST(relocate_drive_choice) {
     CHECK_EQ(SelectRelocateDrive({L'D', L'E'}, L'C'), L'D');
 }
 
+// 用户 2026-10-17 规则 ①：日志根优先「已安装的程序目录」——
+// `<ProgramFiles>\SysRecover\logs`，但 PE 里 Program Files 可能是离线系统盘
+// （还原目标）→ 不能用；装 Windows 的盘与程序目录不同盘时也不能用。
+TEST(log_home_install_dir_rule) {
+    using sysrecover::UseInstallDirLogHome;
+    // 最常见：C: 装 Windows，程序装在 C:\Program Files\SysRecover
+    CHECK(UseInstallDirLogHome(L"C:\\Program Files\\SysRecover", L"C:\\Windows",
+                              false));
+    // 盘符大小写不敏感
+    CHECK(UseInstallDirLogHome(L"c:\\Program Files\\SysRecover", L"C:\\Windows",
+                              false));
+    // Windows 装在 D: → D:\Program Files\SysRecover
+    CHECK(UseInstallDirLogHome(L"D:\\Program Files\\SysRecover", L"D:\\Windows",
+                              false));
+    // 不同盘：D: 的程序目录 + C: 的 Windows → 不用（Program Files 目录不在本系统里）
+    CHECK(!UseInstallDirLogHome(L"D:\\Program Files\\SysRecover", L"C:\\Windows",
+                               false));
+    // PE：winDir 在 RAM（X:），Program Files 可能是离线系统盘 → 一律不用
+    CHECK(!UseInstallDirLogHome(L"C:\\Program Files\\SysRecover", L"X:\\Windows",
+                               true));
+    // 空/非法路径 → 不用
+    CHECK(!UseInstallDirLogHome(L"", L"C:\\Windows", false));
+    CHECK(!UseInstallDirLogHome(L"Program Files\\SysRecover", L"C:\\Windows",
+                               false));
+    CHECK(!UseInstallDirLogHome(L"C:\\Program Files\\SysRecover", L"", false));
+}
+
 // ────────────────────── rescue_decision（回执/待执行标记判定，PIT-115） ────
 // 用户 2026-10-05 规格："救援层是否真的跑过"必须能从记录中判定：
 //   标记（pending）比所有回执新 / 压根没回执 → 任务从未执行；

@@ -107,9 +107,10 @@ void TakeOwnershipAndGrant(const std::wstring& path) {
     ea.Trustee.ptstrName = (LPWSTR)adminSid;
 
     PACL oldDacl = nullptr;
+    PSECURITY_DESCRIPTOR oldSd = nullptr;
     GetNamedSecurityInfoW(const_cast<LPWSTR>(ep.c_str()), SE_FILE_OBJECT,
                           DACL_SECURITY_INFORMATION, nullptr, nullptr, &oldDacl,
-                          nullptr, nullptr);
+                          nullptr, &oldSd);
     PACL newDacl = nullptr;
     SetEntriesInAclW(1, &ea, oldDacl, &newDacl);
     if (newDacl) {
@@ -118,7 +119,12 @@ void TakeOwnershipAndGrant(const std::wstring& path) {
                               nullptr, nullptr, newDacl, nullptr);
         LocalFree(newDacl);
     }
-    if (oldDacl) LocalFree(oldDacl);
+    // ⚠️ 必须释放 GetNamedSecurityInfoW 返回的**安全描述符**，不能释放 oldDacl
+    // —— 后者是该描述符的**内部指针**（实测 oldDacl = sd + 0x14）。
+    // 2026-10-17 现场实证：原来写成 `LocalFree(oldDacl)` → STATUS_HEAP_CORRUPTION
+    // (0xC0000374) → 进程被 fastfail 秒杀（不产生用户态 dump、不经过 VEH/UEF）——
+    // 症状就是「点删除旧系统后闪退、~old 一个字节都没删、下次开机又被问一次」。
+    if (oldSd) LocalFree(oldSd);
     if (logStep)
         LogInfo("swap leftover takeown done #" + std::to_string(g_takeownN) +
                 ": " + ToUtf8(path));
@@ -430,6 +436,22 @@ std::vector<SwapLeftInfo> ScanSwapLeftovers() {
 
 bool ProbeSwapNew(wchar_t drive, SwapLeftInfo& out) {
     return ProbeDrive(drive, true, out);
+}
+
+// 克隆（备返）后首启判定：只查 <盘>:\~old\.zj-keepold 的属性 —— 该标记由
+// ops.cpp 暂存时写在目标根、由 zjswap.sh 随旧系统树移进 ~old/，所以它存在
+// 就等于「交换已完成 + 用户当初勾了备返」（暂存中还没换、交换中断时都没有）。
+// 单次 GetFileAttributesW，主窗建窗期调用无感。
+bool CloneFirstBootPending() {
+    wchar_t buf[512] = {0};
+    if (!GetLogicalDriveStringsW(511, buf)) return false;
+    for (wchar_t* p = buf; *p; p += std::wcslen(p) + 1) {
+        if (GetDriveTypeW(p) != DRIVE_FIXED) continue;
+        std::wstring mk = RootPath(p[0]) + L"~old\\.zj-keepold";
+        if (GetFileAttributesW(mk.c_str()) != INVALID_FILE_ATTRIBUTES)
+            return true;
+    }
+    return false;
 }
 
 // 删除 ~old 前把根下的契约文件（_zjresy*.log / restore-task.conf|json）备份到

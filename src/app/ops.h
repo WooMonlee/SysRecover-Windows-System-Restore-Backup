@@ -38,7 +38,9 @@ struct RestoreRequest {
     // "swap" = A 引擎（Windows 原生解压到 <目标>:\~new + Linux 仅改名交换）。
     std::string engine;
     // 备返（用户 2026-10-09 规格）：true = 交换后保留 ~old，往新系统桌面
-    // 放管理 GUI 快捷方式（无 RunOnce）；false = 开机 RunOnce 静默删 ~old。
+    // 放管理 GUI 快捷方式 + 注入 RunOnce 让新系统**首启自动运行本程序**
+    //（用户 2026-10-17 规格：先搬日志回程序目录，再弹「是否删除旧系统」）；
+    // false = 开机 RunOnce 静默删 ~old。
     bool keepOld = false;
 };
 

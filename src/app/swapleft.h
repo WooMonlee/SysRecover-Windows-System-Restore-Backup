@@ -45,6 +45,11 @@ SwapLeftVerdict DecideSwapLeftover(const SwapLeftInfo& i,
 // 扫描全部固定盘的 ~new / ~old（属性级检查，毫秒级）
 std::vector<SwapLeftInfo> ScanSwapLeftovers();
 
+// 克隆（备返）后首次进入新系统：任一固定盘根 ~old\.zj-keepold 存在 → true。
+// 单次属性查询（不读文件），供「先搬旧日志进程序目录、再问是否删旧系统」的
+// 顺序判断用（用户 2026-10-17 规格）——主窗初始化期调用，必须够快。
+bool CloneFirstBootPending();
+
 // 单盘探测 ~new（还原暂存时判定能否复用）：找到返回 true
 bool ProbeSwapNew(wchar_t drive, SwapLeftInfo& out);
 

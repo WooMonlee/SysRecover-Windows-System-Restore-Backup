@@ -39,11 +39,37 @@ bool DoRelocate(const RelocatePlan& plan, bool wait, int* exitCode,
 // 整包大小（递归，跳过 logs\）—— 用于目标盘剩余空间检查。
 unsigned long long AppTreeSize();
 
-// 日志/数据根（PIT-105）：软件装在**系统盘**上时 → <数据盘>\ZJRESTORE
-// （还原/重装系统盘会格式化系统盘，日志必须放别的盘才留得住）；
-// 其他位置（数据盘/PE 的 X:/U盘）→ 软件目录。
-// 优先选不含 Windows 的数据盘（PE 下避免离线 C:），盘不存在/不可写时退回软件目录。
+// 日志/数据根 —— 用户 2026-10-17 规格（四条规则，逐条尝试，前者可用即止）：
+//   ① 已安装的程序目录 `<系统盘>\Program Files\SysRecover`（可写就用它；
+//      与「克隆后首启把救援层日志搬回程序目录」是同一个位置）；
+//   ② 程序所在文件夹（U盘/绿色目录；PE 的 X:\ 是 RAM 盘 → 跳过，见下）；
+//   ③ 只读介质（光盘/写保护）→ 除系统盘外**第一个可写固定分区**的 `\ZJRESTORE`
+//      （优先不含 Windows 的盘；该目录设**隐藏**属性）；
+//   ④ 一个都没有 → 退回程序目录并置 LogHomeDegraded()（GUI/CLI 提示日志保不住）。
+// PE 例外：PE 下 `GetWindowsDirectoryW()` 在 RAM（X:\Windows），而"已安装的程序
+// 目录"可能是**离线系统盘**（还原目标）→ 规则 ① 与"X:\ 上的规则 ②"都跳过，
+// 日志一律落数据盘（PIT-105/107 的 PE 行为不变）。
 // 返回的目录已尽力建好；调用方只需再建 `\logs`。
 std::wstring LogBaseDir();
+
+// 纯逻辑（单测）：是否该用「已安装的程序目录」当日志根（规则 ①）。
+// installDir = `<ProgramFiles>\SysRecover`，winDir = GetWindowsDirectoryW()。
+// PE 里 winDir 在 RAM 而 Program Files 可能是离线系统盘 → 一律不用。
+bool UseInstallDirLogHome(const std::wstring& installDir,
+                          const std::wstring& winDir, bool isPe);
+
+// 规则 ④：程序目录与所有固定分区都不可写（日志无处可放）。
+bool LogHomeDegraded();
+
+// 克隆后**首启**搬迁（用户 2026-10-17 规格）：把数据盘上的旧日志位置搬回日志根
+// （「先搬日志，再询问是否删除旧系统」）。
+//   源 = 各固定盘（不含系统盘）的 `<盘>:\ZJRESTORE\logs`（PIT-059 软件目录回退）
+//        与 `<盘>:\ZJRESTORE-logs`（PIT-137 黑匣子兜底窝，文件直接摊在根下）；
+//   目的 = LogBaseDir() + `\logs`，**仅当规则 ① 命中**（否则日志根就在数据盘上，
+//        搬了等于自搬自）；
+//   不覆盖同名文件（改名追加 ` (N)`）；跨卷/被占用走复制 + 登记「下次启动删除」；
+//   搬空的源目录删掉，没搬空的（还有 bootfix 等）与兜底窝设**隐藏**。
+// 返回一行摘要（调用方写日志，便于现场取证）；规则 ① 不命中时返回空串。
+std::string MigrateLogsToLogHome();
 
 }  // namespace sysrecover
