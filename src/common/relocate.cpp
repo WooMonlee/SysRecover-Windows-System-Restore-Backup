@@ -1,6 +1,7 @@
 #include "relocate.h"
 
 #include "i18n.h"
+#include "logger.h"
 #include "selfarch.h"
 
 #include <windows.h>
@@ -106,6 +107,29 @@ bool CopyTree(const std::wstring& src, const std::wstring& dst, bool root,
     } while (FindNextFileW(h, &fd));
     FindClose(h);
     return true;
+}
+
+// 尽力删除整棵子树（先归零属性；失败不中断 —— 调用方会复核残留并留账）。
+// 用于搬迁后清目的地的旧 logs（用户 2026-10-17 规格）。
+void DeleteTreeBestEffort(const std::wstring& dir) {
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L".."))
+                continue;
+            std::wstring full = dir + L"\\" + fd.cFileName;
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                DeleteTreeBestEffort(full);
+            } else {
+                SetFileAttributesW(full.c_str(), FILE_ATTRIBUTE_NORMAL);
+                DeleteFileW(full.c_str());
+            }
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    SetFileAttributesW(dir.c_str(), FILE_ATTRIBUTE_NORMAL);
+    RemoveDirectoryW(dir.c_str());
 }
 
 // 原命令行去掉首个 token（保留引号内空格）；用于给新副本转发参数。
@@ -252,6 +276,26 @@ bool DoRelocate(const RelocatePlan& plan, bool wait, int* exitCode,
         if (err)
             *err = std::string(Tr("复制失败：")) + detail;
         return false;
+    }
+    // 用户 2026-10-17 规格：光盘/U盘上的旧日志与本次运行无关（CopyTree 也
+    // 从不复制源端 logs），但目的地可能残留以前版本运行留下的老日志 ——
+    // 复制成功后先清掉目的地的旧 logs，再由新实例生成本次的新日志。
+    // ⚠️ 必须在 CreateProcess 之前删：新实例启动即写 logs，之后删会误删新日志。
+    {
+        std::wstring staleLogs = plan.destRoot + L"\\logs";
+        if (GetFileAttributesW(staleLogs.c_str()) !=
+            INVALID_FILE_ATTRIBUTES) {
+            DeleteTreeBestEffort(staleLogs);
+            if (GetFileAttributesW(staleLogs.c_str()) !=
+                INVALID_FILE_ATTRIBUTES)
+                sysrecover::LogWarn(
+                    "relocate: stale destination logs removal incomplete: " +
+                    ToUtf8(staleLogs));
+            else
+                sysrecover::LogInfo(
+                    "relocate: stale destination logs removed: " +
+                    ToUtf8(staleLogs));
+        }
     }
     // 新副本 exe：保持相对应用根的路径（如 \x64\SysRecoverUI.exe）
     wchar_t exeBuf[MAX_PATH * 2] = {};
