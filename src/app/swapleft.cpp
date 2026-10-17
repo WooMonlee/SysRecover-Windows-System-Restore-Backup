@@ -157,6 +157,18 @@ void DeleteRec(const std::wstring& dir, DelStat& st,
     if (depth <= 1)
         LogInfo("swap leftover rec enter: " + ToUtf8(dir) +
                 " depth=" + std::to_string(depth));
+    // 深度安全网（0.7.55）：每帧栈占用 ≈ WIN32_FIND_DATAW(592B) + 两个
+    // wstring + 编译器开销 ≈ 700B~1KB。真实 Windows 树极少超过 50 层
+    // （junction 已在下方按 reparse 跳过，不会成环）；512 层给 8MB 线程栈
+    // （main_win.cpp RunDeleteWithProgress）留 10 倍余量。病态超深树到顶后
+    // 停止递归 —— 该子树留着不删（rmdir 报 DIR_NOT_EMPTY 记账留证），
+    // 绝不把进程栈打穿（栈溢出 = 无 dump 秒退，正是 1016-5 现场症状）。
+    if (depth >= 512) {
+        ++st.fail;
+        LogWarn("swap leftover depth cap: " + ToUtf8(dir) +
+                " depth>=512, subtree left in place");
+        return;
+    }
     // 属性不为 0 的目录先归一，否则 RemoveDirectory 也可能被拒
     std::wstring edir = ExtPath(dir);
     SetFileAttributesW(edir.c_str(), FILE_ATTRIBUTE_NORMAL);
