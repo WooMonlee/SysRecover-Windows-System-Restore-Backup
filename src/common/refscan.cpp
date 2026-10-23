@@ -420,7 +420,8 @@ void ScanRunKeys(const RootCtx& rc, const std::wstring& rel,
             ERROR_SUCCESS)
             break;
         if (t != REG_SZ && t != REG_EXPAND_SZ) continue;
-        std::wstring exe = ExtractExecutable(std::wstring((wchar_t*)data));
+        std::wstring exe = ExtractExecutable(
+            std::wstring(reinterpret_cast<const wchar_t*>(data)));
         if (exe.empty()) continue;
         PushIfDangling(out, rc, rel, name, Expand(exe));
     }

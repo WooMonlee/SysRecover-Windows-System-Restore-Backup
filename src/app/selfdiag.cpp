@@ -492,7 +492,8 @@ void AuditExtValues(HKEY root, const wchar_t* sub, const char* scope,
             ERROR_SUCCESS)
             break;
         // 值形态：值名 = CLSID，数据 = 描述（如 ShellExecuteHooks）
-        AuditExtOne(scope, (const wchar_t*)data, name, out);
+        AuditExtOne(scope, reinterpret_cast<const wchar_t*>(data), name,
+                    out);
     }
     RegCloseKey(k);
 }
@@ -908,8 +909,9 @@ int DiagReportText(std::string& out, const std::vector<DiskInfo>* disks) {
                 char n1[256] = {}, d1[512] = {};
                 WideCharToMultiByte(CP_UTF8, 0, vn, -1, n1, sizeof(n1), nullptr,
                                     nullptr);
-                WideCharToMultiByte(CP_UTF8, 0, (const wchar_t*)data, -1, d1,
-                                    sizeof(d1), nullptr, nullptr);
+                WideCharToMultiByte(CP_UTF8, 0,
+                                    reinterpret_cast<const wchar_t*>(data), -1,
+                                    d1, sizeof(d1), nullptr, nullptr);
                 snprintf(buf, sizeof(buf), "[diag] shellext blocked %s = %s\n",
                          n1, d1);
                 out += buf;
@@ -1471,9 +1473,11 @@ void EaScanRec(const std::wstring& dir, std::string& out,
         unsigned long off = 0;
         for (;;) {
             unsigned char* e = buf.data() + off;
-            unsigned long next = *(unsigned long*)e;
+            unsigned long next = 0;
+            memcpy(&next, e, sizeof(next));
             unsigned char nameLen = e[5];
-            unsigned short valLen = *(unsigned short*)(e + 6);
+            unsigned short valLen = 0;
+            memcpy(&valLen, e + 6, sizeof(valLen));
             out += " | ";
             out.append((char*)e + 8, nameLen);
             out += "=";

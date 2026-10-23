@@ -108,7 +108,9 @@ int ProbeImageOs(const std::wstring& image, int index, int* major, int* minor,
         if (GetFileVersionInfoW(kernel.c_str(), 0, sz, buf.data())) {
             VS_FIXEDFILEINFO* fi = nullptr;
             UINT flen = 0;
-            if (VerQueryValueW(buf.data(), L"\\", (LPVOID*)&fi, &flen) && fi) {
+            if (VerQueryValueW(buf.data(), L"\\",
+                               reinterpret_cast<LPVOID*>(&fi), &flen) &&
+                fi) {
                 if (major) *major = HIWORD(fi->dwFileVersionMS);
                 if (minor) *minor = LOWORD(fi->dwFileVersionMS);
                 ok = true;

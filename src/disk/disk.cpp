@@ -494,8 +494,9 @@ bool ReadSmartData(uint32_t diskIndex, unsigned char* out) {
     in.apt.AtaFlags = ATA_FLAGS_DATA_IN | ATA_FLAGS_DRDY_REQUIRED;
     in.apt.DataTransferLength = 512;
     in.apt.TimeOutValue = 10;
-    in.apt.DataBufferOffset =
-        (ULONG_PTR)((unsigned char*)in.data - (unsigned char*)&in);
+    in.apt.DataBufferOffset = static_cast<ULONG_PTR>(
+        reinterpret_cast<unsigned char*>(in.data) -
+        reinterpret_cast<unsigned char*>(&in));
     FillSmartRegs(in.apt, 0xD0);
     DWORD br = 0;
     if (!DeviceIoControl(h.h, IOCTL_ATA_PASS_THROUGH, &in, sizeof(in), &in,
@@ -576,10 +577,10 @@ bool ReadNvmeSmart(uint32_t diskIndex, unsigned char* out) {
     // ERROR_INVALID_PARAMETER(87) 拒绝（PIT-086 实测：12/9 布局三连 87）。
     unsigned char in[sizeof(STORAGE_PROPERTY_QUERY) +
                      sizeof(STORAGE_PROTOCOL_SPECIFIC_DATA)] = {};
-    auto* q = (STORAGE_PROPERTY_QUERY*)in;
-    q->PropertyId = StorageDeviceProtocolSpecificProperty;  // = 50（SDK 口径）
+    auto* q = reinterpret_cast<STORAGE_PROPERTY_QUERY*>(in);
+    q->PropertyId = StorageDeviceProtocolSpecificProperty;  // = 50，SDK 口径
     q->QueryType = PropertyStandardQuery;
-    auto* d = (STORAGE_PROTOCOL_SPECIFIC_DATA*)(in + 8);
+    auto* d = reinterpret_cast<STORAGE_PROTOCOL_SPECIFIC_DATA*>(in + 8);
     d->ProtocolType = ProtocolTypeNvme;
     d->DataType = NVMeDataTypeLogPage;
     d->ProtocolDataRequestValue = 0x02;  // SMART / Health Information（Log 02h）
@@ -593,7 +594,7 @@ bool ReadNvmeSmart(uint32_t diskIndex, unsigned char* out) {
         return false;
     if (br < sizeof(STORAGE_PROTOCOL_DATA_DESCRIPTOR))
         return false;
-    auto* desc = (STORAGE_PROTOCOL_DATA_DESCRIPTOR*)buf;
+    auto* desc = reinterpret_cast<STORAGE_PROTOCOL_DATA_DESCRIPTOR*>(buf);
     auto* sd = &desc->ProtocolSpecificData;
     // 数据地址 = 协议字段基址(descriptor+8) + ProtocolDataOffset（MSDN 口径）；
     // 常见返回值是 40（=sizeof 协议字段），即数据紧随描述符之后。

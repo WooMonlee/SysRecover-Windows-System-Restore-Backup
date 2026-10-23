@@ -207,7 +207,8 @@ std::vector<unsigned char> BuildPack(const std::vector<FileEntry>& files) {
     PutU32(out, (unsigned long)files.size());
     for (const auto& f : files) {
         PutU32(out, (unsigned long)(f.relPath.size() * 2));
-        const unsigned char* p = (const unsigned char*)f.relPath.data();
+        const unsigned char* p =
+            reinterpret_cast<const unsigned char*>(f.relPath.data());
         out.insert(out.end(), p, p + f.relPath.size() * 2);
         PutU32(out, (unsigned long)f.eas.size());
         for (const auto& e : f.eas) {
@@ -256,7 +257,8 @@ bool ParsePack(const unsigned char* data, size_t len,
             return false;
         }
         FileEntry fe;
-        fe.relPath.assign((const wchar_t*)(data + off), pb / 2);
+        fe.relPath.assign(reinterpret_cast<const wchar_t*>(data + off),
+                          pb / 2);
         off += pb;
         if (off + 4 > len) {
             why = "truncated eaCount";
@@ -636,7 +638,8 @@ bool ParseRepack(const std::vector<unsigned char>& bytes,
         o += 4;
         if (pl % 2 || !need((size_t)pl + 4 + 8 + 4)) return false;
         ReparseEntry e;
-        e.relPath.assign((const wchar_t*)(bytes.data() + o), pl / 2);
+        e.relPath.assign(reinterpret_cast<const wchar_t*>(bytes.data() + o),
+                         pl / 2);
         o += pl;
         memcpy(&e.attrs, bytes.data() + o, 4);
         o += 4;
@@ -931,9 +934,11 @@ int CaptureVolume(const std::wstring& rootIn, const std::wstring& packPath,
             bool bad = false;
             for (;;) {
                 const unsigned char* e = buf.data() + off;
-                unsigned long next = *(const unsigned long*)e;
+                unsigned long next = 0;
+                memcpy(&next, e, sizeof(next));
                 unsigned char nameLen = e[5];
-                unsigned short valLen = *(const unsigned short*)(e + 6);
+                unsigned short valLen = 0;
+                memcpy(&valLen, e + 6, sizeof(valLen));
                 if (nameLen == 0 || off + 8u + nameLen + 1u + valLen > buf.size()) {
                     bad = true;
                     break;
