@@ -67,7 +67,9 @@ else {
 }
 Write-Output ("[build] drill disk mode={0} bulk={1} (setup={2}s restore={3}s)" -f `
     $mode, $Bulk, $SetupSecs, $RestoreSecs)
-& "<repo>\Python313\python.exe" (Join-Path $wd 'mk-drill.py')
+$py = $env:PYTHON
+if (-not $py) { $py = "python" }
+& $py (Join-Path $wd 'mk-drill.py')
 if ($LASTEXITCODE -ne 0) { Write-Output "UNDO DRILL: FAIL (mk-drill.py)"; exit 1 }
 
 function Invoke-Boot {
