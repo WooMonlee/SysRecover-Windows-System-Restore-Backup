@@ -17,10 +17,13 @@ There is no shortage of backup/restore tools out there, so let us put our cards 
 >
 > 👋 **First time here? Read [`docs/11-接手指南（读我优先）`](docs/11-接手指南（读我优先）.md) first** — current status (verified / unverified), next priorities, and the document map. For a product overview, see [`docs/00-项目简介`](docs/00-项目简介（给协作者）.md).
 
-![SysRecover main window (restore mode)](docs/img/gui-main.png)
+![SysRecover restore mode (file → system)](docs/img/gui-restore.png)
 
-<sub>Main window (restore mode): **step 1** pick the image → **step 2** pick the target partition (a dirty disk is marked "current system") → **step 3** start the restore;
-the program version is shown at the top right, progress at the bottom.</sub>
+![SysRecover backup mode (system → file)](docs/img/gui-backup.png)
+
+<sub>Restore mode (file → system): **step 1** pick the image → **step 2** pick the target partition (a dirty disk is marked "current system") → **step 3** start the restore; the program version is shown at the top right, progress at the bottom.</sub>
+
+<sub>Backup mode (system → file): choose the save location, source partition, format, and CPU limit, then start; VSS hot backup works while Windows is running.</sub>
 
 ---
 
