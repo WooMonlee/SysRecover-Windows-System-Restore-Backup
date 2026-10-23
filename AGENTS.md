@@ -1126,6 +1126,13 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **门禁**：`check-widths` 首次因 70px 放不下 `Add Menu`(72)/`Clear Menu`(78) 报 FAIL；把两个按钮加宽到 84、`日志` 收到 45px 后通过。`make check` 57 用例/454 断言 + i18n 575/575 + check-docs/widths/shell PASS；`make package` 双架构（**`0.9.9`**，initramfs stamp 0.9.9，494 模块）。
   · 🚧 待用户看界面：按钮文字/顺序/宽度/禁用色是否满意；`清除菜单` 的英文是 `Clear Menu`。
 
+- PIT-166 **0.9.10 质量检查：Cppcheck/ShellCheck 静态分析 + 真实缺陷修复**（2026-10-23）：
+  · **工具**：Cppcheck 2.22.0（`--enable=warning,performance --inconclusive --platform=win64`，仅 `src/`）与 ShellCheck 0.11.0（6 个救援脚本）。
+  · **结果**：Cppcheck **0 error**、18 warning（15 处 C 风格 cast；2 处 VSS 误报；1 处 lambda `va_start` 误报）、10 performance；ShellCheck **0 error**、7 warning（`ZJPREFIX` 未 `-x` 跟随 `/zjlog.sh`、`ls`/printf 建议）。
+  · **修复**：① `grub.cpp` `snprintf` 的 `%lc` → `%c` + `(char)`；② `zjrestore-lite.sh` EA `ADD="$ADD[...]"` → `${ADD}[...]`（SC1087）；③ hidden sectors / boot region 的 `A && B || C` → `if/else`（SC2015）；④ `target sectors` 先落变量、`echo "$_g2"` 加引号（SC2046/SC2086）；⑤ `zjswap.sh` `rm -rf "${M:?}/$b"`（SC2115）；⑥ `EfiHdNode`/`DeployItem`/`LogFileItem`/`AtaSmartIn`/`Hit` 成员默认初始化；⑦ 去掉 `uefi.cpp` 的 `(void)0;`。
+  · **回归**：`make check` 57 用例/454 断言 + i18n 575/575 + check-docs/widths/shell PASS；QEMU BIOS drill **PASS**（重建 `base/drill.raw` 后）；`make package` 双架构 **0.9.10**。
+  · **剩余（不阻塞 1.0）**：15 处 C 风格 cast 逐步改 `static_cast/reinterpret_cast`；`ops.cpp` 2725 行等大文件拆分；CI 仍只 x64 `check+all`，x86/package/QEMU 冒烟/静态分析未入门禁。报告见 [`docs/27`](docs/27-质量检查报告（0.9.10）.md)。
+
 ## 14. License 合规（SBOM，随版本更新）
 
 | 组件 | 版本/来源 | License | 链接/分发方式 |
