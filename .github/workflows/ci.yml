@@ -44,3 +44,76 @@ jobs:
           name: SysRecover-x64-${{ github.sha }}
           path: dist/x64
           if-no-files-found: error
+  windows-x86:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW32
+          install: mingw-w64-i686-gcc
+
+      - name: Install make
+        shell: pwsh
+        run: |
+          choco install mingw --no-progress -y
+
+      - name: Build x86
+        shell: pwsh
+        run: |
+          $env:PYTHON = (Get-Command python).Source
+          $env:PYTHONUTF8 = "1"
+          $env:PYTHONIOENCODING = "utf-8"
+          $env:MINGW32 = "C:\msys64\mingw32"
+          $env:PATH = "C:\msys64\mingw32\bin;" + $env:PATH
+          mingw32-make -f Makefile SHELL=cmd.exe ARCH=x86 all
+
+      - name: Upload x86 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SysRecover-x86-${{ github.sha }}
+          path: dist/SysRecover.exe
+          if-no-files-found: error
+
+  static:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install analyzers
+        shell: pwsh
+        run: |
+          choco install cppcheck shellcheck --no-progress -y
+
+      - name: Cppcheck
+        shell: pwsh
+        run: |
+          $cpp = "C:\Program Files\Cppcheck\cppcheck.exe"
+          $out = & $cpp --enable=warning,performance --inconclusive `
+            --platform=win64 --std=c++17 `
+            --suppress=missingIncludeSystem --suppress=missingInclude `
+            --inline-suppr `
+            -Isrc -Ithird_party/wimlib `
+            -Ithird_party/duilib-master/DuiLib `
+            -Ithird_party/duilib-master/DuiLib/Control `
+            -Ithird_party/duilib-master/DuiLib/Core `
+            -Ithird_party/duilib-master/DuiLib/Layout `
+            -Ithird_party/duilib-master/DuiLib/Utils src 2>&1
+          $out | Write-Host
+          if ($out -match ": error:") { exit 1 }
+
+      - name: ShellCheck
+        shell: pwsh
+        run: |
+          $sc = Get-ChildItem "C:\ProgramData\chocolatey" -Recurse -Filter shellcheck.exe |
+                Select-Object -First 1
+          if (-not $sc) { throw "shellcheck.exe not found" }
+          & $sc.Source -S error bootfiles/zjrestore-lite.sh `
+            bootfiles/zjswap.sh bootfiles/zjswap-undo.sh `
+            bootfiles/setup-swap.sh bootfiles/zjlog.sh bootfiles/alpine/init
+
