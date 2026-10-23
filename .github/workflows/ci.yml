@@ -33,8 +33,10 @@ jobs:
         shell: pwsh
         run: |
           $env:PYTHON = (Get-Command python).Source
-          mingw32-make -f Makefile check
-          mingw32-make -f Makefile all
+          $env:PYTHONUTF8 = "1"
+          $env:PYTHONIOENCODING = "utf-8"
+          mingw32-make -f Makefile SHELL=cmd.exe check
+          mingw32-make -f Makefile SHELL=cmd.exe all
 
       - name: Upload x64 artifact
         uses: actions/upload-artifact@v4

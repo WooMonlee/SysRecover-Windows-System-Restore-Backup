@@ -7,12 +7,10 @@
 int main() {
     // 钉死中文界面：断言写的是源语言文本，不能受跑测试那台机器的区域设置影响。
     sysrecover::InitI18n("zh");
-    int failed_cases = 0;
     for (const auto& c : tinytest::Registry()) {
         int before = tinytest::FailCount();
         c.fn();
         if (tinytest::FailCount() > before) {
-            ++failed_cases;
             std::printf("FAIL %s\n", c.name);
         } else {
             std::printf("ok   %s\n", c.name);
