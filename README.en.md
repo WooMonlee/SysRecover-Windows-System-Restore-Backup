@@ -344,4 +344,6 @@ Most documents are written in Chinese.
 | [`docs/14-成熟技术借鉴（可靠性机制调研）`](docs/14-成熟技术借鉴（可靠性机制调研）.md) | Mature reliability mechanisms (Windows `recoverysequence`, Android A/B, RAUC…) — which ones we already use, which we should adopt |
 | [`AGENTS.md`](AGENTS.md) | Operator manual: §0 five red lines, §7 boot SOP, **§13 pitfall register (PIT-001~117)**, §18 i18n discipline |
 | [`PLAN.md`](PLAN.md) | Roadmap, version-number rules, open decisions |
+| [`docs/26-公开前准备与1.0观察期`](docs/26-公开前准备与1.0观察期.md) | Release gates, 7-day observation, 1.0 regression matrix |
+| [`SECURITY.md`](SECURITY.md) / [`CONTRIBUTING.md`](CONTRIBUTING.md) | Security reporting, build and contribution rules |
 | [`LICENSE`](LICENSE) / [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt) | MIT for our own code; third-party list, license texts and source provenance |

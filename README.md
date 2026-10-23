@@ -351,4 +351,6 @@ skin/ resources/ version.json THIRD_PARTY_LICENSES.txt
 | [`docs/14-成熟技术借鉴（可靠性机制调研）`](docs/14-成熟技术借鉴（可靠性机制调研）.md) | Windows `recoverysequence` / Android A/B / RAUC 等成熟可靠性机制，我们已在用哪些、建议学哪些 |
 | [`AGENTS.md`](AGENTS.md) | 操作手册：§0 五条红线、§7 引导 SOP、**§13 坑位册（PIT-001~117）**、§18 国际化纪律 |
 | [`PLAN.md`](PLAN.md) | 路线图、版本号规则、待决事项 |
+| [`docs/26-公开前准备与1.0观察期`](docs/26-公开前准备与1.0观察期.md) | 发布闸门、7 天观察期、1.0 回归矩阵 |
+| [`SECURITY.md`](SECURITY.md) / [`CONTRIBUTING.md`](CONTRIBUTING.md) | 安全报告、构建与提交约定 |
 | [`LICENSE`](LICENSE) / [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt) | 自有代码 MIT；第三方组件清单、全文与源码出处 |
