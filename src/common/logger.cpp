@@ -25,8 +25,8 @@ bool g_csInit = false;
 // 文本日志一次运行仅数百 KB；大头只有屏幕 BMP（单张几 MB）与 crash dump。
 // 当前活动日志永不删。
 struct LogFileItem {
-    ULARGE_INTEGER mtime;
-    unsigned long long size;
+    ULARGE_INTEGER mtime{};
+    unsigned long long size = 0;
     std::wstring path;
 };
 

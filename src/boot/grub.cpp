@@ -261,7 +261,7 @@ bool InstallBootLayer(const std::wstring& deployDrive,
         return false;
     }
     char line[128];
-    snprintf(line, sizeof(line), "deploy drive=%lc\n", drive[0]);
+    snprintf(line, sizeof(line), "deploy drive=%c\n", (char)drive[0]);
     log += line;
     bool ok = true;
     ok &= CopyBootFiles(drive, exeDir, log);
@@ -329,7 +329,7 @@ std::wstring MountEsp(std::string& log) {
         if (GetFileAttributesW(root) == INVALID_FILE_ATTRIBUTES)
             continue;
         char line[64];
-        snprintf(line, sizeof(line), "ESP mounted at %lc:\\\n", c);
+        snprintf(line, sizeof(line), "ESP mounted at %c:\\\n", (char)c);
         log += line;
         return root;
     }

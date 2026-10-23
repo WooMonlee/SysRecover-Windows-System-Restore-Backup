@@ -71,7 +71,7 @@ for d in "$M/~new"/* "$M/~new"/.[!.]*; do
             continue;;
     esac
     if [ -e "$M/$b" ]; then
-        rm -rf "$M/$b" 2>/dev/null || say "WARN: clear conflict $b failed"
+        rm -rf "${M:?}/$b" 2>/dev/null || say "WARN: clear conflict $b failed"
     fi
     mv "$d" "$M/$b" 2>/dev/null || say "WARN: move new $b failed"
 done

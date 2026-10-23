@@ -4,9 +4,9 @@
 
 [![ci](https://github.com/WooMonlee/SysRecover-Windows-System-Restore-Backup/actions/workflows/ci.yml/badge.svg)](https://github.com/WooMonlee/SysRecover-Windows-System-Restore-Backup/actions/workflows/ci.yml)
 
-> **Status: 0.9.9 pre-release.** Until 1.0, treat real-hardware regression results as authoritative; test on a small set of machines first and do not rely on it as your only backup.
+> **Status: 0.9.10 pre-release.** Until 1.0, treat real-hardware regression results as authoritative; test on a small set of machines first and do not rely on it as your only backup.
 
-> Version `0.9.9` | **x64 + x86 dual architecture** (the Windows side follows the OS bitness; the Linux rescue layer is always x64) | Windows 7 / 10 / 11 / WinPE | Release package ≈41 MB (≈27 MB of it is the rescue kernel and initramfs)
+> Version `0.9.10` | **x64 + x86 dual architecture** (the Windows side follows the OS bitness; the Linux rescue layer is always x64) | Windows 7 / 10 / 11 / WinPE | Release package ≈41 MB (≈27 MB of it is the rescue kernel and initramfs)
 > License: own code **MIT** (see [`LICENSE`](LICENSE)); third-party components are *separately distributed* — full list, license texts and source-code provenance in [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt)
 
 In one sentence: **back up a Windows system into a single image file, and restore it in one click when you need it.**
@@ -348,5 +348,6 @@ Most documents are written in Chinese.
 | [`AGENTS.md`](AGENTS.md) | Operator manual: §0 five red lines, §7 boot SOP, **§13 pitfall register (PIT-001~117)**, §18 i18n discipline |
 | [`PLAN.md`](PLAN.md) | Roadmap, version-number rules, open decisions |
 | [`docs/26-公开前准备与1.0观察期`](docs/26-公开前准备与1.0观察期.md) | Release gates, 7-day observation, 1.0 regression matrix |
+| [`docs/27-质量检查报告（0.9.10）`](docs/27-质量检查报告（0.9.10）.md) | Static analysis, ShellCheck, remaining risks, next steps |
 | [`SECURITY.md`](SECURITY.md) / [`CONTRIBUTING.md`](CONTRIBUTING.md) | Security reporting, build and contribution rules |
 | [`LICENSE`](LICENSE) / [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt) | MIT for our own code; third-party list, license texts and source provenance |

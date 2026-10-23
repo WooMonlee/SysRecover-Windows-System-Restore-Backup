@@ -849,7 +849,7 @@ if [ $UNDO_MARK -eq 1 ]; then
     # （bootfix 载荷在 L5 已随 ~/.new 被删除，此时再跑必失败，故直接收尾。）
     say "RETURN-OLD DONE: old system back at root; new tree discarded"
     RESULT=OK
-    STEP=done
+    STEP="done"
     persist_log
     exit 0
 fi
@@ -1224,8 +1224,11 @@ if [ "$KEPT_FS" = "0" ]; then
     printf "\\$(printf '%03o' $_b0)\\$(printf '%03o' $_b1)\\$(printf '%03o' $_b2)\\$(printf '%03o' $_b3)" \
         | timeout 30 dd of="$TARGET_DEV" bs=1 seek=28 count=4 conv=notrunc 2>/dev/null
     _hid=$(timeout 30 dd if="$TARGET_DEV" bs=1 skip=28 count=4 2>/dev/null | od -An -tu4 | tr -d ' ')
-    [ "$_hid" = "$START_LBA" ] && say "hidden sectors = $_hid (OK)" \
-                               || say "ERROR: hidden=$_hid want=$START_LBA"
+    if [ "$_hid" = "$START_LBA" ]; then
+        say "hidden sectors = $_hid (OK)"
+    else
+        say "ERROR: hidden=$_hid want=$START_LBA"
+    fi
 fi
 
 # ── 应用镜像 ──
@@ -1256,7 +1259,8 @@ if [ -n "$_mem_kb" ] && [ "$_mem_kb" -lt 400000 ] 2>/dev/null; then
     say "WARN: low memory (${_mem_kb}kB RAM) - wimlib apply may be OOM-killed; increase VM RAM"
 fi
 say "img bytes: $(ls -l "$IMG_FILE" 2>/dev/null | awk '{print $5}')"
-say "target sectors: $(cat /sys/class/block/$(basename "$TARGET_DEV")/size 2>/dev/null)"
+_target_sectors=$(cat "/sys/class/block/$(basename "$TARGET_DEV")/size" 2>/dev/null)
+say "target sectors: $_target_sectors"
 persist_log
 
 # 目录模式挂载（ZJ_APPLY_FS: auto=ntfs3 优先失败退 FUSE；ntfs3/fuse=强制）
@@ -1496,8 +1500,11 @@ if [ "$REPAIR_BOOT" = "1" ]; then
             dd if=/ntfs-boot-cont.bin of="$TARGET_DEV" bs=512 seek=1 conv=notrunc 2>/dev/null
             sync
             _g=$(dd if="$TARGET_DEV" bs=1 skip=84 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')
-            [ "$_g" = "fa33c08e" ] && say "boot region rewritten (0x54=$_g)" \
-                                   || say "ERROR: boot region rewrite failed (0x54=$_g)"
+            if [ "$_g" = "fa33c08e" ]; then
+                say "boot region rewritten (0x54=$_g)"
+            else
+                say "ERROR: boot region rewrite failed (0x54=$_g)"
+            fi
         else
             say "WARN: boot region incomplete and no built-in blob"
         fi
@@ -1524,7 +1531,7 @@ if [ "$REPAIR_BOOT" = "1" ]; then
         if [ "$_g1" = "fa33c08e" ] && echo "$_g2" | grep -q '[1-9a-f]'; then
             say "boot region OK (sector0 0x54=$_g1, sector1 non-empty)"
         else
-            say "ERROR: boot region BAD (0x54=$_g1, sector1 empty=$([ -z "$(echo $_g2 | tr -d 0)" ] && echo yes || echo no))"
+            say "ERROR: boot region BAD (0x54=$_g1, sector1 empty=$([ -z "$(echo "$_g2" | tr -d 0)" ] && echo yes || echo no))"
         fi
     elif command -v ms-sys >/dev/null 2>&1; then
         DISK_DEV=$(echo "$TARGET_DEV" | sed 's/[0-9]*$//')
@@ -1702,8 +1709,8 @@ if [ -n "$EA_INDEX" ]; then
                     grep -qF "$SCRPAIR" /tmp/zj_ea_gpt0.txt 2>/dev/null && HASSCR=1
                     grep -qF "$REGPAIR" /tmp/zj_ea_gpt0.txt 2>/dev/null && HASREG=1
                     ADD=""
-                    [ "$HASSCR" = "0" ] && ADD="$ADD[$SCRPAIR]"
-                    [ "$HASREG" = "0" ] && ADD="$ADD[$REGPAIR]"
+                    [ "$HASSCR" = "0" ] && ADD="${ADD}[$SCRPAIR]"
+                    [ "$HASREG" = "0" ] && ADD="${ADD}[$REGPAIR]"
                     if grep -q '^gPCMachineExtensionNames=' /tmp/zj_ea_gpt0.txt; then
                         if [ -n "$ADD" ]; then
                             sed "s#^\(gPCMachineExtensionNames=.*\)\$#\1$ADD#" /tmp/zj_ea_gpt0.txt > /tmp/zj_ea_gpt1.txt
@@ -1819,7 +1826,7 @@ cleanup_after_success(){
 
 # 成功：结果置 OK；日志 + 状态回执落软件目录与 ESP（**不写目标盘** —— 还原后
 # 的系统盘不留我们的文件；ESP 的 \EFI\ZJRESTORE\logs\ 是常驻救援模块的一部分）。
-RESULT=OK; STEP=done
+RESULT=OK; STEP="done"
 persist_log          # 把完整日志落到 <软件目录>\logs\（cleanup 会保留该子目录）
 # 成功回执也必须落**软件目录**（BIOS 机器没有 ESP；UEFI 的 ESP 写入也可能失败）：
 # 否则 Windows 侧看不到"已成功"，会把待执行标记误报成"任务未执行"（0.6.29 规则）。

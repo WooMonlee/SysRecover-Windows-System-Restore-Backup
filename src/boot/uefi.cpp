@@ -69,15 +69,15 @@ struct EfiDirNode {      // 描述符结束节点
     WORD length;         // 4
 };
 struct EfiHdNode {       // Media / HardDrive（短格式，固件会自行展开成完整路径）
-    BYTE type;           // 4
-    BYTE subType;        // 1
-    WORD length;         // 42
-    DWORD partNumber;
-    unsigned long long partStart;  // 起始 LBA
-    unsigned long long partSize;   // 扇区数
-    GUID signature;                // GPT PartitionId
-    BYTE mbrType;        // 2 = GPT
-    BYTE sigType;        // 2 = GUID
+    BYTE type = 0;           // 4
+    BYTE subType = 0;        // 1
+    WORD length = 0;         // 42
+    DWORD partNumber = 0;
+    unsigned long long partStart = 0;  // 起始 LBA
+    unsigned long long partSize = 0;   // 扇区数
+    GUID signature{};                // GPT PartitionId
+    BYTE mbrType = 0;        // 2 = GPT
+    BYTE sigType = 0;        // 2 = GUID
 };
 #pragma pack(pop)
 
@@ -558,7 +558,7 @@ bool InstallUefiBootEntry(const std::wstring& espRoot,
     //（连副本都不用重读）。
     struct DeployItem {
         std::wstring src, dst;
-        bool needCopy;
+        bool needCopy = false;
     };
     std::vector<DeployItem> items;
     std::vector<uint32_t> srcCrc(files.size(), 0);
@@ -926,7 +926,6 @@ SbMode CurrentSbMode() {
     if (m == L"shim")
         return SbMode::Shim;  // 备选线：我们签名的 UKI（需一次性 MOK 注册）
 #else
-    (void)0;
 #endif
     // 默认走 grub：**借 Canonical 的签名链**（微软签名的 shim → Canonical 签名的
     // GRUB → Canonical 签名的内核 + 我们的 initramfs）→ 零注册、零成本、无绕过，

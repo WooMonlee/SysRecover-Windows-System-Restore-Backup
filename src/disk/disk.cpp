@@ -462,8 +462,8 @@ std::wstring DescribePartitions() {
 // NVMe / RAID 虚拟盘会返回"不支持" → smartKnown=false（fail-open，绝不因此阻断还原）。
 #pragma pack(push, 1)
 struct AtaSmartIn {
-    ATA_PASS_THROUGH_EX apt;
-    unsigned char data[512];
+    ATA_PASS_THROUGH_EX apt{};
+    unsigned char data[512]{};
 };
 #pragma pack(pop)
 

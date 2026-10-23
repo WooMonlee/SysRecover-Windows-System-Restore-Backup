@@ -12,7 +12,7 @@ namespace {
 
 struct Hit {
     std::wstring path;
-    unsigned long long mtime;  // ftLastWriteTime 转 64 位，比较用
+    unsigned long long mtime = 0;  // ftLastWriteTime 转 64 位后比较用
 };
 
 constexpr size_t kCap = 500;  // 结果上限（列表过长没有意义，防误扫）
