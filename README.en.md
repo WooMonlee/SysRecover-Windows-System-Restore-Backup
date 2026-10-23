@@ -250,16 +250,20 @@ Idea: **stage** the restore task (with the always-present boot module installed)
 
 ## 9. Building (for people who want to compile it)
 
-```bash
-mingw32-make -f Makefile package        # ★ release package → dist/ (root = full x86 set + x64/ + shared assets)
+```powershell
+$env:MINGW64 = "C:\mingw64"          # MinGW-w64 GCC 14.2 (x86_64, UCRT)
+$env:MINGW32 = "C:\mingw32"          # winlibs i686 UCRT GCC 14.2
+$env:PYTHON  = "C:\Python313\python.exe"
+
+mingw32-make -f Makefile package        # → release package → dist/ (root = full x86 set + x64/ + shared assets)
 mingw32-make -f Makefile all            # x64 build only → dist/x64
 mingw32-make -f Makefile ARCH=x86 all   # x86 build only → dist (root)
 mingw32-make -f Makefile check          # unit tests (pure logic, zero dependencies)
 mingw32-make -f Makefile clean
 ```
 
-- Toolchains: **x64 = MinGW-w64 GCC 14.2** (`mingw64`), **x86 = winlibs i686 UCRT GCC 14.2** (`mingw32`);
-  `package` needs both (x64 uses the `g++` on PATH, x86 uses the absolute path hard-coded in the `Makefile`).
+- Toolchains: **x64 = MinGW-w64 GCC 14.2**, **x86 = winlibs i686 UCRT GCC 14.2**;
+  set `MINGW64` / `MINGW32` for `package`; set `PYTHON` to avoid the Windows Store placeholder.
 - Rescue layer assembly: `tools/build-debian-rescue.py` (**Debian-signed kernel + signed modules** + Alpine userland)
 - Regression tests: `tools/vmtest/*.ps1` (UEFI/SB, BIOS/GRUB4DOS, screen output, direct firmware boot…) plus `mk-drill.py`/`run-drill.ps1` (end-to-end restore drill); see [`docs/07`](docs/07-测试矩阵与回归记录.md)
 - New machine / new environment: see [`docs/10-新环境交接说明`](docs/10-新环境交接说明.md)

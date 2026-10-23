@@ -258,7 +258,11 @@ SysRecover.exe restore --image D:\backup\wannei-win10.esd --disk 0 --part 3 --in
 
 ## 九、构建（给想自己编的人）
 
-```bash
+```powershell
+$env:MINGW64 = "C:\mingw64"          # MinGW-w64 GCC 14.2 (x86_64, UCRT)
+$env:MINGW32 = "C:\mingw32"          # winlibs i686 UCRT GCC 14.2
+$env:PYTHON  = "C:\Python313\python.exe"
+
 mingw32-make -f Makefile package        # ★ 发布包 → dist/（根=x86 整套 + x64/ + 共享资源）
 mingw32-make -f Makefile all            # 仅 x64 构建 → dist/x64
 mingw32-make -f Makefile ARCH=x86 all   # 仅 x86 构建 → dist（根目录）
@@ -266,8 +270,9 @@ mingw32-make -f Makefile check          # 单元测试（纯逻辑，零依赖�
 mingw32-make -f Makefile clean
 ```
 
-- 工具链：**x64 = MinGW-w64 GCC 14.2**（`mingw64`）、**x86 = winlibs i686 UCRT GCC 14.2**（`mingw32`）；
-  `package` 需要两套（x64 走 PATH 上的 `g++`，x86 走 `Makefile` 里写死的绝对路径）。
+- 工具链：**x64 = MinGW-w64 GCC 14.2**、**x86 = winlibs i686 UCRT GCC 14.2**；
+  `package` 需要两套，通过 `MINGW64` / `MINGW32` 指定；Python 通过 `PYTHON` 指定（避免 Windows Store 占位符）。
+- `make check` 需要 `tools/` 下的 Python 脚本；`make package` 还会调用 `tools/build-debian-rescue.py`。
 - 救援层组装：`tools/build-debian-rescue.py`（**Debian 签名内核 + 签名模块** + Alpine 用户态）
 - 回归测试：`tools/vmtest/*.ps1`（UEFI/SB、BIOS/GRUB4DOS、屏显、固件直启…）+ `mk-drill.py`/`run-drill.ps1`（端到端还原演练）；清单见 [`docs/07`](docs/07-测试矩阵与回归记录.md)
 - 换机器/换环境：见 [`docs/10-新环境交接说明`](docs/10-新环境交接说明.md)
