@@ -63,6 +63,9 @@ std::string BuildTaskConf(const RestoreTask& t) {
         "image_rel_path=%s\n"
         "image_path=%s\n"
         "image_index=%d\n"
+        "image_size=%llu\n"
+        "reparse_scan=%d\n"
+        "efs_scan=%d\n"
         "esp_index=%d\n"
         "ea_index=%d\n"
         "target_guid=%s\n"
@@ -78,6 +81,7 @@ std::string BuildTaskConf(const RestoreTask& t) {
         (t.action.empty() ? "restore" : t.action.c_str()),
         t.ptType.c_str(), W2U(t.imagePartGuid).c_str(),
         W2U(t.imageRelPath).c_str(), W2U(t.imagePath).c_str(), t.imageIndex,
+        (unsigned long long)t.imageSize, t.reparseScan, t.efsScan,
         t.espIndex, t.eaIndex,
         W2U(t.targetGuid).c_str(),
         (unsigned long long)t.targetOffset,
@@ -95,6 +99,7 @@ std::string BuildTaskJson(const RestoreTask& t) {
         buf, sizeof(buf),
         "{\"schema\":1,\"action\":\"%s\",\"pt_type\":\"%s\","
         "\"image_path\":\"%s\",\"image_rel_path\":\"%s\",\"image_index\":%d,"
+        "\"image_size\":%llu,\"reparse_scan\":%d,\"efs_scan\":%d,"
         "\"esp_index\":%d,"
         "\"ea_index\":%d,"
         "\"target_disk\":%d,\"target_part\":%d,"
@@ -102,7 +107,9 @@ std::string BuildTaskJson(const RestoreTask& t) {
         "\"repair_boot\":%s,\"partition_count\":%u}\n",
         (t.action.empty() ? "restore" : t.action.c_str()),
         t.ptType.c_str(), JsonEsc(W2U(t.imagePath)).c_str(),
-        W2U(t.imageRelPath).c_str(), t.imageIndex, t.espIndex, t.eaIndex,
+        W2U(t.imageRelPath).c_str(), t.imageIndex,
+        (unsigned long long)t.imageSize, t.reparseScan, t.efsScan,
+        t.espIndex, t.eaIndex,
         t.targetDisk, t.targetPart, (unsigned long long)t.targetOffset,
         (unsigned long long)t.targetSize, t.repairBoot ? "true" : "false",
         t.partCount);
@@ -126,6 +133,9 @@ std::string BuildRestoreLogText(const RestoreTask& t,
              "target_vol_label=%s\n"
              "image_path=%s\n"
              "image_index=%d\n"
+             "image_size=%llu\n"
+             "reparse_scan=%d\n"
+             "efs_scan=%d\n"
         "esp_index=%d\n"
         "ea_index=%d\n"
         "repair_boot=%d\n"
@@ -141,7 +151,8 @@ std::string BuildRestoreLogText(const RestoreTask& t,
         (unsigned long long)t.targetOffset,
         (unsigned long long)t.targetSize, W2U(t.targetFs).c_str(),
         W2U(t.targetVolLabel).c_str(), W2U(t.imagePath).c_str(),
-        t.imageIndex, t.espIndex, t.eaIndex, t.repairBoot ? 1 : 0,
+        t.imageIndex, (unsigned long long)t.imageSize, t.reparseScan,
+        t.efsScan, t.espIndex, t.eaIndex, t.repairBoot ? 1 : 0,
         t.ptType.c_str(),
         (t.engine.empty() ? "block" : t.engine.c_str()),
         t.keepOld ? 1 : 0,

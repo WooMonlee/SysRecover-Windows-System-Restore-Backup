@@ -48,16 +48,6 @@ bool FileCrc32(const std::wstring& path, uint32_t& out) {
     return true;
 }
 
-bool VerifyCopy(const std::wstring& src, const std::wstring& dst,
-                std::string& log) {
-    uint32_t a = 0, b = 0;
-    if (!FileCrc32(src, a) || !FileCrc32(dst, b) || a != b) {
-        log += "verify FAIL " + std::string(dst.begin(), dst.end()) + "\n";
-        return false;
-    }
-    return true;
-}
-
 // EFI_GLOBAL_VARIABLE 命名空间。
 const wchar_t kGlobalGuid[] = L"{8BE4DF61-93CA-11D2-AA0D-00E098032B8C}";
 
@@ -449,11 +439,10 @@ bool InstallUefiBootEntry(const std::wstring& espRoot,
     std::wstring efiDir = espRoot + L"EFI";
     std::wstring dir = efiDir + L"\\ZJRESTORE";
     CreateDirectoryW(efiDir.c_str(), nullptr);
-    // 先清掉上次安装留下的文件：不同走法部署的文件集不同（直启内核 / shim 一套 /
-    // UKI + efiloader，各自 ~50MB），不清会越装越多、把 ESP 塞满
-    // （实测踩到 "ESP space: need 49.3MB, free 31.9MB" → 装不上）。
-    RemoveTree(dir);
     CreateDirectoryW(dir.c_str(), nullptr);
+    // （B，2026-10-18）这里原先 RemoveTree(dir) 全清再全拷，每次安装/暂存都把
+    // ~28MB 载荷重写一遍（慢盘上拖出"无响应"窗）。现在改为：文件集构建后按
+    // "定点清 stale + keep 未变化"处理，见下面的 cleanup / changed 逻辑。
 
     // Secure Boot 开着时，固件只加载**微软签名**的镜像 → 我们的内核不能直接当
     // 启动目标。两种走法（PIT-063 对比实验，ZJ_SB_MODE 切换）：
@@ -519,16 +508,86 @@ bool InstallUefiBootEntry(const std::wstring& espRoot,
         };
     }
 
+    // 定点清 stale：不同 Secure Boot 走法部署的文件集不同（直启内核 / shim 一套 /
+    // bootapp 的 UKI + efiloader），换走法时不清理会越装越多、把 ESP 塞满
+    //（实测 "ESP space: need 49.3MB, free 31.9MB"）。原先直接 RemoveTree 全清；
+    // 现在只删"不属于本次文件集"的条目 —— 上次装过的文件本次可 keep 复用。
+    {
+        std::vector<std::wstring> keepNames;
+        for (const auto& f : files)
+            keepNames.push_back(f.second);
+        keepNames.push_back(L"rescue-build.txt");
+        WIN32_FIND_DATAW fd;
+        HANDLE hFind = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+        if (hFind != INVALID_HANDLE_VALUE) {
+            do {
+                std::wstring name = fd.cFileName;
+                if (name == L"." || name == L"..")
+                    continue;
+                bool keep = false;
+                for (const auto& k : keepNames)
+                    if (name == k) {
+                        keep = true;
+                        break;
+                    }
+                if (keep)
+                    continue;
+                std::wstring full = dir + L"\\" + name;
+                std::string an(name.begin(), name.end());
+                if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                    if (RemoveTree(full))
+                        log += "stale dir removed: " + an + "\n";
+                    else
+                        log += "stale dir remove FAIL: " + an + "\n";
+                } else {
+                    SetFileAttributesW(full.c_str(), FILE_ATTRIBUTE_NORMAL);
+                    if (DeleteFileW(full.c_str()))
+                        log += "stale removed: " + an + "\n";
+                    else
+                        log += "stale remove FAIL: " + an + " (err=" +
+                               std::to_string(GetLastError()) + ")\n";
+                }
+            } while (FindNextFileW(hFind, &fd));
+            FindClose(hFind);
+        }
+    }
+
+    // B（2026-10-18）：逐文件决定 keep（内容与源一致 → 跳过写盘）还是 todo（要
+    // 复制）。源 CRC 在这里算一遍并存起来，复制后校验直接复用 → 源只读一次。
+    // keep 判定本身就是"源 vs 落盘"的完整比对，等价于原先的复制后校验且更强
+    //（连副本都不用重读）。
+    struct DeployItem {
+        std::wstring src, dst;
+        bool needCopy;
+    };
+    std::vector<DeployItem> items;
+    std::vector<uint32_t> srcCrc(files.size(), 0);
+    std::vector<char> srcOk(files.size(), 0);
+    unsigned long long need = 0;
+    for (size_t i = 0; i < files.size(); ++i) {
+        std::wstring src = exeDir + files[i].first;
+        std::wstring dst = dir + L"\\" + files[i].second;
+        srcOk[i] = FileCrc32(src, srcCrc[i]) ? 1 : 0;
+        uint32_t dc = 0;
+        bool same = srcOk[i] && FileCrc32(dst, dc) && dc == srcCrc[i];
+        std::string an(files[i].second.begin(), files[i].second.end());
+        if (same) {
+            log += "keep " + an + " (unchanged)\n";
+            items.push_back({src, dst, false});
+        } else {
+            need += FileSize(src);
+            items.push_back({src, dst, true});
+        }
+    }
+
     // 空间检查：ESP 一般只有 100MB，Windows 自己的引导文件已占 ~40MB，而我们要塞
     // ~52MB（内核+initramfs，或签名版 UKI + shim）。装不下时**提前算清并报错**，
-    // 而不是拷到一半失败、留个半残的引导层。
+    // 而不是拷到一半失败、留个半残的引导层。need = **仅本次要写入**的字节数
+    //（keep 的不计，2026-10-18 起 —— 修掉"其实只差几 MB 却按全量 49MB 误报"）。
     // 余量 16MB（2026-09-29 由 1MB 提高）：`bcdboot` 刷新该分区上的
     // `EFI\Microsoft\Boot` 目录（bootmgfw 1.5MB + bootmgr.efi 1.5MB + Fonts
     // 4.5MB + Resources/MUI + BCD）实测约 8.6MB；留 16MB 才能保证"我们装完之后
     // bcdboot 还写得进"（docs/15）。
-    unsigned long long need = 0;
-    for (const auto& f : files)
-        need += FileSize(exeDir + f.first);
     ULARGE_INTEGER freeBytes{};
     if (need > 0 && GetDiskFreeSpaceExW(espRoot.c_str(), &freeBytes, nullptr,
                                         nullptr)) {
@@ -548,15 +607,27 @@ bool InstallUefiBootEntry(const std::wstring& espRoot,
     }
 
     bool copied = true;
-    for (const auto& f : files)
-        copied &= CopyOne(exeDir + f.first, dir + L"\\" + f.second, log);
+    for (const auto& it : items) {
+        if (!it.needCopy)
+            continue;
+        if (!CopyOne(it.src, it.dst, log))
+            copied = false;
+    }
     if (!copied) {
         log += "copy UEFI rescue files FAIL\n";
         return false;
     }
-    // A6：部署后逐文件 CRC 校验（源 vs ESP 落盘），不一致即失败；并写明文构建戳
-    for (const auto& f : files) {
-        if (!VerifyCopy(exeDir + f.first, dir + L"\\" + f.second, log)) {
+    // A6：部署后逐文件 CRC 校验（源 vs ESP 落盘），不一致即失败；并写明文构建戳。
+    // 源 CRC 上面已算过（srcOk/srcCrc）→ 这里目标只读回一次；源当时读不出才重读
+    // 源。keep 的文件已比对过 CRC，无需再验。
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (!items[i].needCopy)
+            continue;
+        uint32_t a = srcCrc[i], b = 0;
+        bool srcReadable = srcOk[i] || FileCrc32(items[i].src, a);
+        if (!srcReadable || !FileCrc32(items[i].dst, b) || a != b) {
+            log += "verify FAIL " +
+                   std::string(items[i].dst.begin(), items[i].dst.end()) + "\n";
             log += "verify deployed rescue FAIL\n";
             return false;
         }
@@ -666,8 +737,10 @@ bool InstallUefiBootEntry(const std::wstring& espRoot,
                "\n";
         return false;
     }
-    char line[96];
-    snprintf(line, sizeof(line), "firmware boot entry Boot%04X installed\n", num);
+    char line[160];
+    snprintf(line, sizeof(line),
+             "firmware boot entry Boot%04X installed (desc=SysRecover, optional=%u chars)\n",
+             num, cmdLine ? (unsigned)wcslen(cmdLine) : 0u);
     log += line;
 
     // Secure Boot 且密钥**还没注册**时：把下一次启动指到我们的条目，这样重启就

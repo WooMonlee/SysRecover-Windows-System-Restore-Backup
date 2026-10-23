@@ -922,8 +922,29 @@ void CSkinEditUI::DoEvent(TEventUI& event) {
     // 关键（用户 2026-09-23 反馈"手动输入后鼠标一移开字符就消失"）：
     // 失焦后文本由**控件自绘**（见 DoPaint 的 `!IsFocused()` 分支），用的是控件的
     // GetText()；而手动输入/粘贴进的是**原生 EDIT 子窗口** —— 不同步回来，自绘就画
-    // 出空的（视觉上"字符消失"），按钮那边也拿不到路径。每次事件后同步一次。
-    SyncTextFromNative();
+    // 出空的（视觉上"字符消失"），按钮那边也拿不到路径。
+    // ⚠️ 2026-10-21：**聚焦时绝不能同步** —— SetText 会走 Edit_SetText 把原生
+    // 光标重置到 0；用户在 UNC 路径后输入汉字时，字符会全部插到最前面
+    // （实测 `\\192.168.110.236\d\我的备份` → `份备的我\\192...`）。
+    // 只在失焦（或已经不在焦点）时同步，供自绘使用。
+    if (event.Type == UIEVENT_KILLFOCUS) {
+        SyncTextFromNative();
+        if (m_pManager)
+            m_pManager->SendNotify(this, DUI_MSGTYPE_TEXTCHANGED);
+    } else if (!IsFocused()) {
+        SyncTextFromNative();
+    }
+}
+
+void CSkinEditUI::SetText(LPCTSTR pstrText) {
+    CEditUI::SetText(pstrText);
+    // CEditUI::SetText 内部 Edit_SetText 会把光标放到 0；程序化更新路径
+    // （浏览/搜索/格式后缀）后，用户继续输入会插到最前面。统一放到末尾。
+    HWND h = GetNativeEditHWND();
+    if (h) {
+        int n = ::GetWindowTextLengthW(h);
+        ::SendMessageW(h, EM_SETSEL, (WPARAM)n, (LPARAM)n);
+    }
 }
 
 void CSkinEditUI::SyncTextFromNative() {
@@ -1005,6 +1026,30 @@ bool CSkinEditUI::DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopControl
     return true;
 }
 
+// ── 分区下拉：空列表时点击 = 请求打开"新硬盘分区"向导；收起画提示 ──
+void CPartitionComboUI::DoEvent(TEventUI& event) {
+    if (event.Type == UIEVENT_BUTTONDOWN && IsEnabled() && GetCount() == 0) {
+        if (m_pManager)
+            ::PostMessage(m_pManager->GetPaintWindow(), WM_SKIN_EMPTY_PARTITION,
+                          0, 0);
+        return;
+    }
+    CComboUI::DoEvent(event);
+}
+
+void CPartitionComboUI::PaintText(HDC hDC) {
+    if (GetCount() == 0) {
+        if (m_hint.empty())
+            return;
+        RECT rc = m_rcItem;
+        rc.left += 12;
+        rc.right -= 30;  // 给下拉箭头留位置
+        TextIn(hDC, m_hint.c_str(), rc, 13, 0xFF5F6C80, 0, false);
+        return;
+    }
+    CComboUI::PaintText(hDC);
+}
+
 // ═════════════════════════ 工厂 ═════════════════════════
 
 CControlUI* CreateSkinControl(LPCTSTR pstrClass) {
@@ -1019,5 +1064,7 @@ CControlUI* CreateSkinControl(LPCTSTR pstrClass) {
     if (_tcscmp(pstrClass, _T("SkinButton")) == 0)  return new CSkinButtonUI;
     if (_tcscmp(pstrClass, _T("SkinEdit")) == 0)    return new CSkinEditUI;
     if (_tcscmp(pstrClass, _T("WinBtn")) == 0)      return new CWindowBtnUI;
+    if (_tcscmp(pstrClass, _T("PartitionCombo")) == 0)
+        return new CPartitionComboUI;
     return nullptr;
 }

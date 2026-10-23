@@ -10,7 +10,9 @@ namespace sysrecover {
 
 // 返回空串=通过，否则为拒绝原因（UTF-8 中文）。
 // adv（可选）：仅"镜像在目标分区内"给 ADV_IMAGE_IN_TARGET，其余拒绝（ESP/MSR/
-// 恢复分区/GPT-BIOS）没有对应的"下一步怎么办" → 保持 ADV_NONE。
+// 恢复分区）没有对应的"下一步怎么办" → 保持 ADV_NONE。
+// GPT 检查已移除（2026-10-18）：就地还原任何组合放行；"暂存+重启"由
+// CheckStagedBootPath 在 ops.cpp 暂存路径独立拦截（见 bootpath.h）。
 std::string CheckRestoreTarget(const PartitionInfo& p,
                                const std::wstring& imagePath,
                                ErrAdvice* adv = nullptr);

@@ -431,8 +431,108 @@ bool IsNonMsReparseTag(unsigned long tag) {
     return tag != 0 && (tag & 0x80000000UL) == 0;
 }
 
-int FindNonMsReparse(const std::wstring& rootIn,
-                     std::vector<std::wstring>& out, size_t cap) {
+// ntfs-3g valid_reparse_data 忠实移植（见 ea.h 注释；1019 案 / PIT-135 修订）。
+// 两处“非直观”：
+//   ① well-formed 非微软 tag 在 valid_reparse_data 里其实会通过（switch default
+//      直接放行），但 wimlib 块模式写不过去（PIT-135 实证）→ 这里显式并入。
+//   ② 无 blob 时只判确定项（非微软 / junction 落非目录），其余 false（不误伤）。
+bool IsUnsettableReparse(unsigned long tag, unsigned long attrs,
+                         const unsigned char* blob, size_t blobLen) {
+    if (IsNonMsReparseTag(tag)) return true;
+
+    const unsigned long kTagMountPoint = 0xA0000003UL;
+    const unsigned long kTagSymlink = 0xA000000CUL;
+    const unsigned long kTagLxSymlink = 0xA000001DUL;
+    const unsigned long kFileAttrRecallOnOpen = 0x00040000UL;
+
+    if (!blob) {
+        // junction 落在非目录上：Windows 正常不给建，一旦出现 ntfs-3g 必拒
+        // （reparse.c:498 `!(flags & MFT_RECORD_IS_DIRECTORY)` → EINVAL）。
+        if (tag == kTagMountPoint && !(attrs & FILE_ATTRIBUTE_DIRECTORY))
+            return true;
+        return false;
+    }
+    if (blobLen < 8) return false;
+
+    auto u16 = [&](size_t off) -> unsigned long {
+        return (unsigned long)blob[off] | ((unsigned long)blob[off + 1] << 8);
+    };
+    auto u32 = [&](size_t off) -> unsigned long {
+        return u16(off) | (u16(off + 2) << 16);
+    };
+
+    // 前置（reparse.c:478-484）：tag != 0 且长度方程成立
+    // （走得到的都是微软 tag → size = datalen + 8）。
+    if (tag == 0) return true;
+    if (blobLen != (size_t)u16(4) + 8) return true;
+
+    switch (tag) {
+    case kTagMountPoint:  // reparse.c:487-503
+        if (blobLen < 16) return true;
+        if (!(attrs & FILE_ATTRIBUTE_DIRECTORY)) return true;
+        if (16 + (size_t)u16(8) + (size_t)u16(10) > blobLen) return true;
+        return false;
+    case kTagSymlink:  // reparse.c:504-518
+        if (blobLen < 20) return true;
+        if (20 + (size_t)u16(8) + (size_t)u16(10) > blobLen) return true;
+        return false;
+    case kTagLxSymlink:  // reparse.c:519-526（WSL 符号链接：datalen>4 且 type==2）
+        if (u16(4) <= 4) return true;
+        if (u32(8) != 2) return true;
+        return false;
+    case 0x80000023UL:  // AF_UNIX（reparse.c:527-534）
+    case 0x80000024UL:  // LX_FIFO
+    case 0x80000025UL:  // LX_CHR
+    case 0x80000026UL:  // LX_BLK
+        if (u16(4) != 0) return true;
+        if (!(attrs & kFileAttrRecallOnOpen)) return true;
+        return false;
+    default:
+        return false;  // 微软 tag 的其它值在 valid_reparse_data 一律放行
+    }
+}
+
+bool NormalizeReparseBlob(unsigned char* buf, size_t len) {
+    if (!buf || len < 8) return false;
+    const unsigned long tag = (unsigned long)buf[0] |
+                              ((unsigned long)buf[1] << 8) |
+                              ((unsigned long)buf[2] << 16) |
+                              ((unsigned long)buf[3] << 24);
+    const size_t base = 8 + (((tag & 0x80000000UL) || tag == 0) ? 0 : 16);
+    if (len < base) return false;
+    const size_t dl = len - base;
+    if (dl > 0xFFFF) return false;  // reparse_data_length 是 u16
+    buf[4] = (unsigned char)(dl & 0xFF);
+    buf[5] = (unsigned char)((dl >> 8) & 0xFF);
+    return true;
+}
+
+namespace {
+// 谓词需要 blob 才能定论的微软 tag（其余微软 tag 在 valid_reparse_data 一律放行）。
+bool ReparseCheckNeedsBlob(unsigned long tag) {
+    return tag == 0xA0000003UL ||  // junction / mount point
+           tag == 0xA000000CUL ||  // symlink
+           tag == 0xA000001DUL ||  // WSL symlink
+           (tag >= 0x80000023UL && tag <= 0x80000026UL);  // AF_UNIX/LX_*
+}
+
+// 读原始（未归一化）重解析缓冲；失败/空 → false。
+bool ReadReparseBlobRaw(HANDLE f, std::vector<unsigned char>& out) {
+    std::vector<unsigned char> buf(64 * 1024);
+    DWORD ret = 0;
+    if (!DeviceIoControl(f, FSCTL_GET_REPARSE_POINT, nullptr, 0, buf.data(),
+                         (DWORD)buf.size(), &ret, nullptr) ||
+        ret == 0)
+        return false;
+    out.assign(buf.data(), buf.data() + ret);
+    return true;
+}
+}  // namespace
+
+// 收集"Linux 侧必被拒"的重解析点（文件+目录；判定 = IsUnsettableReparse）。
+// 快路径不打开；仅微软候选 tag 需读 blob 定论（读失败保守不排除）。
+int FindUnsettableReparse(const std::wstring& rootIn,
+                          std::vector<std::wstring>& out, size_t cap) {
     std::wstring root = rootIn;
     while (!root.empty() && (root.back() == L'/' || root.back() == L'\\'))
         root.pop_back();
@@ -449,19 +549,40 @@ int FindNonMsReparse(const std::wstring& rootIn,
         do {
             if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L".."))
                 continue;
-            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
-                    stack.push_back(dir + L"\\" + fd.cFileName);
+            const unsigned long attrs = fd.dwFileAttributes;
+            const bool isDir = (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            const bool isRp = (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+            if (isDir && !isRp) {
+                stack.push_back(dir + L"\\" + fd.cFileName);
                 continue;
             }
-            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
-                continue;
-            if (!IsNonMsReparseTag(fd.dwReserved0)) continue;
+            if (!isRp) continue;
+            std::wstring p = dir + L"\\" + fd.cFileName;
+            const unsigned long tag = fd.dwReserved0;
+            bool bad = IsUnsettableReparse(tag, attrs, nullptr, 0);
+            if (!bad && ReparseCheckNeedsBlob(tag)) {
+                HANDLE f = CreateFileW(p.c_str(), GENERIC_READ,
+                                       FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                           FILE_SHARE_DELETE,
+                                       nullptr, OPEN_EXISTING,
+                                       FILE_FLAG_OPEN_REPARSE_POINT |
+                                           FILE_FLAG_BACKUP_SEMANTICS,
+                                       nullptr);
+                if (f != INVALID_HANDLE_VALUE) {
+                    std::vector<unsigned char> blob;
+                    if (ReadReparseBlobRaw(f, blob)) {
+                        NormalizeReparseBlob(blob.data(), blob.size());
+                        bad = IsUnsettableReparse(tag, attrs, blob.data(),
+                                                  blob.size());
+                    }
+                    CloseHandle(f);
+                }
+            }
+            if (!bad) continue;
             if ((size_t)n >= cap) {
                 FindClose(h);
                 return n;
             }
-            std::wstring p = dir + L"\\" + fd.cFileName;
             out.push_back(p.substr(root.size()));  // 保留 "\..." 前缀
             ++n;
         } while (FindNextFileW(h, &fd));
@@ -470,7 +591,7 @@ int FindNonMsReparse(const std::wstring& rootIn,
     return n;
 }
 
-// ── 非微软重解析点打包/写回（PIT-136）──────────────────────────────
+// ── 重解析点打包/写回（PIT-136；1019 案起含微软 tag 变体 + 目录）──────
 namespace {
 std::string W2A(const std::wstring& w) {
     std::string s;
@@ -560,15 +681,18 @@ int CaptureReparse(const std::wstring& rootIn, const std::wstring& packPath,
         do {
             if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L".."))
                 continue;
+            const unsigned long attrs = fd.dwFileAttributes;
+            const bool isDir = (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            const bool isRp = (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
             std::wstring p = dir + L"\\" + fd.cFileName;
-            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
-                    stack.push_back(p);
+            if (isDir && !isRp) {
+                stack.push_back(p);
                 continue;
             }
-            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
-                continue;
-            if (!IsNonMsReparseTag(fd.dwReserved0)) continue;
+            if (!isRp) continue;
+            const unsigned long tag = fd.dwReserved0;
+            bool bad = IsUnsettableReparse(tag, attrs, nullptr, 0);
+            if (!bad && !ReparseCheckNeedsBlob(tag)) continue;  // 确定可写 → 不碰
             if (entries.size() >= 64) {
                 ++skipped;
                 continue;
@@ -586,30 +710,34 @@ int CaptureReparse(const std::wstring& rootIn, const std::wstring& packPath,
             }
             ReparseEntry e;
             e.relPath = p.substr(root.size());
-            e.attrs = fd.dwFileAttributes;
+            e.attrs = attrs;
             FILETIME ft = {};
             if (GetFileTime(f, nullptr, nullptr, &ft))
                 e.mtime = ((unsigned long long)ft.dwHighDateTime << 32) |
                           ft.dwLowDateTime;
-            {
-                std::vector<unsigned char> buf(64 * 1024);
-                DWORD ret = 0;
-                if (DeviceIoControl(f, FSCTL_GET_REPARSE_POINT, nullptr, 0,
-                                    buf.data(), (DWORD)buf.size(), &ret,
-                                    nullptr))
-                    e.reparse.assign(buf.data(), buf.data() + ret);
+            std::vector<unsigned char> blob;
+            if (ReadReparseBlobRaw(f, blob)) {
+                if (!bad) {  // 微软候选 tag：归一化副本判谓词（原始副本写回用）
+                    std::vector<unsigned char> norm = blob;
+                    NormalizeReparseBlob(norm.data(), norm.size());
+                    bad = IsUnsettableReparse(tag, attrs, norm.data(),
+                                              norm.size());
+                }
+                if (bad) e.reparse = std::move(blob);
             }
-            DWORD sz = GetFileSize(f, nullptr);
-            if (sz != INVALID_FILE_SIZE && sz > 0 && sz <= (16u << 20)) {
-                e.content.resize(sz);
-                DWORD rd = 0;
-                if (!ReadFile(f, e.content.data(), sz, &rd, nullptr))
-                    e.content.clear();
-                else
-                    e.content.resize(rd);
+            if (!isDir) {  // 目录没有未命名数据流
+                DWORD sz = GetFileSize(f, nullptr);
+                if (sz != INVALID_FILE_SIZE && sz > 0 && sz <= (16u << 20)) {
+                    e.content.resize(sz);
+                    DWORD rd = 0;
+                    if (!ReadFile(f, e.content.data(), sz, &rd, nullptr))
+                        e.content.clear();
+                    else
+                        e.content.resize(rd);
+                }
             }
             CloseHandle(f);
-            if (e.reparse.empty()) {  // 取不到 reparse 数据就别装坏的
+            if (!bad || e.reparse.empty()) {  // 取不到 reparse 数据就别装坏的
                 ++skipped;
                 continue;
             }
@@ -660,28 +788,49 @@ int ApplyRepack(const std::wstring& packPath, const std::wstring& rootIn,
             }
             CreateDirectoryW(parent.c_str(), nullptr);
         }
+        const bool isDir = (e.attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
         bool okOne = false;
-        HANDLE f = CreateFileW(full.c_str(), GENERIC_WRITE, 0, nullptr,
-                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (f != INVALID_HANDLE_VALUE) {
-            DWORD wr = 0;
-            okOne = e.content.empty() ||
-                    WriteFile(f, e.content.data(), (DWORD)e.content.size(), &wr,
-                              nullptr) != 0;
-            CloseHandle(f);
+        DWORD why = 0;  // 失败原因（写进日志，现场可评估；PIT-147 纪律）
+        if (isDir) {
+            okOne = CreateDirectoryW(full.c_str(), nullptr) != 0 ||
+                    GetLastError() == ERROR_ALREADY_EXISTS;
+            if (!okOne) why = GetLastError();
+        } else {
+            HANDLE f = CreateFileW(full.c_str(), GENERIC_WRITE, 0, nullptr,
+                                   CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                                   nullptr);
+            if (f != INVALID_HANDLE_VALUE) {
+                DWORD wr = 0;
+                okOne = e.content.empty() ||
+                        WriteFile(f, e.content.data(), (DWORD)e.content.size(),
+                                  &wr, nullptr) != 0;
+                if (!okOne) why = GetLastError();
+                CloseHandle(f);
+            } else {
+                why = GetLastError();
+            }
         }
         if (okOne) {
+            // SET 前归一化 datalen（= wimlib complete_reparse_point 的算法：
+            // 非微软 tag 的 datalen 排除 GUID，缓冲仍含 GUID）。失败退回原样。
+            std::vector<unsigned char> sbuf = e.reparse;
+            NormalizeReparseBlob(sbuf.data(), sbuf.size());
             HANDLE f2 = CreateFileW(full.c_str(), GENERIC_WRITE,
                                     FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                                    OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT,
+                                    OPEN_EXISTING,
+                                    FILE_FLAG_OPEN_REPARSE_POINT |
+                                        FILE_FLAG_BACKUP_SEMANTICS,
                                     nullptr);
             DWORD ret = 0;
-            if (f2 == INVALID_HANDLE_VALUE ||
-                !DeviceIoControl(f2, FSCTL_SET_REPARSE_POINT,
-                                 (LPVOID)e.reparse.data(),
-                                 (DWORD)e.reparse.size(), nullptr, 0, &ret,
-                                 nullptr))
+            if (f2 == INVALID_HANDLE_VALUE) {
+                why = GetLastError();
                 okOne = false;
+            } else if (!DeviceIoControl(f2, FSCTL_SET_REPARSE_POINT,
+                                        (LPVOID)sbuf.data(), (DWORD)sbuf.size(),
+                                        nullptr, 0, &ret, nullptr)) {
+                why = GetLastError();
+                okOne = false;
+            }
             if (f2 != INVALID_HANDLE_VALUE) CloseHandle(f2);
         }
         if (okOne) {
@@ -693,7 +842,9 @@ int ApplyRepack(const std::wstring& packPath, const std::wstring& rootIn,
                 HANDLE f3 = CreateFileW(full.c_str(), FILE_WRITE_ATTRIBUTES,
                                         FILE_SHARE_READ | FILE_SHARE_WRITE,
                                         nullptr, OPEN_EXISTING,
-                                        FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+                                        FILE_FLAG_OPEN_REPARSE_POINT |
+                                            FILE_FLAG_BACKUP_SEMANTICS,
+                                        nullptr);
                 if (f3 != INVALID_HANDLE_VALUE) {
                     SetFileTime(f3, nullptr, nullptr, &ft);
                     CloseHandle(f3);
@@ -703,7 +854,8 @@ int ApplyRepack(const std::wstring& packPath, const std::wstring& rootIn,
             log("reppack: restored " + W2A(e.relPath));
         } else {
             ++badN;
-            log("reppack: FAILED " + W2A(e.relPath));
+            log("reppack: FAILED " + W2A(e.relPath) + " (err=" +
+                std::to_string(why) + ")");
         }
     }
     if (ok) *ok = okN;
@@ -881,11 +1033,15 @@ int ApplyPack(const std::wstring& packPath, const std::wstring& root,
     for (const auto& f : files) {
         ++stats.files;
         std::wstring full = rootCanon + L"\\" + f.relPath;
+        // OPEN_REPARSE_POINT：reppack 重建的重解析点文件要写"本体"的 EA，
+        // 不能跟随链接目标（1019 案 F4；普通文件不受影响）。
         HANDLE h = CreateFileW(full.c_str(), FILE_WRITE_EA,
                                FILE_SHARE_READ | FILE_SHARE_WRITE |
                                    FILE_SHARE_DELETE,
                                nullptr, OPEN_EXISTING,
-                               FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+                               FILE_FLAG_BACKUP_SEMANTICS |
+                                   FILE_FLAG_OPEN_REPARSE_POINT,
+                               nullptr);
         if (h == INVALID_HANDLE_VALUE) {
             DWORD e = GetLastError();
             if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND) {

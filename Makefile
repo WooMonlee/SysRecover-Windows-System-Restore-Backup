@@ -15,8 +15,10 @@
 #   （见 src/common/selfarch.cpp）。**Linux 救援层固定 x86_64**（与宿主位数无关）。见 docs/08 §0。
 
 ARCH ?= x64
+MINGW32 ?= D:/Prog/ProgIDE/mingw32
+MINGW64 ?= D:/Prog/ProgIDE/mingw64
 ifeq ($(ARCH),x86)
-  MINGW    = D:/Prog/ProgIDE/mingw32
+  MINGW    = $(MINGW32)
   CXX      = $(MINGW)/bin/i686-w64-mingw32-g++
   CC       = $(MINGW)/bin/i686-w64-mingw32-gcc
   AR       = $(MINGW)/bin/ar.exe
@@ -27,10 +29,11 @@ ifeq ($(ARCH),x86)
   WIMLIB   = third_party/wimlib/x86
   UCRT     = third_party/ucrt/x86
 else
-  CXX      = g++
-  CC       = gcc
-  AR       = ar
-  WINDRES  = windres
+  MINGW    = $(MINGW64)
+  CXX      = $(MINGW)/bin/x86_64-w64-mingw32-g++
+  CC       = $(MINGW)/bin/x86_64-w64-mingw32-gcc
+  AR       = $(MINGW)/bin/ar.exe
+  WINDRES  = $(MINGW)/bin/windres.exe
   OBJDIR   = build
   DISTDIR  = dist/x64
   WIMLIB   = third_party/wimlib
@@ -38,7 +41,7 @@ else
 endif
 
 # 构建脚本用的 Python（PATH 上的 python 可能是 Microsoft Store 占位符，不可用）
-PYTHON   ?= D:/Prog/ProgIDE/Python/Python313/python.exe
+PYTHON   ?= python
 # 版本号唯一来源 = src/common/version.h（用 tools/version.py 读写；每个问题修完 --bump）
 VERSION  := $(shell $(PYTHON) tools/version.py)
 CXXFLAGS = -O2 -std=c++17 -Wall -Wextra -D_WIN32_WINNT=0x0601 -DUNICODE -D_UNICODE
@@ -46,17 +49,17 @@ INCLUDES = -Ithird_party/wimlib -Isrc
 # -s = 链接时剥符号表：发布体积显著下降（实测 x64 CLI -838KB / GUI -1.1MB /
 # EA 补写器 -495KB）；崩溃处理只用"模块+偏移"（PIT-084），不依赖符号表。
 LDFLAGS  = -static -mconsole -s
-LDLIBS   = -L$(WIMLIB) -l:libwim-15.dll -ladvapi32 -lole32 -lshell32 -luuid -lgdi32 -lntdll
+LDLIBS   = -L$(WIMLIB) -l:libwim-15.dll -ladvapi32 -lole32 -lshell32 -luuid -lgdi32 -lntdll -lversion
 
 # ---- 应用模块静态库（CLI 与 GUI 共用，避免双份编译 ODR 问题） ----
-APP_SRC = src/disk/disk.cpp src/wim/wim.cpp src/wim/exclude.cpp \
+APP_SRC = src/disk/disk.cpp src/disk/partinit.cpp src/wim/wim.cpp src/wim/exclude.cpp \
       src/common/process.cpp src/common/logger.cpp src/common/progress.cpp \
       src/common/singleton.cpp src/common/sysinfo.cpp src/common/zip.cpp \
       src/common/selfarch.cpp src/common/crash.cpp src/common/vss.cpp src/common/i18n.cpp \
-      src/common/relocate.cpp src/common/pathutil.cpp src/common/cpucap.cpp src/common/ea.cpp src/common/refscan.cpp src/boot/bcd.cpp src/boot/grub.cpp \
+      src/common/relocate.cpp src/common/pathutil.cpp src/common/cpucap.cpp src/common/ea.cpp src/common/refscan.cpp src/common/bioskey.cpp src/boot/bcd.cpp src/boot/grub.cpp \
       src/boot/uefi.cpp src/boot/bcd_parse.cpp src/boot/bootpath.cpp src/boot/task.cpp src/boot/bootfix.cpp \
       src/app/safety.cpp src/app/advice.cpp \
-      src/app/shortcut.cpp src/app/ops.cpp src/app/selfdiag.cpp \
+      src/app/shortcut.cpp src/app/ops.cpp src/app/selfdiag.cpp src/app/universal.cpp \
       src/app/swapleft.cpp
 APP_OBJS = $(patsubst src/%.cpp,$(OBJDIR)/app/%.o,$(APP_SRC))
 APP_LIB  = $(OBJDIR)/libapp.a
@@ -77,11 +80,11 @@ DUI_LIB = $(OBJDIR)/libduilib.a
 include build/duilib.mk
 
 # ---- GUI（windows，经典 Duilib） ----
-GUI_SRC = src/gui/main_win.cpp src/gui/main_form.cpp src/gui/ui_skin.cpp src/gui/instance_dlg.cpp src/gui/confirm_dlg.cpp src/gui/imgsearch.cpp
+GUI_SRC = src/gui/main_win.cpp src/gui/main_form.cpp src/gui/ui_skin.cpp src/gui/instance_dlg.cpp src/gui/confirm_dlg.cpp src/gui/imgsearch.cpp src/gui/initdisk_dlg.cpp
 GUI_OUT = $(DISTDIR)/SysRecoverUI.exe
 GUI_INCLUDES = -Isrc -I$(DUI_ROOT) -I$(DUI_ROOT)/Control -I$(DUI_ROOT)/Core -I$(DUI_ROOT)/Layout -I$(DUI_ROOT)/Utils
 GUI_FLAGS = -std=c++17 -O1 -fpermissive -DUNICODE -D_UNICODE -DWIN32 -D_WIN32_WINNT=0x0601 -D_stdcall=__stdcall -DUILIB_STATIC
-GUI_LDLIBS = -lgdi32 -lcomctl32 -limm32 -lole32 -luuid -lmsimg32 -lshlwapi -luxtheme -ldwmapi -lwinmm -lgdiplus -loleaut32 -ladvapi32 -lshell32 -lntdll
+GUI_LDLIBS = -lgdi32 -lcomctl32 -limm32 -lole32 -luuid -lmsimg32 -lshlwapi -luxtheme -ldwmapi -lwinmm -lgdiplus -loleaut32 -ladvapi32 -lshell32 -lntdll -lversion -lversion
 
 # ---- 提权清单（requireAdministrator）：windres 编成 .o 再链入 ----
 # 备份/还原核心功能（枚举分区、写 BCD/引导、wimlib 挂载）全需管理员权限，
@@ -152,7 +155,7 @@ clean:
 # EA 用 NtSetEaFile 写回，随后自清理。固定用 **x86 工具链**：x86/x64 目标
 # Windows 都能跑（还原目标位数未知；32 位系统也要能用）。
 EA_APPLY_SRC = src/tools/ea_apply_main.cpp src/common/ea.cpp src/common/refscan.cpp
-EA_APPLY_X86 = D:/Prog/ProgIDE/mingw32/bin/i686-w64-mingw32-g++
+EA_APPLY_X86 = $(MINGW32)/bin/i686-w64-mingw32-g++
 EA_APPLY_OUT = bootfiles/zj-ea-apply.exe
 ea-apply: $(EA_APPLY_OUT)
 $(EA_APPLY_OUT): $(EA_APPLY_SRC) src/common/version.h
@@ -162,7 +165,7 @@ $(EA_APPLY_OUT): $(EA_APPLY_SRC) src/common/version.h
 TEST_SRC   = tests/tiny_test.cpp tests/unit_tests.cpp tests/main.cpp
 TEST_UNITS = src/common/sysinfo.cpp src/wim/exclude.cpp src/boot/task.cpp src/common/zip.cpp src/app/advice.cpp \
       src/common/i18n.cpp src/common/selfarch.cpp src/common/relocate.cpp src/common/pathutil.cpp src/boot/bcd_parse.cpp src/boot/bootpath.cpp \
-      src/common/ea.cpp src/common/refscan.cpp src/app/swapleft.cpp src/common/logger.cpp
+      src/common/ea.cpp src/common/refscan.cpp src/app/swapleft.cpp src/common/logger.cpp src/common/bioskey.cpp
 TEST_BIN   = $(OBJDIR)/tests.exe
 $(TEST_BIN): $(TEST_SRC) $(TEST_UNITS) src/common/rescue_decision.h src/common/version.h tests/tiny_test.h | $(OBJDIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(TEST_SRC) $(TEST_UNITS) -o $(TEST_BIN) -static -mconsole -ladvapi32 -lole32 -luuid -lntdll
@@ -204,6 +207,9 @@ package: ea-apply
 	@copy /Y bootfiles\zjrestore-lite.sh dist\bootfiles\ >nul
 	@copy /Y bootfiles\zjlog.sh dist\bootfiles\ >nul
 	@copy /Y bootfiles\zj-ea-apply.exe dist\bootfiles\ >nul
+# 异机还原：随包放一个 Drivers\ 说明（用户把启动驱动放这里；无 .inf 时仅内置）
+	@if not exist dist\Drivers mkdir dist\Drivers
+	@copy /Y bootfiles\Drivers-README.txt dist\Drivers\README.txt >nul
 # 交付目录不留运行期垃圾：从 dist 直接运行过 exe 时会在 dist\logs 落日志/诊断包
 # （LogBaseDir 的"程序目录"分支）——打包时清掉，避免把测试残留当交付物分发。
 	@if exist dist\logs rmdir /S /Q dist\logs

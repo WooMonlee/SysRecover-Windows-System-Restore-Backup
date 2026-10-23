@@ -128,6 +128,35 @@ static void DoDeleteWork(const sysrecover::SwapLeftInfo& info, HWND hwnd) {
     }
 }
 
+// 程序自删（用户 2026-10-20 规格：删除旧系统后自删）。
+// 正在运行的 exe/DLL 不能当场删除 —— 起一个**分离的** cmd：等本进程退出后
+// 反复 rmdir（最多 30 次），把整个程序目录（含 logs、libwim-15.dll）清掉。
+// 失败只记日志（不阻塞用户；用户可手动删）。
+void ScheduleProgramSelfDelete(const std::wstring& dir) {
+    if (dir.size() < 4)
+        return;
+    std::wstring cmdline =
+        L"cmd.exe /c ping -n 5 127.0.0.1 >nul & for /l %i in (1,1,30) do "
+        L"@(rmdir /s /q \"" + dir + L"\" 2>nul & if not exist \"" + dir +
+        L"\" exit /b)";
+    std::vector<wchar_t> mut(cmdline.begin(), cmdline.end());
+    mut.push_back(0);
+    STARTUPINFOW si = {};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi = {};
+    if (CreateProcessW(nullptr, mut.data(), nullptr, nullptr, FALSE,
+                       CREATE_NO_WINDOW | DETACHED_PROCESS, nullptr, nullptr,
+                       &si, &pi)) {
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        sysrecover::LogInfo("self-delete scheduled (program dir will be removed "
+                            "after exit)");
+    } else {
+        sysrecover::LogWarn("self-delete spawn failed err=" +
+                            std::to_string(GetLastError()));
+    }
+}
+
 bool RunDeleteWithProgress(HWND owner, const sysrecover::SwapLeftInfo& it) {
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
@@ -468,53 +497,9 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     pWnd->ShowWindow(true);
     sysrecover::StartupPhase("window-shown");  // 问题 2：到这里界面必须已经出来
 
-    // ── 运行目录搬迁（用户 2026-10-03 规格）──────────────────────────────
-    // 程序在光盘/U盘上：日志无法长期保存 → 询问后复制整包到本地固定分区再运行。
-    // 目的地 = 装了 Windows 的分区之外的第一顺序可写固定分区；没有别的分区时
-    // 文案说明"还原系统盘时程序与日志会被覆盖"。失败只提示并继续原地（产品永远能用）。
-    // ⚠️ 问题 2（用户 2026-10-12）：本块与下面的 A 引擎残留询问**原来排在建窗之前**，
-    // 于是光盘/U盘上的那次磁盘扫描、以及弹框等待都会挡在界面之前 → 现在一律挪到
-    // `ShowWindow` 之后：先把界面给用户，再做这些"可以等"的检查与询问。
-    {
-        sysrecover::RelocatePlan rp = sysrecover::CheckRelocate();
-        if (rp.needed) {
-            std::wstring msg, left, right;
-            if (!rp.destRoot.empty()) {
-                msg = std::wstring(Tr(L"检测到程序在光盘或U盘上运行，")) + L"\n";
-                msg += std::wstring(Tr(L"是否复制到 ")) + rp.destRoot +
-                       std::wstring(Tr(L" 后运行？")) + L"\n";
-                msg += rp.onlySystemDrive
-                           ? Tr(L"注意：还原系统盘时程序与日志会被覆盖。")
-                           : Tr(L"复制后日志与还原记录都会保存在那里。");
-                left = Tr(L"留在原处");
-                right = Tr(L"复制并运行");
-            } else {
-                msg = Tr(L"程序在只读介质上，且没有可写磁盘。\n"
-                         L"本次运行的日志将无法保存。\n是否仍要继续？");
-                left = Tr(L"退出");
-                right = Tr(L"仍要运行");
-            }
-            if (CConfirmDlg::Ask2(h, Tr(L"九转还原"), msg, left, right,
-                                  /*defaultIsRight=*/true) == 1) {
-                if (!rp.destRoot.empty()) {
-                    int code = 0;
-                    std::string err;
-                    if (sysrecover::DoRelocate(rp, /*wait=*/false, &code, &err)) {
-                        delete pWnd;  // 窗口已建（问题 2 后本块排在 ShowWindow 之后）
-                        ::CoUninitialize();
-                        return 0;  // 新副本接手（单实例互斥由它继续持有）
-                    }
-                    std::wstring emsg =
-                        Tr(L"复制失败：") + U2W8(err) +
-                        Tr(L"\n将继续从当前位置运行，日志可能无法保存。");
-                    ::MessageBoxW(h, emsg.c_str(), Tr(L"九转还原"),
-                                  MB_OK | MB_ICONWARNING);
-                }
-            }
-        }
-    }
-
-    sysrecover::StartupPhase("relocate-check");
+    // （Q1「先落盘后搬家」，用户 2026-10-18：启动搬迁块已删除 —— 搬家等用户
+    //  点「确定还原」后再做，避免"只想看看界面就复制一份"。SettleHome 由
+    //  StageRestoreImpl 在确认后自动调用，仅还原/返回旧系统触发。）
 
     // ── A 引擎残留分流（0.7，用户 2026-10-09 规格；决策表 docs/23 §5）──────
     //   Delete → 后台删（不卡开窗）；Reuse/Redo → 只记日志（还原时接着处理）；
@@ -546,13 +531,59 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
                         std::wstring(Tr(L"发现备返保留的旧系统：")) + tagW + L"\n" +
                         Tr(L"保留 = 维持现状；返回旧系统 = 重启把旧系统搬回根；") +
                         L"\n" +
-                        Tr(L"删除 = 永久清除旧系统，释放磁盘空间。");
-                    int r = CConfirmDlg::Ask3(
+                        Tr(L"删除 = 永久清除旧系统，释放磁盘空间。") + L"\n" +
+                        Tr(L"自删 = 删旧系统 + 启动菜单 + 本程序（不可恢复）");
+                    int r = CConfirmDlg::Ask4(
                         h, Tr(L"处理备返的旧系统"), msg3,
                         Tr(L"保留不动"), Tr(L"返回旧系统"), Tr(L"删除旧系统"),
+                        Tr(L"删除旧系统后自删"),
                         /*defaultIdx=*/0);
                     if (r == 1) {
                         StageReturnOldFlow(h, it.drive);
+                    } else if (r == 3) {
+                        // 用户 2026-10-20 规格：先删旧系统 → 删启动菜单 →
+                        // 删本程序（自删）。两步确认（默认「否」）。
+                        sysrecover::LogInfo("swap leftover: " + tagN +
+                                            " -> delete + self-delete (user "
+                                            "chose)");
+                        if (MessageBoxW(
+                                h,
+                                Tr(L"将删除旧系统、启动菜单以及本程序，"
+                                   "此操作不可恢复。\n确定继续吗？"),
+                                Tr(L"删除旧系统后自删"),
+                                MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) !=
+                            IDYES)
+                            continue;
+                        bool stillThere = RunDeleteWithProgress(h, it);
+                        if (stillThere) {
+                            MessageBoxW(
+                                h,
+                                Tr(L"删除未完全成功，~old 仍有残留；"
+                                   "为避免留下半成品，本次未删除本程序。\n"
+                                   "可稍后重试，或重启后再删。"),
+                                Tr(L"删除旧系统"), MB_OK | MB_ICONWARNING);
+                            continue;
+                        }
+                        std::string blog;
+                        if (!sysrecover::RemoveBootLayer(blog)) {
+                            MessageBoxW(
+                                h,
+                                Tr(L"启动菜单清除未完全成功，已取消删除本程序。\n"
+                                   "可稍后用「清除引导项」重试。"),
+                                Tr(L"删除旧系统"), MB_OK | MB_ICONWARNING);
+                            continue;
+                        }
+                        sysrecover::DeleteMenuBinding();
+                        ScheduleProgramSelfDelete(sysrecover::AppDir());
+                        MessageBoxW(h,
+                                    Tr(L"旧系统、启动菜单与本程序已清理，"
+                                       "程序即将退出。"),
+                                    Tr(L"删除旧系统后自删"),
+                                    MB_OK | MB_ICONINFORMATION);
+                        ::DestroyWindow(h);
+                        delete pWnd;
+                        ::CoUninitialize();
+                        return 0;
                     } else if (r == 2) {
                         sysrecover::LogInfo("swap leftover: " + tagN +
                                             " -> delete (user chose, keepold)");

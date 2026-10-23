@@ -215,11 +215,14 @@ int CollectOneDrive(wchar_t letter, const std::wstring& dstBase,
         CreateDirectoryW(zdst.c_str(), nullptr);
         for (const wchar_t* sub : {L"bootfix", L"scripts", L"logs", L"ea"})
             n += CopySmallTree(zjr + L"\\" + sub, zdst + L"\\" + sub, 0);
-        // 救援构建戳（A6）：核对盘上救援是哪一版
-        std::wstring rb = zjr + L"\\rescue-build.txt";
-        if (GetFileAttributesW(rb.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        // 救援构建戳（A6）+ 来源标记（PIT-156，救援层 EA 块写的 source.txt：
+        // 这份残留是谁放的、软件在哪）——核对盘上救援/还原是哪一版、哪来的。
+        for (const wchar_t* f : {L"rescue-build.txt", L"source.txt"}) {
+            std::wstring p = zjr + L"\\" + f;
+            if (GetFileAttributesW(p.c_str()) == INVALID_FILE_ATTRIBUTES)
+                continue;
             CreateDirectoryW(zdst.c_str(), nullptr);
-            if (CopyOneFile(rb, zdst + L"\\rescue-build.txt"))
+            if (CopyOneFile(p, zdst + L"\\" + f))
                 ++n;
         }
         std::string listing;
@@ -629,6 +632,10 @@ std::wstring StatusStepText(const std::string& s) {
         return sysrecover::Tr(L"救援环境缺少必需组件");
     if (s == "unsupported-image")
         return sysrecover::Tr(L"不支持的系统镜像");
+    if (s == "reparse-unsettable")
+        return sysrecover::Tr(L"镜像含无法还原的重解析点");
+    if (s == "efs-encrypted")
+        return sysrecover::Tr(L"镜像含 EFS 加密文件（还原后会变成空文件）");
     if (s == "swap-missing")
         return sysrecover::Tr(L"新系统解压数据不完整");
     if (s == "swap-failed")
@@ -1137,11 +1144,44 @@ int CleanupStrayLogs() {
             ++n;
         }
         std::wstring zjr = root + L"ZJRESTORE";
-        if (_wcsicmp(zjr.c_str(), activeBase.c_str()) != 0) {
+        if (_wcsicmp(zjr.c_str(), activeBase.c_str()) != 0 &&
+            GetFileAttributesW(zjr.c_str()) != INVALID_FILE_ATTRIBUTES) {
             std::wstring zl = zjr + L"\\logs";
             if (GetFileAttributesW(zl.c_str()) != INVALID_FILE_ATTRIBUTES) {
                 RemoveTreeAny(zl);
                 ++n;
+            }
+            // PIT-156（2026-10-18，用户规格）：日志已收进 collected → 整个残留
+            // 文件夹按纯逻辑分类器处置：我方还原期重建的（ea/bootfix/source.txt…）
+            // → 删掉，不再在盘上留 C:\ZJRESTORE；程序的家（SettleHome 副本）与
+            // 已装启动菜单（boot/scripts）→ 保留。分类保守：看不懂就留。
+            std::vector<std::wstring> top;
+            WIN32_FIND_DATAW fd = {};
+            HANDLE h = FindFirstFileW((zjr + L"\\*").c_str(), &fd);
+            if (h != INVALID_HANDLE_VALUE) {
+                do {
+                    if (!wcscmp(fd.cFileName, L".") ||
+                        !wcscmp(fd.cFileName, L".."))
+                        continue;
+                    top.push_back(fd.cFileName);
+                } while (FindNextFileW(h, &fd));
+                FindClose(h);
+            }
+            switch (sysrecover::ClassifyZjrResidue(top)) {
+                case sysrecover::ZjrFolderKind::Delete:
+                    RemoveTreeAny(zjr);
+                    ++n;
+                    LogInfo("residue folder removed: " + ToUtf8(zjr));
+                    break;
+                case sysrecover::ZjrFolderKind::Empty:
+                    SetFileAttributesW(zjr.c_str(), FILE_ATTRIBUTE_NORMAL);
+                    if (RemoveDirectoryW(zjr.c_str())) {
+                        ++n;
+                        LogInfo("empty residue folder removed: " + ToUtf8(zjr));
+                    }
+                    break;
+                default:
+                    break;  // Keep
             }
         }
     }

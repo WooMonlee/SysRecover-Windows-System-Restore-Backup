@@ -2,7 +2,7 @@
 
 > **中文** | [English](README.en.md)
 
-> 版本 `0.7.24`｜**x64 + x86 双架构**（Windows 侧跟随系统位数，Linux 救援层固定 x64）｜Windows 7 / 10 / 11 / WinPE｜发布包 ≈41 MB（其中 ≈27 MB 是救援内核与 initramfs）
+> 版本 `0.9.9`｜**x64 + x86 双架构**（Windows 侧跟随系统位数，Linux 救援层固定 x64）｜Windows 7 / 10 / 11 / WinPE｜发布包 ≈41 MB（其中 ≈27 MB 是救援内核与 initramfs）
 > 许可：自有代码 **MIT**（见 [`LICENSE`](LICENSE)）；第三方组件「单独分发」，清单、全文与源码出处见 [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt)
 
 一句话：**把 Windows 系统备份成一个镜像文件，需要的时候一键还原回去。**

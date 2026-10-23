@@ -1,10 +1,15 @@
 // WIM 引擎实现：libwim C API 直连。
+#include "common/ea.h"
 #include "common/i18n.h"
+#include "common/logger.h"
+#include "common/relocate.h"
 #include "wim.h"
 
 #include <windows.h>  // WideCharToMultiByte（XML 是 UTF-16LE，见 ImageSize）
 
 #include <windows.h>
+#include <fcntl.h>
+#include <io.h>
 
 #include <cstdio>
 #include <cwchar>
@@ -173,6 +178,14 @@ struct WimHandle {
 
 WimEngine::WimEngine() {
     inited_ = (wimlib_global_init(0) == 0);
+    if (inited_) {
+        // 把 wimlib 的详细错误（含失败文件路径/errno）落到日志目录，GUI
+        // 没有控制台，否则只剩 "rc=47 Failed to open a file" 无法定位。
+        std::wstring dir = LogBaseDir() + L"\\logs";
+        CreateDirectoryW(dir.c_str(), nullptr);
+        wimlib_set_error_file_by_name(
+            (dir + L"\\wimlib-errors.log").c_str());
+    }
 }
 
 WimEngine::~WimEngine() {
@@ -217,8 +230,30 @@ int WimEngine::Capture(const std::wstring& source,
     // 还原 → Linux 侧 apply rc=84 → 黑屏（PIT-057）。
     std::wstring tmp = imagePath + L".tmp";
     DeleteFileW(tmp.c_str());
-    rc = wimlib_write(h.w, tmp.c_str(), WIMLIB_ALL_IMAGES, writeFlags,
-                      ThreadCount());
+    // 2026-10-21：输出文件改由 CreateFileW 打开、再把 fd 交给 wimlib。
+    // 原因：wimlib 的路径接口走 CRT 的 _wopen；对“Unicode 机器名”的 UNC
+    //（如 \\REDACTED-SERVER\Users\...）在某些环境下 CRT 转换失败 → rc=47。CreateFileW
+    // 是资源管理器/其它软件使用的同一 API，Unicode 主机名支持更可靠。
+    HANDLE oh = CreateFileW(tmp.c_str(), GENERIC_READ | GENERIC_WRITE,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (oh == INVALID_HANDLE_VALUE) {
+        const DWORD e = GetLastError();
+        DeleteFileW(tmp.c_str());
+        LogError("capture: CreateFileW(output) failed err=" +
+                 std::to_string((unsigned long)e));
+        return WIMLIB_ERR_OPEN;
+    }
+    const int ofd = _open_osfhandle((intptr_t)oh, _O_BINARY | _O_RDWR);
+    if (ofd < 0) {
+        CloseHandle(oh);
+        DeleteFileW(tmp.c_str());
+        LogError("capture: _open_osfhandle failed");
+        return WIMLIB_ERR_OPEN;
+    }
+    rc = wimlib_write_to_fd(h.w, ofd, WIMLIB_ALL_IMAGES, writeFlags,
+                            ThreadCount());
+    _close(ofd);  // 关闭 fd（同时关闭上面的句柄）
     if (rc != 0) {
         DeleteFileW(tmp.c_str());
         return rc;
@@ -586,6 +621,50 @@ int WimEngine::ImagePathExists(const std::wstring& imagePath, int index,
     }
     if (irc == WIMLIB_ERR_PATH_DOES_NOT_EXIST)
         return 0;  // 路径不存在 = 正常查询结果（*exists 保持 false）
+    return irc;
+}
+
+int WimEngine::ScanImageForLinuxRestore(const std::wstring& imagePath,
+                                        int index,
+                                        std::vector<std::wstring>& badReparse,
+                                        size_t* encryptedCount, size_t cap) {
+    if (!inited_)
+        return -1;
+    WimHandle h;
+    WIMStruct* raw = nullptr;
+    int rc = wimlib_open_wim(imagePath.c_str(), 0, &raw);
+    if (rc != 0)
+        return rc;
+    h.w = raw;
+    struct Ctx {
+        std::vector<std::wstring>* out;
+        size_t cap;
+        size_t encrypted;
+    } ctx{&badReparse, cap == 0 ? 1 : cap, 0};
+    // 只读元数据递归遍历（不解压文件数据 —— solid ESD 也快）。
+    // 重解析点判定与备份端 ea::IsUnsettableReparse(tag, attrs, nullptr, 0)
+    // 同口径（零误报的确定项；blob 不可得时只有这些）。
+    // EFS：只看 dentry 属性（wimlib 1.14 的 dir entry 不暴露流类型；捕获端
+    // 对加密文件保留 FILE_ATTRIBUTE_ENCRYPTED + 原始加密数据流，实测）。
+    int irc = wimlib_iterate_dir_tree(
+        h.w, index, L"\\", WIMLIB_ITERATE_DIR_TREE_FLAG_RECURSIVE,
+        [](const struct wimlib_dir_entry* e, void* ud) -> int {
+            auto* c = static_cast<Ctx*>(ud);
+            if (e->attributes & WIMLIB_FILE_ATTRIBUTE_ENCRYPTED)
+                ++c->encrypted;
+            if (c->out->size() >= c->cap)
+                return 0;  // 样本已够（回调不能乱退；继续遍历很便宜）
+            if (!(e->attributes & WIMLIB_FILE_ATTRIBUTE_REPARSE_POINT))
+                return 0;
+            if (e->full_path &&
+                ea::IsUnsettableReparse(e->reparse_tag, e->attributes,
+                                        nullptr, 0))
+                c->out->push_back(e->full_path);
+            return 0;
+        },
+        &ctx);
+    if (encryptedCount)
+        *encryptedCount = ctx.encrypted;
     return irc;
 }
 

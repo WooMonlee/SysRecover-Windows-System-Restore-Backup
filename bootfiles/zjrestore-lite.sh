@@ -920,8 +920,13 @@ scan_image(){
             umount "$SRC_M" 2>/dev/null
         else
             echo "$_d" >> /tmp/zj_img.fail
-            probe "image-scan dev=$_d type=${_typ:-none} rem=${_rem:-0} mount=FAIL err=$(cat /tmp/zjmnt.err 2>/dev/null | tr '\n' ' ' | head -c 150)"
-            say "mount FAILED $_d (type=${_typ:-none}; $(cat /tmp/zjmnt.err 2>/dev/null | tr '\n' ' '))"
+            if [ -z "$_typ" ]; then
+                probe "image-scan dev=$_d type=none rem=${_rem:-0} mount=FAIL err=no filesystem"
+                say "skip $_d (no filesystem)"
+            else
+                probe "image-scan dev=$_d type=$_typ rem=${_rem:-0} mount=FAIL err=$(cat /tmp/zjmnt.err 2>/dev/null | tr '\n' ' ' | head -c 150)"
+                say "mount FAILED $_d (type=$_typ; $(cat /tmp/zjmnt.err 2>/dev/null | tr '\n' ' ' | head -c 200))"
+            fi
         fi
     done
     return 1
@@ -975,6 +980,80 @@ else
     say "ERROR: (pre-Vista system / install-source image / partial image) - aborted BEFORE touching the target"
     persist_log
     exit 1
+fi
+
+# ── Linux 无法正确还原的内容预检（1019 案 W1 + W2，2026-10-19；**动目标分区之前**）──
+# B 引擎（block）在 Linux 侧用 wimlib（NTFS-3G 块模式）apply，两类内容还原不了：
+#   ① 特定重解析点（PIT-135 + 1019 修订：非微软 tag、junction 落非目录文件等）
+#      → rc=58 中止在 **mkntfs 之后**（目标分区半成品）；
+#   ② EFS 加密文件（W2 实测）→ apply **rc=0 但文件变 0 字节**（wimlib 只打
+#      "Ignoring EFS-encrypted data"）—— 静默数据丢失。
+# 这里在 mkntfs 之前拦截：检出 → 拒绝（引导改走 A 引擎「还原后重启」或 PE
+# 就地还原）；**扫描无法完成 → 也拒绝**（fail-closed —— 放行等于赌它们不发生，
+# 赌输了就是格盘后失败/数据丢失，见 1019 案用户哲学"杜绝格完盘才失败"）。
+# 快路径：Windows 暂存侧已扫描干净（reparse_scan=0 **且** efs_scan=0 —— 两键都
+# 是 0 才算证书：0.7.70 版 exe 只写 reparse_scan，缺 efs_scan 时必须全量扫描，
+# 否则旧证书会漏掉 EFS）且镜像字节数一致（image_size == 实际 stat）→ 直接认证。
+# 老契约（缺键）/大小不符 → 走兜底扫描。
+# 兜底扫描：`dir --detailed` 只读元数据（不写盘；用法见 imagex.c:4388——
+# WIMFILE [IMAGE] 之后跟 --detailed）。awk 单遍同时数 "Attributes" 哨兵行、
+# 非微软重解析点（tag 十六进制小写无前导零：长度<8 或 =8 且首字符 [0-7]）与
+# EFS 加密项（imagex.c:2602-2615 的属性行 `    FILE_ATTRIBUTE_ENCRYPTED is set`）。
+# ⚠️ busybox 无 PIPESTATUS：子壳里 `echo "DIRRC=$?" >&2` 把 rc 带出来。
+# ⚠️ `$WIMLIB` 已在镜像扫描段之前无条件解析（PIT-138），此处直接可用。
+_rs_cert=0
+if [ "$(get_task reparse_scan)" = "0" ] && [ "$(get_task efs_scan)" = "0" ]; then
+    _fp=$(get_task image_size)
+    _cur=$(stat -c %s "$IMG_FILE" || echo "")
+    if [ -n "$_fp" ] && [ "$_cur" = "$_fp" ]; then
+        _rs_cert=1
+        say "reparse precheck: certified clean by staging side (size=$_fp matches)"
+    elif [ -n "$_fp" ]; then
+        say "reparse precheck: recorded size $_fp != current ${_cur:-?} -> full scan"
+    fi
+fi
+if [ "$_rs_cert" = "0" ]; then
+    say "reparse precheck: scanning image metadata (may take a while) ..."
+    ( timeout 180 "$WIMLIB" dir "$IMG_FILE" "$IMAGE_INDEX" --detailed; echo "DIRRC=$?" >&2 ) \
+        2> /tmp/zj_rep.err | awk '
+/^Attributes / { seen++ }
+/^Reparse Tag / {
+    t = $NF; sub(/^0x/, "", t);
+    if (length(t) < 8 || (length(t) == 8 && t ~ /^[0-7]/)) {
+        bad++; if (bad <= 5) printf "BADTAG 0x%s\n", t
+    }
+}
+/^    FILE_ATTRIBUTE_ENCRYPTED is set/ { enc++ }
+END { printf "RES SEEN=%d BAD=%d ENC=%d\n", seen, bad, enc }' > /tmp/zj_rep.res
+    _rc=$(tail -n 1 /tmp/zj_rep.err | sed -n 's/^DIRRC=//p')
+    _seen=$(sed -n 's/^RES SEEN=\([0-9]*\) .*/\1/p' /tmp/zj_rep.res)
+    _bad=$(sed -n 's/^RES SEEN=[0-9]* BAD=\([0-9]*\) .*$/\1/p' /tmp/zj_rep.res)
+    _enc=$(sed -n 's/^RES SEEN=[0-9]* BAD=[0-9]* ENC=\([0-9]*\)$/\1/p' /tmp/zj_rep.res)
+    if [ -n "$_bad" ] && [ "$_bad" != "0" ]; then
+        RESULT=FAILED; STEP=reparse-unsettable
+        say "ERROR: image contains reparse point(s) the Linux rescue cannot write:"
+        sed -n 's/^BADTAG /  bad tag /p' /tmp/zj_rep.res
+        say "ERROR: use 'restore then reboot' (Windows-side extract) or in-place restore from PE"
+        persist_log
+        exit 1
+    fi
+    if [ -n "$_enc" ] && [ "$_enc" != "0" ]; then
+        RESULT=FAILED; STEP=efs-encrypted
+        say "ERROR: image contains EFS-encrypted content the Linux rescue cannot restore:"
+        say "  encrypted entries: $_enc (they would be restored EMPTY)"
+        say "ERROR: use 'restore then reboot' (Windows-side extract) or in-place restore from PE"
+        persist_log
+        exit 1
+    fi
+    if [ "$_rc" != "0" ] || [ -z "$_seen" ] || [ "$_seen" = "0" ]; then
+        RESULT=FAILED; STEP=reparse-unsettable
+        say "ERROR: reparse precheck could not complete (dir rc=${_rc:-?} entries=${_seen:-?})"
+        say "  (probe out: $(tail -c 200 /tmp/zj_rep.err | tr '\n' ' '))"
+        say "ERROR: cannot certify image is safe for Linux apply - aborted BEFORE touching the target"
+        persist_log
+        exit 1
+    fi
+    say "reparse precheck: ok (entries=$_seen, no unsettable reparse tags, no EFS)"
 fi
 fi # end engine != swap (image scan + precheck)
 
@@ -1375,7 +1454,11 @@ if [ -f /tmp/bootfix/bootmgr ]; then
         say "ERROR: mount target for bootfix failed: $(cat /tmp/zjbf.err 2>/dev/null | tr '\n' ' ')"
     fi
 else
-    say "WARN: no bootfix files, skip boot files"
+    if [ -d /sys/firmware/efi ]; then
+        say "no bootfix needed (UEFI boot), skip boot files"
+    else
+        say "WARN: no bootfix files, skip boot files"
+    fi
 fi
 
 # ── 修复引导 ──
@@ -1548,6 +1631,25 @@ if [ -n "$EA_INDEX" ]; then
             if mnt_dev "$TARGET_DEV" "$EAM"; then
                 mkdir -p "$EAM/ZJRESTORE/ea" \
                          "$EAM/Windows/System32/GroupPolicy/Machine/Scripts/Startup"
+                # 来源标记（PIT-156，2026-10-18）：<目标>\ZJRESTORE\source.txt —— 给
+                # 首启补写器（归纳日志回软件目录）与 Windows 侧收集器/清理器看的
+                # "这份残留是谁放的、软件在哪"。mkdir 成功后立刻写：EA 部署即使
+                # 后续某步失败，标记照样在（失败场景同样要能被归纳/清理）。
+                {
+                    printf 'time=%s\n' "$(date '+%F %T')"
+                    printf 'engine=%s\n' "$ENGINE"
+                    printf 'action=%s\n' "${ACTION:-restore}"
+                    printf 'applier=1\n'
+                    printf 'software_dir=%s\n' "$SOFTWARE_DIR"
+                    printf 'software_path=%s\n' "$(get_task software_path)"
+                    printf 'software_version=%s\n' "$(get_task software_version)"
+                    printf 'rescue_build=%s\n' "$(cat /zjrescue-version 2>/dev/null)"
+                    printf 'target_dev=%s\n' "$TARGET_DEV"
+                    printf 'target_offset=%s\n' "$TARGET_OFFSET"
+                    printf 'target_size=%s\n' "$TARGET_SIZE"
+                    printf 'image_path=%s\n' "$IMAGE_PATH"
+                } > "$EAM/ZJRESTORE/source.txt" \
+                    || say "WARN: source.txt write failed (residue marker missing)"
                 [ -s "$EAD/eapack.dat" ] && cp "$EAD/eapack.dat" "$EAM/ZJRESTORE/ea/" 2>/dev/null
                 [ -s "$EAD/reppack.dat" ] && cp "$EAD/reppack.dat" "$EAM/ZJRESTORE/ea/" 2>/dev/null
                 cp "$EAD/zj-ea-apply.exe" "$EAM/ZJRESTORE/ea/" 2>/dev/null

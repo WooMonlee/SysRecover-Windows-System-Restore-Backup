@@ -199,8 +199,10 @@ if ($FirstBoot) {
         Get-ChildItem -LiteralPath $dstLogs -Force | Remove-Item -Recurse -Force
         Log "FirstBoot: cleared app log dir ($dstLogs)"
     }
-    # Keep ZJRESTORE itself non-empty (real state has bootfix\ + build stamp) so
-    # the dir survives the move and its Hidden attribute can be verified.
+    # Plant a mixed residue folder. PIT-150 expectation was "dir survives (hidden)".
+    # PIT-156 (2026-10-18) NEW expectation: after migrate + collect, the classifier
+    # sees {bootfix, rescue-build.txt} -> Delete -> the WHOLE <L2>:\ZJRESTORE is
+    # gone (bootfix\BCD + rescue-build.txt first collected into logs\collected).
     New-Item -ItemType Directory -Path "${L2}:\ZJRESTORE\bootfix" -Force | Out-Null
     Set-Content -LiteralPath "${L2}:\ZJRESTORE\bootfix\BCD" -Value 'fake bootfix BCD (harness)' -Encoding ASCII
     Set-Content -LiteralPath "${L2}:\ZJRESTORE\rescue-build.txt" -Value 'harness' -Encoding ASCII

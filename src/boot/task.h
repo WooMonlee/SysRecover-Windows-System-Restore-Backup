@@ -31,6 +31,20 @@ struct RestoreTask {
     // 暂存时从镜像内容发现后写进 conf + _zjresy 日志；救援层把它连同补写器
     // 投放进目标并安装首启钩子（纯增量键，不升 contract_version，同 esp_index）。
     int eaIndex = 0;
+    // 镜像文件字节数（1019 案，2026-10-19）：救援层"契约认证"用 —— 与暂存侧
+    // 完全一致才走快路径（跳过救援层自带的重解析点扫描）。增量键。
+    uint64_t imageSize = 0;
+    // 暂存侧"不可写回重解析点"预检结果（1019 案）：-1=未扫描（老任务/A 引擎）；
+    // 0=已扫描且干净（救援层信任并跳过重扫）；2=扫描不可用（救援层兜底自行
+    // 扫描，fail-closed）。增量键，不升 contract_version（老任务缺键→救援层扫描）。
+    int reparseScan = -1;
+    // 暂存侧 EFS 加密内容预检结果（1019 案 W2，2026-10-19）：-1=未扫描
+    // （老任务/A 引擎）；0=已扫描且干净；2=扫描不可用。语义同 reparseScan ——
+    // 救援层 fast path 要求**两个键都是 0**（0.7.70 版 exe 只写 reparse_scan，
+    // 缺 efs_scan → 救援层全量扫描，防"旧暂存证书"漏掉 EFS）。
+    // Linux wimlib 无法还原 EFS（实测 apply rc=0 但加密文件变 0 字节）。
+    // 增量键，不升 contract_version。
+    int efsScan = -1;
     std::wstring targetGuid;     // 目标分区 GUID（MBR 下可空）
     uint64_t targetOffset = 0;
     uint64_t targetSize = 0;

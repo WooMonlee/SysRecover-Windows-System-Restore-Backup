@@ -328,13 +328,48 @@ bool IsUefiFirmware() {    // Win8+: GetFirmwareType（Win7 的 headers 没有�
     return GetLastError() != ERROR_INVALID_FUNCTION;
 }
 
-bool FindEspPartition(PartitionInfo& out) {
-    for (const auto& d : EnumerateDisks())
+bool IsUefiBootSession() {
+    // 读固件变量需要 SeSystemEnvironmentPrivilege（管理员默认持有但未启用）。
+    HANDLE tok = nullptr;
+    bool priv = false;
+    if (OpenProcessToken(GetCurrentProcess(),
+                         TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &tok)) {
+        LUID luid = {};
+        if (LookupPrivilegeValueW(nullptr, SE_SYSTEM_ENVIRONMENT_NAME, &luid)) {
+            TOKEN_PRIVILEGES tp = {};
+            tp.PrivilegeCount = 1;
+            tp.Privileges[0].Luid = luid;
+            tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+            priv = AdjustTokenPrivileges(tok, FALSE, &tp, 0, nullptr, nullptr) &&
+                   GetLastError() == ERROR_SUCCESS;
+        }
+        CloseHandle(tok);
+    }
+    char buf[16] = {};
+    SetLastError(ERROR_SUCCESS);
+    GetFirmwareEnvironmentVariableA(
+        "BootCurrent", "{8be4df61-93ca-11d2-aa0d-00e098032b8c}", buf,
+        sizeof(buf));
+    const DWORD e = GetLastError();
+    if (e == ERROR_INVALID_FUNCTION)
+        return false;  // 没有 UEFI 运行时 = Legacy/BIOS 会话
+    if (e == ERROR_SUCCESS || e == ERROR_ENVVAR_NOT_FOUND ||
+        e == ERROR_INSUFFICIENT_BUFFER)
+        return true;   // 能读固件变量 = UEFI 会话
+    (void)priv;
+    return IsUefiFirmware();  // 其它错误（权限/异常）：保守按固件类型
+}
+
+bool FindEspPartition(PartitionInfo& out, int onlyDiskIndex) {
+    for (const auto& d : EnumerateDisks()) {
+        if (onlyDiskIndex >= 0 && d.index != (uint32_t)onlyDiskIndex)
+            continue;
         for (const auto& p : d.parts)
             if (p.isEsp) {
                 out = p;
                 return true;
             }
+    }
     return false;
 }
 
@@ -342,8 +377,10 @@ bool FindEspPartition(PartitionInfo& out) {
 // 依据（docs/15）：固件与 `mountvol /s` 只按**文件路径**找引导程序，分区类型
 // GUID 只在 bcdedit/BCD 语义里重要；DiskGenius 重建分区后常把 ESP 标成 Basic
 // Data，此时按 GUID 找不到，但机器其实**能**从它启动。
-bool FindEspPartitionFallback(PartitionInfo& out) {
+bool FindEspPartitionFallback(PartitionInfo& out, int onlyDiskIndex) {
     for (const auto& d : EnumerateDisks()) {
+        if (onlyDiskIndex >= 0 && d.index != (uint32_t)onlyDiskIndex)
+            continue;
         for (const auto& p : d.parts) {
             if (p.letter.empty())
                 continue;  // 没盘符就没法探路径（那类交给 mountvol X: /s）
@@ -363,6 +400,27 @@ bool FindEspPartitionFallback(PartitionInfo& out) {
         }
     }
     return false;
+}
+
+int VolumeDiskIndex(wchar_t letter) {
+    if (letter == 0 || letter == L'?' || letter == L'\\' || letter == L'/')
+        return -1;
+    std::wstring dev = L"\\\\.\\" + std::wstring(1, letter) + L":";
+    Handle vh(CreateFileW(dev.c_str(), GENERIC_READ,
+                          FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                          OPEN_EXISTING, 0, nullptr));
+    if (!vh.valid())
+        return -1;
+    std::vector<BYTE> buf(sizeof(VOLUME_DISK_EXTENTS) +
+                          7 * sizeof(DISK_EXTENT));
+    DWORD ret = 0;
+    if (!DeviceIoControl(vh.h, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, nullptr,
+                         0, buf.data(), (DWORD)buf.size(), &ret, nullptr))
+        return -1;
+    auto* e = reinterpret_cast<VOLUME_DISK_EXTENTS*>(buf.data());
+    if (e->NumberOfDiskExtents == 0)
+        return -1;
+    return static_cast<int>(e->Extents[0].DiskNumber);
 }
 
 // 分区表摘要（纯 ASCII，供日志/报错）。失败时用户能一眼看出"ESP 到底有没有"。

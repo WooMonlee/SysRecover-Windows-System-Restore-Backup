@@ -42,6 +42,10 @@ struct RestoreRequest {
     //（用户 2026-10-17 规格：先搬日志回程序目录，再弹「是否删除旧系统」）；
     // false = 开机 RunOnce 静默删 ~old。
     bool keepOld = false;
+    // 异机还原（2026-10-21，0.9）：仅 Win10/11；A 引擎/PE 就地生效。
+    // 最小化 = 启用 in-box 启动存储驱动；driverDir 非空 = 再注用户驱动包。
+    bool universal = false;
+    std::wstring driverDir;
 };
 
 // 备份。覆盖确认由调用方负责（CLI --yes / GUI 对话框）。
@@ -106,8 +110,10 @@ int RetryStagedRestore(std::string& err, bool* needReboot = nullptr);
 //   留给用户在开机菜单里自行选择；进入救援层后按契约把镜像还原到目标分区。
 //   与 `StageRestore` 共用同一套安全检查与契约写入（只是模式不同），不会漂移。
 // 返回：0 成功；1 失败；2 参数错（缺镜像 / 目标无盘符）；4 危险目标被拒；5 镜像不可用。
+// progress（2026-10-18 新增）：与 StageRestore 同款进度回调（菜单安装要走完整
+//   ~new 解压 + 引导层部署，GUI 异步化后经它上报进度/阶段）。
 int StageRestoreMenu(const RestoreRequest& req, std::string& err,
-                     ErrAdvice* adv = nullptr);
+                     ProgressFn progress = nullptr, ErrAdvice* adv = nullptr);
 
 // ── 返回旧系统（PIT-139，2026-10-13，方案 C）─────────────────────────
 // A 引擎 keepOld 备返的撤销。**必须重启进 Linux 救援层完成目录反向交换** ——
@@ -121,6 +127,23 @@ int StageRestoreMenu(const RestoreRequest& req, std::string& err,
 //       改选「删除旧系统」，或先在别处运行本程序）。
 int StageReturnOld(const PartitionInfo& target, std::string& err,
                    bool* needReboot = nullptr);
+
+// ── Q1「先落盘后搬家」（用户 2026-10-18）────────────────────────────────────
+// 还原确认后、写契约/格式化之前调用：程序家目录所在物理盘 == 目标盘时，
+// 静默整包复制到安全分区 + 日志跟过去（不 re-exec：当前进程照旧跑完本次操作，
+// 副本供还原后的下次使用）。触发范围仅还原/返回旧系统；备份不搬。
+// targetDiskIndex = 目标盘物理号；exeDiskIndex = 程序目录所在卷的物理号（-1=取不到）。
+// 返回：checked=是否已判定；moved=已复制到安全分区；noSafeDrive=在目标盘上但
+//       找不到安全分区（仅此情况弹警告）；newHome=moved 时的新家目录。
+struct SettleResult {
+    bool checked = false;
+    bool moved = false;
+    bool noSafeDrive = false;
+    std::wstring newHome;
+    std::string detail;  // 一行摘要（写日志/取证）
+};
+SettleResult SettleHome(int targetDiskIndex, int exeDiskIndex);
+const SettleResult& LastSettleResult();
 
 // 目标根是否具备「返回旧系统」的条件（纯只读探测，不写任何东西）。
 // 供 GUI/CLI 决定按钮态与确认框文案；与 StageReturnOld 内部同一判据，不会漂移。
@@ -163,9 +186,17 @@ bool EstimateSwapSpace(const PartitionInfo& target,
                        unsigned long long imageContentBytes,
                        SwapSpaceEstimate& out);
 
+// 供 GUI 在**确认框之前**预判 A 引擎空间（用户 2026-10-20 规格）：
+// 用镜像未压缩内容量 + EstimateSwapSpace（内容+页文件+余量 vs 目标盘可用）。
+// 返回 true = 已判定（out.enough 有效；freeBytes==0 视为读不到，不据此拦截）；
+// false = 无法判定（镜像大小读不到等）→ 调用方按"够"处理、保持原行为。
+bool QuerySwapSpace(const std::wstring& imagePath, int index,
+                    const PartitionInfo& target, SwapSpaceEstimate& out);
+
 // 本次还原/装菜单该走哪套引导链（PIT-092）：UEFI 固件 **且** 目标盘 GPT →
 // UEFI/ESP；否则（含"UEFI 固件 + MBR 盘"）BIOS/GRUB4DOS。GUI 用它给
-// "安装菜单成功"的提示选对说法（UEFI=开机按 F12 选固件启动项；
+// "安装菜单成功"的提示选对说法（UEFI=开机按快捷启动键选固件启动项（键名按
+// 品牌识别，见 common/bioskey）；
 // BIOS=开机菜单里选 SysRecover 条目）—— 与 StageRestoreImpl 内部同一函数，
 // 不会漂移（PIT-072 同款做法）。
 bool UseUefiBootFor(const PartitionInfo& target);

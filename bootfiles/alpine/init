@@ -66,7 +66,10 @@ ldmod(){
             if grep -q "/$_n\.ko" "/lib/modules/$(uname -r)/modules.builtin" 2>/dev/null; then
                 say "  $_n: builtin (ok)"
             else
-                say "  $_n: WARN not bundled (feature unavailable)"
+                case " ufshcd-core ufshcd-pci " in
+                    *" $_n "*) say "  $_n: optional (not bundled; no UFS hardware)" ;;
+                    *) say "  $_n: WARN not bundled (feature unavailable)" ;;
+                esac
             fi ;;
         *[Nn]o" such device"*)
             say "  $_n: not applicable (no such device)" ;;
@@ -295,8 +298,14 @@ scan_for_log(){
             umount "$ZJ_M" 2>/dev/null
             [ -n "$found_log" ] && break
         else
-            probe "dev=$_d size=${_sz}s off=${_off:-?} fs=$(cat /tmp/zjmnt.fs 2>/dev/null) rem=${_rem:-0} mount=FAIL err=$(cat /tmp/zjmnt.err 2>/dev/null | tr '\n' ' ' | head -c 150)"
-            say "mount FAILED $_d (fs=$(cat /tmp/zjmnt.fs 2>/dev/null)): $(cat /tmp/zjmnt.err 2>/dev/null | tr '\n' ' ')"
+            _fsnow=$(cat /tmp/zjmnt.fs 2>/dev/null)
+            if [ -z "$_fsnow" ]; then
+                probe "dev=$_d size=${_sz}s off=${_off:-?} fs= rem=${_rem:-0} mount=FAIL err=no filesystem"
+                say "skip $_d (no filesystem)"
+            else
+                probe "dev=$_d size=${_sz}s off=${_off:-?} fs=$_fsnow rem=${_rem:-0} mount=FAIL err=$(cat /tmp/zjmnt.err 2>/dev/null | tr '\n' ' ' | head -c 150)"
+                say "mount FAILED $_d (fs=$_fsnow): $(cat /tmp/zjmnt.err 2>/dev/null | tr '\n' ' ' | head -c 200)"
+            fi
         fi
     done
     if [ -z "$found_log" ] && [ -n "$_fb_log" ]; then
@@ -387,7 +396,13 @@ if [ ! -f /tmp/bootfix/bootmgr ]; then
     done
     say "bootfix scan done"
 fi
-[ -f /tmp/bootfix/bootmgr ] || say "warn: no bootfix files (BIOS boot files may be missing)"
+if [ ! -f /tmp/bootfix/bootmgr ]; then
+    if [ -d /sys/firmware/efi ]; then
+        say "no bootfix needed (UEFI boot)"
+    else
+        say "warn: no bootfix files (BIOS boot files may be missing)"
+    fi
+fi
 
 # ── 2c) 引导期日志（PIT-059）──
 # 把引导阶段（模块加载/分区扫描/找任务）的日志写一份到**目标分区根目录**：
@@ -492,16 +507,28 @@ reboot_now(){
     reboot -f
 }
 menu_loop(){
+    # P3（PIT-148）+ W4（2026-10-19，1019 案）失败引导菜单：
+    #   · **无轮数上限**（原 3 轮后掉 # shell，等于把用户又扔回裸环境）；
+    #   · **超时 120s 无输入 = 自动 [2] 重启**（提示原文 auto-[2] 必须与行为
+    #     一致；旧实现超时走 break → 掉 shell，无人值守机器会永远干等）；
+    #   · 每轮**重印 RESULT/STEP/rc**（取 /tmp/zjrestore.log 里最后一条）——
+    #     屏幕滚动后用户/现场照片仍知道发生了什么；
+    #   · 非法输入 → 重新提示（不再一敲错就掉 shell）；
+    #   · `#` 仅经 [3] 显式选择（唯一 break 出口）。
     _mi=0
-    while [ $_mi -lt 3 ]; do
+    while :; do
         _mi=$((_mi + 1))
-        say "==== SysRecover recovery menu (round $_mi/3) ===="
+        say "==== SysRecover recovery menu (round $_mi) ===="
+        _rc_m=$(sed -n 's/.*restore script returned (rc=\([0-9]*\)).*/\1/p' /tmp/zjrestore.log 2>/dev/null | tail -n 1)
+        _st_m=$(sed -n 's/.*STEP=\([a-zA-Z][a-zA-Z-]*\).*/\1/p' /tmp/zjrestore.log 2>/dev/null | tail -n 1)
+        say "RESULT: restore FAILED (rc=${_rc_m:-?}) STEP=${_st_m:-unknown}"
         say "[1] Retry restore once more"
         say "[2] Reboot now"
         say "[3] Expert shell"
         say "choice? auto-[2] in 120s"
         _ch=
         read -t 120 -r _ch || _ch=
+        [ -z "$_ch" ] && _ch=2
         case "$_ch" in
             1)
                 /bin/sh /zjrestore-lite.sh "$TARGET_DEV"
@@ -513,7 +540,7 @@ menu_loop(){
                 ;;
             2) reboot_now ;;
             3) break ;;
-            *) break ;;
+            *) say "invalid choice: $_ch (1=retry, 2=reboot, 3=shell)" ;;
         esac
     done
     say "entering rescue shell"

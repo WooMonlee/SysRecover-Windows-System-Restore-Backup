@@ -59,6 +59,11 @@ inline RescueReport DecideRescueReport(const RescueRunTimes& t) {
 //   应引导用户发日志/走人工支持：
 //   · mkntfs-failed / apply-failed / swap-failed
 //   · returnold-missing / returnold-failed（"返回旧系统"另有入口，非 restore 重试）
+//   · reparse-unsettable（1019 案 W1）：镜像含 Linux 写不了的重解析点，或扫描无法
+//     完成 —— 同一镜像 + 同一引擎重试必然复败（未动盘、无副作用）；正确出路是
+//     改「还原后重启」（A 引擎）或 PE 就地还原，重试按钮只会原地打转。
+//   · efs-encrypted（1019 案 W2）：镜像含 EFS 加密内容（Linux apply 只能还原成
+//     0 字节空文件）—— 同上，重试必然复败；正确出路是 A 引擎 / PE 就地还原。
 inline bool RescueStepRetryable(const std::string& step) {
     return step == "no-task" || step == "contract-mismatch" ||
            step == "target-not-found" || step == "caps-missing" ||

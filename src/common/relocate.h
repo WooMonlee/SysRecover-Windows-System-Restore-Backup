@@ -22,9 +22,31 @@ struct RelocatePlan {
 };
 
 // 纯逻辑（单测）：候选取"系统分区之外的第一顺序"；都在系统分区上则用系统分区。
-// 大小写不敏感；返回 0 = 无可用。
+// 大小写不敏感；返回 0 = 无可用。avoidTarget（可选）= 目标盘符（还原时跳过）。
 wchar_t SelectRelocateDrive(const std::vector<wchar_t>& candidates,
-                            wchar_t systemLetter);
+                            wchar_t systemLetter, wchar_t avoidTarget = 0);
+
+// SettleHome 后的日志根覆盖（LogBaseDir 优先返回它）；空 = 无覆盖。
+void SetLogHomeOverride(const std::wstring& dir);
+
+// 副契约目录（restore-task.conf|json 的写者/读者统一走这里）：
+//   settle 后 = 新家；否则 = 程序目录（AppDir）。
+std::wstring ContractDir();
+
+// 纯逻辑（单测）：程序目录是否与目标分区同盘符（应触发 SettleHome）。
+// 依据：还原只格式化目标分区，同盘不同分区的程序不受影响，无需搬迁。
+bool ShouldSettleHome(const std::wstring& exeDir, wchar_t targetLetter);
+
+// `<盘>:\ZJRESTORE` 残留目录的处置分类（PIT-156，2026-10-18）。
+// 输入 = 目录的**顶层**条目名（文件/目录）；纯逻辑，Windows 侧收集器/清理器用它
+// 决定"整个删掉还是留着"。规则（保守：看不出来就留）：
+//   · 含 SysRecover.exe / SysRecoverUI.exe → Keep（SettleHome 搬来的程序的家）
+//   · 含顶层 boot / scripts 目录（精确名）→ Keep（已安装启动菜单的救援载荷）
+//   · 含我方一次性信号 {ea, logs, bootfix, source.txt, rescue-build.txt} → Delete
+//   · 空目录 → Empty（删目录本身）
+//   · 其余（认不出）→ Keep
+enum class ZjrFolderKind { Keep, Delete, Empty };
+ZjrFolderKind ClassifyZjrResidue(const std::vector<std::wstring>& topNames);
 
 // 检测（只读探测，不写盘）：是否需要搬迁、有没有可搬的目的地。
 RelocatePlan CheckRelocate();

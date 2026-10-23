@@ -163,8 +163,13 @@ if ($Leg -eq 's5b') {
     } else { Log 'MISSING app log' }
 
     Log ("~old present: " + ((Get-ChildItem "${L1}:\~old" -Force -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0) + " (marker kept: " + (Test-Path "${L1}:\~old\.zj-keepold") + ")")
-    Log ("p2 ZJRESTORE dir: " + (Test-Path "${L2}:\ZJRESTORE"))
+    # PIT-156 (2026-10-18): expect BOTH False now - logs migrated into the app log
+    # dir, bootfix\BCD + rescue-build.txt collected into logs\collected, then the
+    # whole residue folder deleted (classifier: Delete).  PIT-150 expected the
+    # ZJRESTORE dir to survive hidden; that behavior is superseded.
+    Log ("p2 ZJRESTORE dir (want False, PIT-156): " + (Test-Path "${L2}:\ZJRESTORE"))
     Log ("p2 ZJRESTORE-logs (want False): " + (Test-Path "${L2}:\ZJRESTORE-logs"))
+    Log ("p2 ZJRESTORE-ea collected under appLogs (n/a here): " + (Test-Path "$appLogs\collected\ZJRESTORE-ea"))
     $zi = Get-Item -LiteralPath "${L2}:\ZJRESTORE" -Force -ErrorAction SilentlyContinue
     if ($zi) { Log ("p2 ZJRESTORE attributes: " + $zi.Attributes + " mtime=" + $zi.LastWriteTime) } else { Log 'p2 ZJRESTORE missing' }
     Log 'p2 root attrib:'

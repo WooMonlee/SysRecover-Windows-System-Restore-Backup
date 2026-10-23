@@ -8,7 +8,8 @@ namespace sysrecover {
 constexpr wchar_t kRecoveryDir[] = L"ZJRESTORE";
 
 // 定位数据盘根目录（如 L"D:\\"），找不到返回空串。优先 D:，回退首个非系统固定盘。
-std::wstring FindDataDrive();
+// avoidLetter（2026-10-18 Q1）：非 0 时跳过该盘符（还原时排除目标盘，防契约写进会被格式化的盘）。
+std::wstring FindDataDrive(wchar_t avoidLetter = 0);
 
 // 系统盘根目录（Windows 所在盘，如 L"C:\\"）。
 std::wstring SystemDrive();

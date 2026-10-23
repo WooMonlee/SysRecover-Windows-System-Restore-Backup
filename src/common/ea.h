@@ -79,13 +79,32 @@ int CaptureVolume(const std::wstring& root, const std::wstring& packPath,
 // rc=58 中止、目标分区只剩半成品（客户 20261008 三盘机）。Windows 侧（PE 就地
 // 还原）无此问题。判定：tag 的 bit31（0x80000000）为 0 = 非微软（微软 tag 均置位）。
 bool IsNonMsReparseTag(unsigned long tag);
-// 快速遍历 root，收集带非微软重解析点的文件（相对路径，如
-// \Windows\...\ipfsrv.dptf）；备份时并入排除清单，避免 Linux 还原必失败。
-// 不打开文件（只 FindFirstFile 读 dwReserved0），比 EA 扫描快。返回个数（cap 上限）。
-int FindNonMsReparse(const std::wstring& root, std::vector<std::wstring>& out,
-                     size_t cap = 64);
+// 快速遍历 root，收集"Linux 侧必被拒"的重解析点（文件 **和** 目录，相对路径，
+// 如 \Windows\...\ipfsrv.dptf）；备份时并入排除清单，避免 Linux 还原必失败。
+// 快速路径只 FindFirstFile 读 dwReserved0/attrs；仅微软候选 tag（junction/
+// symlink/WSL 系，见 IsUnsettableReparse）才打开读 blob 定论 —— 读失败保守
+// 不排除（宁可漏，不误伤）。返回个数（cap 上限）。1019 案起取代旧
+// FindNonMsReparse（旧版漏检同款必坏的微软 tag 变体，见 PIT-135 修订）。
+int FindUnsettableReparse(const std::wstring& root, std::vector<std::wstring>& out,
+                          size_t cap = 64);
 
-// ── 非微软重解析点打包 + 首启写回（PIT-136，用户 2026-10-08 规格）──────
+// ntfs-3g `valid_reparse_data` 移植（libntfs-3g/reparse.c:468-542，2026-10-19，
+// 1019 案 / PIT-135 修订）：判定重解析点是否会被 Linux 侧（wimlib NTFS-3G 块
+// 模式）拒绝 —— 那是 set 链唯一的 EINVAL 来源（ntfs_set_ntfs_reparse_data
+// :1205），命中即 apply rc=58 中止。tag/attrs 来自 FindFirstFileW（attrs 用于
+// 判目录 / RECALL_ON_OPEN）；blob = 交给 ntfs-3g 的整缓冲 = 8 字节头 +
+// （非微软 tag ? 16 字节 GUID + 数据 : 数据）——FSCTL_GET_REPARSE_POINT 输出经
+// NormalizeReparseBlob 归一化后即此布局。返回 true = 必被拒（备份端应排除 +
+// repack）。blob 为空时只判数据无关的确定项（非微软 / junction 落非目录）。
+bool IsUnsettableReparse(unsigned long tag, unsigned long attrs,
+                         const unsigned char* blob, size_t blobLen);
+// FSCTL_GET_REPARSE_POINT 输出 → ntfs-3g 视角缓冲：把 +4 的 reparse_data_length
+// 重算为 len-8-（非微软 ? 16 : 0）（等价 wimlib complete_reparse_point 算法）。
+// 返回 false = 缓冲过小/超 64KB，不可用。
+bool NormalizeReparseBlob(unsigned char* buf, size_t len);
+
+// ── 重解析点打包 + 首启写回（PIT-136，用户 2026-10-08 规格；1019 案起含
+//    微软 tag 变体与目录）───────────────────────────────────────────
 // 与 EA 同思路：Linux 写不了 → 备份时把"文件内容 + reparse 原始数据 + 属性/
 // 时间"打包（主镜像里排除），首启补写器用原生 FSCTL_SET_REPARSE_POINT 写回，
 // **完全保真**（优于单纯排除丢文件）。
@@ -99,8 +118,9 @@ struct ReparseEntry {
 std::vector<unsigned char> BuildRepack(const std::vector<ReparseEntry>& in);
 bool ParseRepack(const std::vector<unsigned char>& bytes,
                  std::vector<ReparseEntry>& out);
-// 遍历 root 采集非微软 reparse 文件 → 写 packPath（ZJRP1）。返回个数（0 无；
-// -1 写失败）；超上限/取不到的跳过数进 err。
+// 遍历 root 采集"Linux 侧必被拒"的重解析点（文件+目录，判定同
+// IsUnsettableReparse；需 blob 才能定论的微软候选 tag 会打开读取）→ 写
+// packPath（ZJRP1）。返回个数（0 无；-1 写失败）；超上限/取不到的跳过数进 err。
 int CaptureReparse(const std::wstring& root, const std::wstring& packPath,
                    std::string& err);
 // 读 pack 写回 root（首启补写器用；SYSTEM 权限）。返回 0 全成功 / 1 有失败。

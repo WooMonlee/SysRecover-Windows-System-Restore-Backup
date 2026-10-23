@@ -3,24 +3,34 @@
      尺寸 420x196，无系统外框 + 圆角（同 main.xml，由 SetWindowRgn 裁）。
      坐标同 main.xml：嵌套 inset 后 Content.m_rcItem = (2,2,...)，XML 坐标 +2 = 屏幕坐标。
      二选：「取消」白底灰边、「还原后重启」accent 蓝底白字（默认项）。
-     三选（Ask3，2026-10-14 还原确认）：取消 / 还原后重启 / 重启后还原，
-     InitWindow 重排为 125px 等宽，高亮按 defaultIdx 移动。 -->
+      三选（Ask3，2026-10-14 还原确认）：取消 / 还原后重启 / 重启后还原，
+      InitWindow 重排为 125px 等宽，高亮按 defaultIdx 移动。
+      2026-10-19（1019 案 W3）：消息最多 4 行 —— 第 4 行（DlgMsg4）只在需要时
+      由 InitWindow 填文本，同时窗口加高 22px、按钮整体下移 22px（≤3 行不变）。
+      2026-10-20：消息最多 5 行（DlgMsg5，空间不足提示用）；四选模式
+      （Ask4，删除旧系统后自删）B 按钮 4 个、窗口加宽到 520（运行时重排）。 -->
 <Window size="420,196" caption="0,0,0,44" roundcorner="24,24" mininfo="420,196">
   <Font id="1" name="Microsoft YaHei UI" size="14" />
   <VerticalLayout bkcolor="#FFEEF1F6" inset="1,1,1,1">
     <VerticalLayout name="Panel" bkcolor="#FFFFFFFF" bordersize="1" bordercolor="#FFE1E7EF" borderround="24,24" inset="1,1,1,1">
       <VerticalLayout name="Content">
-        <Control float="true" pos="0,0,416,44" bkcolor="#FFF7F9FC" />
+        <Control name="TopBarBg" float="true" pos="0,0,416,44" bkcolor="#FFF7F9FC" />
         <SkinLabel name="DlgTitle" float="true" pos="22,12,300,38" text="确认还原" fontsize="15" bold="true" color="#FF1B2432" />
         <WinBtn name="DlgClose" float="true" pos="372,2,414,42" glyph="close" />
         <SkinLabel name="DlgMsg1" float="true" pos="22,56,398,78" text="" fontsize="13" color="#FF5F6C80" />
         <SkinLabel name="DlgMsg2" float="true" pos="22,78,398,100" text="" fontsize="13" color="#FF5F6C80" />
         <SkinLabel name="DlgMsg3" float="true" pos="22,100,398,122" text="" fontsize="13" color="#FF5F6C80" />
+        <SkinLabel name="DlgMsg4" float="true" pos="22,122,398,144" text="" fontsize="13" color="#FF5F6C80" />
+        <SkinLabel name="DlgMsg5" float="true" pos="22,144,398,166" text="" fontsize="13" color="#FF5F6C80" />
+        <SkinLabel name="DlgMsg6" float="true" pos="22,166,398,188" text="" fontsize="13" color="#FF5F6C80" />
         <SkinButton name="BtnExit"   float="true" pos="106,140,232,178" text="取消" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFE4E8EF" borderround="14,14" textcolor="#FF1B2432" />
         <SkinButton name="BtnReboot" float="true" pos="242,140,398,178" text="还原后重启" fontsize="14" bkcolor="#FF8CA0DE" bordercolor="#FF8CA0DE" borderround="14,14" textcolor="#FFFFFFFF" />
         <!-- 三选模式（Ask3，还原则确认取消/还原后重启/重启后还原）的中间按钮；
              二选模式默认隐藏，InitWindow 里按需显示并把三个按钮重排成 125px 等宽。 -->
         <SkinButton name="BtnMid"    float="true" pos="145,140,265,178" text="" fontsize="14" visible="false" bkcolor="#FFFFFFFF" bordercolor="#FFE4E8EF" borderround="14,14" textcolor="#FF1B2432" />
+        <!-- 四选模式（Ask4，2026-10-20：删除旧系统后自删）的第 4 个按钮；
+             默认隐藏，InitWindow 里按需显示并把窗口加宽到 520。 -->
+        <SkinButton name="BtnMore"   float="true" pos="318,140,412,178" text="" fontsize="14" visible="false" bkcolor="#FFFFFFFF" bordercolor="#FFE4E8EF" borderround="14,14" textcolor="#FF1B2432" />
       </VerticalLayout>
     </VerticalLayout>
   </VerticalLayout>

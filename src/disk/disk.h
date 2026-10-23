@@ -68,6 +68,13 @@ const char* StyleName(PartitionStyle s);
 // 当前固件是 UEFI 还是 BIOS（Win8+ 用 GetFirmwareType；Win7 回退用固件变量探测）。
 bool IsUefiFirmware();
 
+// 本次运行**是否以 UEFI 方式启动**（≠ 固件是否支持 UEFI）：
+//   · UEFI 会话有 UEFI 运行时（固件变量可读）→ true；
+//   · Legacy/CSM 会话没有 → false（GetFirmwareType 仍可能是 UEFI）。
+// 用途（2026-10-20）：新硬盘分区向导/第三步确认框提示"还原后要不要改 BIOS
+// 启动方式"；BIOS 里另一模式是否被禁用**无法检测**，只能提示。
+bool IsUefiBootSession();
+
 // 是否运行在 WinPE 里（标准判据：HKLM\SYSTEM\CurrentControlSet\Control\MiniNT 存在）。
 // 用途（用户 2026-09-23 规格）：PE 下放宽"就地还原"的**卷锁**判定 —— PE 里目标分区
 // 通常没被真正使用，但 FSCTL_LOCK_VOLUME 仍可能因杂七杂八的句柄失败，导致误判成
@@ -75,14 +82,23 @@ bool IsUefiFirmware();
 bool IsWinPE();
 
 // 找 ESP（EFI System Partition）。注意：正常 Windows 下 ESP 无盘符（需临时挂载）。
-bool FindEspPartition(PartitionInfo& out);
+// onlyDiskIndex>=0 时只在该盘上找（Q2，2026-10-18）——多盘机固件 ESP 可能不在
+// 还原目标盘上，往错盘的 ESP 写引导是错的；-1 = 任意盘（备份本机 ESP 等）。
+bool FindEspPartition(PartitionInfo& out, int onlyDiskIndex = -1);
 
 // 回退（docs/15 故障 B）：分区类型 GUID **不是** ESP 时（DiskGenius 重建分区常把它
 // 标成 Basic Data / 或压根没建 MSR+ESP），只要它是 FAT 分区且根下有
 //   \EFI\Microsoft\Boot\bootmgfw.efi  或  \EFI\BOOT\BOOTX64.EFI
 // 就**照样能引导**（固件/`mountvol` 只认文件路径，不认分区类型 GUID）。
 // 只在分区**有盘符**时可判定（没盘符就不带盘符找 —— 那种情况交给 mountvol X: /s）。
-bool FindEspPartitionFallback(PartitionInfo& out);
+// onlyDiskIndex 语义同 FindEspPartition。
+bool FindEspPartitionFallback(PartitionInfo& out, int onlyDiskIndex = -1);
+
+// 卷盘符（如 'S'，即 `\\.\S:`）所在的**物理磁盘号** ——
+// IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS 取 Extents[0].DiskNumber。
+// 用途（Q2，2026-10-18）：`mountvol /s` 挂上的固件 ESP 在多盘机上可能不在
+// 还原目标盘上，挂完必须校验盘号；取不到（无盘符/句柄失败）→ -1。
+int VolumeDiskIndex(wchar_t letter);
 
 // 分区表摘要（**纯 ASCII**：给日志与报错用，避免编码坑 —— 见 docs/15 §7-P4）。
 // 形如：`disk0 GPT Msft Virtual Disk: p1 100MB FAT32 [ESP] ; p2 50GB NTFS C: ...`

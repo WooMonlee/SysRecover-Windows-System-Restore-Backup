@@ -1,7 +1,10 @@
 # AGENTS.md - SysRecover（一键还原，C++ 重写）开发指南
 
 > ⏸ **2026-10-09 起：当前线（Linux apply 架构）封存暂停**（最终版 `0.6.54`，tag `v0.6.54`，已推送）。
-> 🚀 **新线已启动：0.7 版**（版本号 `0.7.0`）——A 引擎 = Windows 原生解压 + Linux 仅改名交换；
+> 📌 **2026-10-21：0.9.0** —— **异机还原**完成（仅 Win10/11；内置启动驱动 +
+> 可选用户驱动包；A 引擎/PE 就地）；0.8.0 已完成新硬盘分区向导。
+> 下一步：真机回归与 1.0 收口（测试矩阵见 PIT-160）。
+> 🚀 **新线（0.7 起）**——A 引擎 = Windows 原生解压 + Linux 仅改名交换；
 > 先做 [`docs/22-P0原型验证计划（0.7）`](docs/22-P0原型验证计划（0.7）.md)（可照做的实验协议）；
 > 方案复审/优化与弃码清单/最小自测清单：[`docs/23-0.7方案复审与最小自测清单（专家组）`](docs/23-0.7方案复审与最小自测清单（专家组）.md)。
 > - 封存总纲（现状/未闭环/客户待办/资产/恢复）：[`docs/20-项目封存说明（当前线，2026-10-09）`](docs/20-项目封存说明（当前线，2026-10-09）.md)
@@ -836,7 +839,7 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **附带修复**：`selfdiag` 的部署痕迹收集把 `ZJRESTORE\ea\` 加进收集子树（此前 applier 的日志/结果不在支持包里——这次排查因此少了关键证据）。`make check` 全绿；`make package` 双架构；分析全文见 `docs/16` §10。
 
 - PIT-135 **客户 20261008 两问题：①非微软重解析点令 Linux apply 必 rc=58 中止（备份端自动排除）②黑匣子 .out 三件套不在清理清单（失败后残留所有分区根）**（2026-10-08，`0.6.51`）：
-  · **① 三盘机（Dell ChengMing 3900，= PIT-112 同机）**：暂存还原 → 救援 `mkntfs` 后 apply **8 秒**即 `rc=58 Failed to set reparse data on "/Windows/ServiceProfiles/LocalService/AppData/Local/Intel/ipfsrv/ipfsrv.dptf": Invalid argument` → 整个还原中止、**目标 C: 只剩半成品（系统被格式化后无法启动**，客户随后在 PE 里导出支持包）。根因：**Linux 侧 wimlib（NTFS-3G 块模式）无法设置"非微软（ISV 自定义）重解析点"**——wimlib NEWS 原文 *"remains broken in NTFS-3G mode due to a libntfs-3g bug"*；wimlib 论坛同文件（`ipfsrv.dptf`）两例**无解**；**Windows 侧（PE 就地还原）无此问题**。**修复（备份端预防，`0.6.51`）**：`ea::FindNonMsReparse`（快速遍历、只读 `dwReserved0`；判定 = tag bit31 为 0）→ `EnsureExclusionConfig(source, &badRep)` 追加排除 + WARN 日志；单测 `ea_non_ms_reparse_tag`。**对客户的处置**：**PE 里"就地还原"**（Windows 侧 wimlib 能设该 reparse）立即恢复；或用 0.6.51 **重新备份**后暂存还原。**回滚 0.6.3 无用**（同一 wimlib 限制，非回归）。
+  · **① 三盘机（Dell ChengMing 3900，= PIT-112 同机）**：暂存还原 → 救援 `mkntfs` 后 apply **8 秒**即 `rc=58 Failed to set reparse data on "/Windows/ServiceProfiles/LocalService/AppData/Local/Intel/ipfsrv/ipfsrv.dptf": Invalid argument` → 整个还原中止、**目标 C: 只剩半成品（系统被格式化后无法启动**，客户随后在 PE 里导出支持包）。根因：**Linux 侧 wimlib（NTFS-3G 块模式）无法设置"非微软（ISV 自定义）重解析点"**——wimlib NEWS 原文 *"remains broken in NTFS-3G mode due to a libntfs-3g bug"*；wimlib 论坛同文件（`ipfsrv.dptf`）两例**无解**；**Windows 侧（PE 就地还原）无此问题**。**修复（备份端预防，`0.6.51`）**：`ea::FindNonMsReparse`（快速遍历、只读 `dwReserved0`；判定 = tag bit31 为 0）→ `EnsureExclusionConfig(source, &badRep)` 追加排除 + WARN 日志；单测 `ea_non_ms_reparse_tag`。**对客户的处置**：**PE 里"就地还原"**（Windows 侧 wimlib 能设该 reparse）立即恢复；或用 0.6.51 **重新备份**后暂存还原。**回滚 0.6.3 无用**（同一 wimlib 限制，非回归）。**2026-10-19 补课**：同机用旧镜像再次 rc=58 → 见 **PIT-157**（谓词与上游逐行同构 + 就地还原补写 + block 暂存预检，F1~F6）。
   · **② "所有分区根垃圾文件"**：失败还原的黑匣子按设计多面落盘（PIT-111），但 `CleanupStrayLogs` 只删三件套 + `zjrestore-boot.log`——**`ZJRESTORE-apply.out / mkntfs.out / esp.out` 不在清单** → 客户导出支持包后仍逐盘残留（实测截图 + RAR：每盘根恰好只剩这两个文件）→ **修复：清理清单与收集清单都加 .out 三件套**。
   · **③ 同机问题 1 的"三个 UEFI 启动项"**：截图三个 `UEFI: Windows Boot Manager` 均为客户自己装的 PE/易数条目（**我们的条目描述是 `SysRecover`、直指内核不走 bootmgfw，不在其中**）；**我们从不改固件默认（BootOrder[0]）**——条目挂 BootOrder 末尾、单次启动走 BootNext；"每次还原完默认第 1 项"是固件自身顺序。桌面快捷变少 = 用旧镜像的必然结果（镜像之后装的软件不在）。
   · **④ "用旧镜像还原后右键仍卡"**：镜像里打包的是**旧版补写器**（PIT-134 的 WOW64 视图 bug）→ 修复对老镜像不生效；处置：新补写器跑一次 或 0.6.50+ 重新备份。
@@ -953,8 +956,173 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · 🐞 **本轮实测抓出的真 bug（已修，`0.7.60`/`0.7.61`）**：日志显示 `hide dir ok: D:\ZJRESTORE`，但**盘上 FAT 原始目录项 attr=0x10（只有 DIR，没有 HIDDEN）** —— 根因是 `RemoveEmptyDir()` 删目录前**一律 `SetFileAttributesW(dir, FILE_ATTRIBUTE_NORMAL)`**，而它在迁移里被用于 `base`（`D:\ZJRESTORE`，**非空**、删不掉）→ 刚设好的隐藏位被自己抹掉。**修法**：`RemoveEmptyDir` **只清 READONLY**（`a & ~FILE_ATTRIBUTE_READONLY`，`RemoveDirectoryW` 唯一需要清的位）、保留其它属性；并在 `base` 分支末尾**再 `HideDir` 一次**兜底。修复后同一演练 FAT 目录项 = **`attr=0x12 HIDDEN|DIR`** ✓。同批把 `HideDir` 变成**会留证**（SetFileAttributesW 失败 → `hide dir failed … err=`；写成功但复核不生效 → `hide dir not sticky:`；生效 → `hide dir ok:`）—— 静默不隐藏正是这次差点漏掉的原因。
   · **教训/纪律**：① 改"日志到哪去"这类基础规则时，**先把每条规则的判据抽成纯函数**（本次 `UseInstallDirLogHome`），否则 PE/单分区/只读介质这些分支只能靠现场试；② `//` 注释行**末尾的 `\` 是续行符**（`-Wcomment`）：写 Windows 路径的注释别在行尾留反斜杠；③ 匿名 namespace 里的函数调命名空间内的 `LogWarn` 必须写全 `sysrecover::LogWarn`；④ **"设置属性"类操作不许静默**（`HideDir` 现已三级留证）；⑤ **通用清理函数别乱清属性**（`RemoveEmptyDir` 只该清它真正需要的 READONLY 位 —— 一律清成 NORMAL 会顺带抹掉别人刚设的 HIDDEN/SYSTEM）；⑥ **验证"属性类"需求必须读盘上原始元数据**（PowerShell `Get-Item -Force` 已够，但 FAT 目录项直接读更权威：本轮即靠 `.img` 里 `attr=0x10` vs `0x12` 定案）；⑦ **harness 的 RunOnce 坑**：shell 处理 `RunOnce` 是**顺序 + 同步等每个进程退出**，长驻进程会**队头阻塞**同键后续项（首轮"GUI 未出现"实为自测脚本 `zjclick` 占了 RunOnce，改挂 `Run` 键异步启动即解决 —— **不是产品 bug**）。
 
+- PIT-151 **客户实测「按 ESC 不是启动菜单」→ 开机键文案不再写死 F12：新增品牌识别模块 `common/bioskey`（~215 条表移植自 BiosKC.c）+ GUI 三处改用识别结果**（2026-10-18，`0.7.62`；客户反馈驱动）：
+  · **客户反馈**：HP laptop (redacted)（AMI F.52，UEFI，Win11）按我们提示的 ESC/F12 都到不了启动项列表 —— 客户截图实为 **HP Startup Menu**（只列 F1/F2/F9/F10/F11 入口）。事实：**HP 的启动菜单键是 F9、BIOS 设置是 F10/ESC**（参考表 `BiosKC.c` 原文 `{"HP",…,"F10 or ESC","F9"}`）→ 写死 F12 对 HP 全错。只改文案（第 2 项「装菜单异步化」未获批、暂缓）。
+  · **新模块 `src/common/bioskey.{h,cpp}`**：`{kw,vendor,boot}` 表 ~215 条（**表顺序 = 优先级、子串匹配**，与原版 `BiosKC.c::match()` 同口径）；`LookupBootMenuKey(板厂,板型,整机厂,整机名)` 纯逻辑（便于单测）；`LocalBootMenuKey()` 读**注册表** `HKLM\HARDWARE\DESCRIPTION\System\BIOS`（BaseBoardManufacturer/BaseBoardProduct/SystemManufacturer/SystemProductName —— 同 selfdiag 读法，**非 WMI**，§0 红线）；`BootMenuKeyHint()` 展示用（`" or "` → `Tr(" 或 ")`；**拿不准 → `Tr("快捷启动键")` 中性措辞，绝不写死**；static 缓存）。
+  · **接入 GUI 三处**（`src/gui/main_form.cpp`）：已安装悬停提示、安装前确认框、安装成功状态栏的 **UEFI 分支**改用 `%ls` + `BootMenuKeyHint()`；BIOS 分支文案本就写「启动菜单里选」不含键名、不变。`ops.h`/`ops.cpp` 注释同步。HP 客户升级后首屏即显示「开机按 **F9** 选」（识别不到才退回「快捷启动键」）。
+  · **i18n**：3 个变体键（悬停/确认/状态栏）重生成 + 新键 `快捷启动键`(en: boot menu key)/` 或 `(en: " or ") → `check-i18n` **477/477**；`make check` **52 用例/376 断言**（新增 `bios_key_lookup`：HP→F9、ASUS→F8、Dell→F12、Lenovo→`F12 or Fn+F12`、Surface→空、未知→空、vendor 回填）；check-docs/check-widths/check-shell 全过；`make package` 双架构（`0.7.62`）。
+  · **坑（测试输入）**：`strstr` 子串匹配有假阳性 —— 测试想用的"无名词"输入 `SomeNoName` 里含 **`OMEN`**（HP 游戏品牌条目）→ 被识别成 HP。原版 BiosKC 同款行为（表顺序兜底，产品上来源串都是真实厂商/型号名，风险可接受）；**测试用例串要避开表内关键字**（改用 `FooBar Tech`）。
+
+- PIT-152 **「安装菜单」点击后 GUI "(无响应)"（装/删菜单同步跑在 UI 线程，~28MB 载荷写入 + ~56MB 双读 CRC 校验 → 数秒无消息泵 → Windows 幽灵窗）；修复 = 异步化 + 增量部署（跳过未变化载荷）**（2026-10-18，`0.7.63`；用户实测反馈驱动）：
+  · **根因**：`ToggleBootMenu`（`main_form.cpp`）原在 UI 线程直接调 `ops::StageRestoreMenu` —— 它写契约、挂 ESP、`InstallUefiBootEntry` 落 ~28MB 救援载荷（vmlinuz 12,142,528B + initramfs 15,909,740B）并逐文件双读 CRC32 校验（≈56MB I/O）后才回消息泵 → Windows 5 秒无消息即判"(无响应)"。装/删菜单曾是**唯一同步裸奔的写盘路径**（备份/还原早已异步）。
+  · **修复 A（异步化）**：与备份/还原同款 —— UI 线程只「定格请求」（镜像/分区/busy 并发保护，`StartMenuToggle`）→ 状态栏文案 + `SetTimer` → worker（BELOW_NORMAL）调 `StageRestoreMenu(req, err, progressFn, &adv)`，进度经 `WM_PROGRESS_UPDATE`（100ms 节流 + 阶段变化直通），完成经新消息 **`WM_MENU_DONE` = WM_APP+19**（worker→主线程，`OnMenuDone`；⚠️ 自定义 WM_APP 必须避让 Duilib 的 `WM_APP+1`，PIT-096）。删除同走 worker（`RemoveBootLayer` + `DeleteMenuBinding`）。`ops.h/ops.cpp` 的 `StageRestoreMenu` 增加 `ProgressFn` 参数（默认 nullptr，CLI 不受影响），引导层前补 `progress(99,"boot")` 收官标记；`StageCn` 增 `"boot"` → 「写入引导文件」。
+  · **修复 B（增量部署）**：`grub.cpp` 新增 `CopyIfChanged`（dst 存在且 CRC32 与源相同 → 跳过写盘，日志 `keep ... (unchanged)`；不一致才 `CopyOne`，复制后拿**已算过的源 CRC**只读回目标一次校验 —— 省掉旧 `VerifyCopy` 的重读源；A6 校验语义不变），`CopyBootFiles` 三个文件改走它；`uefi.cpp` `InstallUefiBootEntry` 重构 —— 不再整目录 `RemoveTree` 全清，改为**定点清 stale**（keepNames 白名单 = 本次文件集 + `rescue-build.txt`，其余文件/目录删除，成功/失败均记日志）+ 每文件 **keep/todo** 决策（同 CRC 跳过复制），空间预检 `need` **只累加 todo 文件**（修掉"其实只差几 MB、却按全量 ~49MB 误报空间不足"）；换 Secure Boot 走法时旧文件集仍被清掉（防"越装越多把 ESP 塞满"）。
+  · **效果**：重复安装（载荷未变）几乎零拷贝、秒级完成；首装/换版仍全量写 + CRC 校验；GUI 全程有进度与「已用」刷新，不再幽灵窗。
+  · **回归**：`make check` 52 用例/376 断言 + check-docs PASS + check-i18n **479/479**（新增 `正在删除启动还原菜单...`、`写入引导文件` 两键）+ check-shell PASS；`make package` 双架构（`0.7.63`）。🚧 待用户真机复测：① 装菜单时 GUI 不再"(无响应)"、进度条与「已用」走动；② 重复安装第二次日志出现 `keep ... (unchanged)` 且明显更快；③ 删除菜单同样不卡。
+
+- PIT-153 **Q2：PE/U盘就地还原不再限制 BIOS/UEFI 装法（删 GPT 硬门禁）+ 暂存路径新增会话前置检查（两种必坏组合提前拒绝）**（2026-10-18，`0.7.64`；用户裁定两项）：
+  · **背景**：`safety.cpp::CheckRestoreTarget` 原有「GPT 目标 + 非 UEFI 固件 → 硬拒绝」门禁（PIT-034/092 时代产物），导致 PE（常为 Legacy 引导）里就地还原 GPT 盘直接失败。用户裁定：就地还原任何组合全放行（bcdboot/ESP 子镜像为纯文件 I/O，任意会话可跑）；「暂存+重启」依赖重启后固件沿**当前同一种方式**引导，两种组合必坏，提前拒绝并指路 PE。
+  · **删门禁**：`safety.cpp` 移除 GPT-BIOS 硬拒分支，注释指向新检查；`safety.h` 同步。
+  · **新纯逻辑** `src/boot/bootpath.{h,cpp}`：`enum class StagedBootPath { Ok, BiosSessionGptTarget, UefiSessionMbrTarget }` + `CheckStagedBootPath(sessionIsUefi, diskStyle)` —— 返回码（零 i18n 依赖，保持 bootpath 可单测）；中文提示由调用方按码组 `Tr()`。
+  · **调用点**（`ops.cpp`）：① `StageRestoreImpl` 在 `inPlace` 判定之后、A 引擎解压 `~new` **之前**（覆盖 staged restore + menuEntry，就地路径不检查）；② `StageReturnOld` 前置检查后（returnold 专用文案，不照搬「请就地还原」）。
+  · **文案**（i18n 4 键）：BIOS会话+GPT目标 →「请改用 UEFI 模式的 PE/U盘启动后就地还原（无需重启）」；UEFI会话+MBR目标 → 对称（Legacy/CSM）。
+  · **单测**：`TEST(check_staged_boot_path)` 6 断言（两拒 + GPT+UEFI/MBR+BIOS/Unknown×2 放行）；`TEST(boot_path_choice)` 注释更新（safety 不再预拒 GPT+BIOS）。
+  · **回归**：`make check` **53 用例/382 断言** + check-i18n **482/482** + check-docs PASS；`make package` 双架构（`0.7.64`）。🚧 待实测：PE（Legacy）就地还原 GPT 盘不再被拒；BIOS 会话暂存 GPT 目标 / UEFI 会话暂存 MBR 目标得到明确中文拒绝。
+  · **第二批（2026-10-18，`0.7.65`）：ESP 一律限定「目标盘」——多盘机防写错盘**：
+    ① **隐患**：`AcquireEspRoot` 原先无条件 ① `MountEsp`（`mountvol /s` 挂**固件真 ESP**）——多盘机固件 ESP 常在**别的盘**，后续 bcdboot/救援载荷就写到错盘（用户 Q2 批准的决策：挂上的 ESP 必须落在目标盘）。
+    ② **双端限定**：`FindEspPartition`/`FindEspPartitionFallback` 加 `int onlyDiskIndex = -1` 参数（`d.index != onlyDiskIndex` 跳过）；ops.cpp **5 个调用点**（就地 ESP 恢复/就地修引导/暂存/returnold/repair-boot）传 `target.diskIndex`，**备份 esp merge 保持 -1**（本机 ESP，行为与改前一致）。
+    ③ **挂载后盘号校验**：`VolumeDiskIndex(letter)`（`\\.\X:` + `IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS` → `Extents[0].DiskNumber`，失败 -1）；错盘 → log + `UnmountEsp` + **手动 `espRoot.clear()`**（`UnmountEsp` 是 const 引用、**不清字符串**）后续查 ②③；**取不到(-1) → fail-open 保留挂载 + WARN**（ioctl 失败极罕见，不能因它卡死合法还原）；②③ 都失败 → **绝不回退错盘**、报错带 `DescribePartitions` 摘要。
+    ④ **②b 新路 `MountEspByGuid`**：目标盘 ESP **无盘符**时按卷 GUID 直接挂（`mountvol X: \\?\Volume{GUID}`；GPT 卷 GUID=分区 GUID，`GuidToString` 小写无花括号、代码补花括号并转大写求稳；S..Z 空闲符，挂上却看不到内容则 `/d` 撤销换下一个）。**没有 ②b 必硬失败**：① 被盘号拒、③ 又要求有盘符。
+    ⑤ **`RemoveBootLayer` 去 `IsUefiFirmware()` 门控**：总是试挂 ESP 清 `\EFI\ZJRESTORE`——固件类型可能漏报（PIT-092 同族），漏清=残留；纯 BIOS 挂不上即跳过，只多几条日志、零副作用。
+    ⑥ ⚠️ **本次踩坑（两教训）**：a) 手写字符字面量丢收尾引号（`L'A)))` 应为 `L'A')))`）→ GCC 连环 `expected ')'`，而 **`make check` 不编译 ops.o**（单测只链纯逻辑 TU）→ check 全绿也拦不住，**最终判据必须是 `make package` 的编译**；b) 行号/行数比对**别用 PS `Get-Content`**（同文件行数与编辑器不一致 2433 vs 2706），用 `[System.IO.File]::ReadAllLines` + 码位校对（本轮靠 `76,39,65,41` vs `76,39,65,39,41` 一眼定罪）。
+    ⑦ 回归：`make check` **53 用例/382 断言** + i18n **482/482** + `make package` 双架构（**`0.7.65`**）。🚧 待实测：多盘机暂存/就地还原，日志应出现 `mounted ESP is on disk N but target is disk M; unmount...`（错盘被拒）或 `ESP mounted by volume GUID at X:`（②b 生效）。
+
+- PIT-154 **Q1「先落盘后搬家」（SettleHome）：程序目录在目标盘上时先静默复制整包+日志到安全分区，点确认后再搬家**（2026-10-18，`0.7.66`；用户三项确认：①启动搬迁块删除 ②SettleHome=复制不re-exec ③仅还原/returnold触发、物理盘比较）：
+  · **架构**：`SettleHome(targetDiskIndex, exeDiskIndex)`（ops.cpp，common不依赖disk）；复制用ops自有`CopyDir`；空间检查`AppTreeSize()+300MB`；目的地=`<safe>:\ZJRESTORE`（`kRecoveryDir`）；`SelectRelocateDrive`加`avoidTarget`参数（跳过目标盘符）；幂等=进程内static `g_settleResult.checked`标志。
+  · **日志根覆盖**：`SetLogHomeOverride(dir)`+`ContractDir()`（override空则AppDir否则override）；`LogBaseDir()`顶部优先返回override；`StageRestoreImpl`/`StageReturnOld`的`exeDir`改用`ContractDir()`；契约写者/读者（`WriteRestoreTask`/`ReadMenuBinding`/`DeleteMenuBinding`/`RetryStagedRestore`）统一走`ContractDir()`。
+  · **FindDataDrive加avoidLetter**：还原时排除目标盘符，防契约写进会被格式化的盘；6个调用点传`target.letter[0]`。
+  · **删除启动搬迁块**：GUI `main_win.cpp`（保留A引擎残留分流）、CLI `main.cpp`（保留`CheckLastRescueFailure`等启动逻辑）；等用户点「开始还原」确认后，由`StageRestoreImpl`自动调用`SettleHome`。
+  · **警告（fail-safe）**：无安全盘→`g_settleResult.noSafeDrive=true`；CLI在`CmdRestore`末尾stderr打印；GUI在`OnTaskComplete`弹MessageBox（静默模式也弹）；文案i18n：「警告：程序目录在目标盘上且无法安全搬迁——还原后程序可能丢失。」
+  · **单测**：`TEST(relocate_drive_choice)`扩4断言（avoidTarget跳过、同盘、唯一候选被排、大小写）→ **53用例/386断言**。
+  · **坑**：多行注释**行尾不能有 `\`**（会吞下一行声明，GCC `-Wcomment`警告；本次`// 复制整包+日志到<chosen>:\ZJRESTORE\`行尾\导致`destRoot`未声明）；**`make check`不编译ops.o**（单测只链纯逻辑TU）→ check全绿也拦不住ops.cpp编译错，**最终判据必须是`make package`的编译**。
+  · **回归**：`make check` **53用例/386断言**+check-i18n **471/471**+check-docs PASS+check-shell PASS；`make package`双架构（**`0.7.66`**）。🚧 待实测：程序在目标盘上点「开始还原」→确认后自动复制到安全盘→还原成功后新家有完整程序+日志；无安全盘时弹警告框。
+
+- PIT-155 **Q1 SettleHome 三处加固：①触发判据抽纯函数+单测 ②探针残留清理 ③StageReturnOld 补 SettleHome**（2026-10-18，`0.7.67`；承 PIT-154，核查中发现三个问题逐一修）：
+  · **① 触发判据抽纯函数**：`ShouldSettleHome(exeDir, targetLetter)`（relocate.{h,cpp}，可单测）——还原只格式化目标分区，同盘不同分区程序不受影响，仅同盘符才触发；ops.cpp 触发点（StageRestoreImpl :1431 + StageReturnOld :2259）改调它（原先是手写 `SameDrive` 内联，逻辑正确但不可测）。**触发面偏窄问题经复核不成立**：还原只格式化目标分区，同盘不同分区的程序不受影响，无需搬迁——盘符门禁即正确粒度。
+  · **② 探针残留清理**：SettleHome 快速可写探针在每个候选盘建 `ZJRESTORE` 目录，未选中的留下空目录（`RemoveDirectoryW` 只删空目录，有内容静默失败）——修后选完候选即清未选中探针目录，避免在无关盘上留残迹。
+  · **③ StageReturnOld 补 SettleHome**：原实现程序在目标分区时直接前置拒绝 return 4（让用户手动拷到别的分区）——违反「还原/returnold 都触发 SettleHome」规格；修后先调 `SettleHome`，搬成功则 `exeDir = ContractDir()` 指向新家继续，搬不动才拒绝（fail-safe 保留）。
+  · **单测**：新增 `TEST(settle_home_trigger)`（relocate.cpp 已在 TEST_UNITS）——同盘符/大小写/异盘/targetLetter=0/空路径/太短/盘符根 7 类场景 → `make check` **54用例/396断言**。⚠️ 边界坑：`L"C:"`（尺寸2、有冒号）应**触发**（原断言写反 CHECK(!...)，首跑 FAIL 后改正）。
+  · **回归**：`make check` **54用例/396断言**+check-i18n **471/471**+check-docs PASS+check-widths OK+check-shell PASS；`make package`双架构（**`0.7.67`**）。🚧 待实测：程序在目标盘上点「开始还原」/「返回旧系统」→确认后自动复制到安全盘→操作照常继续；多盘机探针后无关盘上不再残留空 `ZJRESTORE` 目录。
+
+- PIT-156 **还原残留归零：成功还原后 `C:\ZJRESTORE`（~496KB EA 载荷）永久残留 → 救援写来源标记 + 补写器首启归纳 + 每次启动归纳 + 分类器整体清除**（2026-10-19，`0.7.68`；用户 2026-10-18 拍板三项）：
+  · **铁证与病灶**：EA 链（PIT-122）救援投 `C:\ZJRESTORE\ea\{zj-ea-apply.exe,…}`（`zj-ea-apply.exe` = 507,392B）→ 补写器自清理**只延迟删自身 exe/cmd**、Windows 启动链（migrate/collect/cleanup）**只收不删文件夹** → 成功还原后 `C:\ZJRESTORE` 永驻（boot/scripts/bootfix 还原后都不留，唯一在目标盘重建它的**成功**路径 = EA 块）。
+  · **用户拍板三项**：① 移除触发 = 补写器首启自动归纳 + 软件以后**每次启动**兜底；② 收集/归纳后**整个删掉**残留文件夹（不逐文件）；③ `D:\ZJRESTORE` 同样归纳并清掉（推广 `MigrateLogsToLogHome`，加「暂存待还原期间不搬」守卫）。
+  · **启动链顺序（不可反）**：migrate → collect → cleanup —— 清理器会删源/搬空源，迁移必须先行。
+  · **救援层（`zjrestore-lite.sh`）**：EA 块 mkdir 成功后写 `$EAM/ZJRESTORE/source.txt`（键：time/engine/action/applier/software_dir/software_path/software_version/rescue_build/target_*/image_path）；LF 换行；部分部署/后续失败也留证据；写失败 `WARN` 不阻断。
+  · **首启补写器（`ea_apply_main.cpp`）**：新增 `GatherResidueToSoftwareDir(root)` —— 读 `source.txt` → `software_dir`（空则从 `software_path` 去末段）→ 归纳到 `<soft>\logs\collected\ZJRESTORE-ea\`（固定名覆盖写防重试增殖；拷 source.txt + `ea\` 下文本，跳 `*.exe`/`*.dat` 与 >8MB；`CopyFileRaw` 先清属性再拷 —— PIT-067/068 教训）；**不删 ZJRESTORE 文件夹**（菜单 boot/scripts 会被误删，删除留给 Windows 侧分类器）；`--no-cleanup` 也执行；调用点 = 清理块之前、无论 rc 都跑。
+  · **分类器（`relocate.{h,cpp}::ClassifyZjrResidue`，纯逻辑+单测）**：Keep = 含 `sysrecover.exe`/`sysrecoverui.exe`（SettleHome 程序的家）或顶层 `boot`/`scripts` **精确名**（已装启动菜单载荷；bootfix/bootfiles 不命中）；含我方信号 {`ea`,`logs`,`bootfix`,`source.txt`,`rescue-build.txt`} → **Delete**（含杂物一并整删，因整个文件夹是还原期重建）；空 → Empty；其余 → Keep（看不懂就留）。
+  · **`MigrateLogsToLogHome` 推广**：去 `UseInstallDirLogHome` 门控改为每次启动调；守卫 = `IsRunningInPe()` → 空、dest 有 `pending-restore.txt` → 跳过（暂存待还原不搬）；源 == activeBase（`_wcsicmp`；`AppDir()` 无尾斜杠已核）跳过自搬；保留 `ZJRESTORE-logs` 兜底窝迁移/HideDir/搬空删壳；无源时返回空串（不再每次刷日志）。GUI/CLI 启动链统一接入（`main_form.cpp` 无条件调用、`cli/main.cpp` 先于 collect/cleanup）。
+  · **`CleanupStrayLogs` 升级**：枚举盘根 `ZJRESTORE` 顶层条目 → 分类器 switch：Delete → `RemoveTreeAny`+LogInfo；Empty → 清属性删空壳；Keep → 不动（活动日志根 = 分类器的家，天然 Keep）。收集器 `CollectOneDrive` 加收 `source.txt`（与 `rescue-build.txt` 并列）。
+  · **回归**：`make check` **55 用例/411 断言**（新增 `TEST(zjr_residue_classify)`）+ check-i18n 471/471 + check-docs + check-widths + check-shell PASS；`make package` 双架构（**`0.7.68`**，applier 507,392→518,144B；initramfs 重建 stamp 0.7.68）。check-shell 基线 160→161（新增 1 处 `cat /zjrescue-version 2>/dev/null` 属 A 类探针读，与既有 :367 同款；原 `> source.txt 2>/dev/null` 已改留 shell 原生错误 + `|| say WARN` 响亮兜底，-1）。e2e 演练台预期同步更新（`inject4/inspect1`：PIT-150「ZJRESTORE 残留 hidden」已被本规格取代为「应整体消失」；`inspect3` 的菜单载荷 `boot` 断言不受影响，Keep 规则兜住）。
+  · **教训**：① 残留清理必须**先收集再删**（证据优先）；② 删除粒度 = 整个文件夹时，"这个文件夹是谁的"必须先分类（程序的家/已装菜单 vs 还原期残留），**看不懂的一律留**；③ 让**源头写来源标记**（`source.txt`）比事后猜归属可靠 —— 现场日志要能回答"这是谁放的"。
+
+- PIT-157 **1019 案「PIT-135 补课」：非微软重解析点致 Linux apply rc=58 的双端加固（F1~F6）——谓词与上游逐行同构、备份端捕获 + 就地还原补写、block 暂存预检"动盘前"拒绝**（2026-10-19，`0.7.69`）：
+  · **案发**：Dell ChengMing 3900（= PIT-135 同机）用旧镜像再次 rc=58（`ipfsrv.dptf`，`Invalid argument`）→ mkntfs 后 apply 中止、目标半成品。0.6.51 备份端排除 + 0.6.52 ZJEA 链此前**从未真机验证**；且 F1~F3 三处实现缺陷使其形同虚设——链路不复核即等于没有。
+  · **F1 谓词重写**（`ea.cpp::IsUnsettableReparse` :439）：从"只查 bit31"改为**逐行对齐 ntfs-3g `valid_reparse_data` + wimlib `complete_reparse_point`** 的全结构校验——非MS（tag bit31=0）→拒（PIT-135 语义保留）；无 blob 时仅 `MOUNT_POINT 且非目录`→拒；tag==0→拒；长度方程 `datalen == u16(4)+8`；子类型：MOUNT_POINT（<16/越界）、SYMLINK（<20/越界）、LX_SYMLINK（`u32(8)==2`）、0x80000023-26（需 RECALL_ON_OPEN）。**上游会拒的形状我们必拒**（客户真实 tag 未取得也能覆盖全部 bit31=1 静默分支）。`IsNonMsReparseTag` 保留，`NormalizeReparseBlob` 对非MS 按 GUID 式重算 datalen（失败不改缓冲）。
+  · **F2 捕获端**（`CaptureReparse` 重写 + `FindUnsettableReparse` 新增 :534）：门控 `!bad && !ReparseCheckNeedsBlob(tag)` 才跳过；有 blob 才读文件归一化后判定（不读未命名流）；cap 64；返回条数/-1（err 可读）。
+  · **F3 回放端**（`ApplyRepack` 加固）：目录条目（`FILE_ATTRIBUTE_DIRECTORY`）走 `CreateDirectoryW`；SET 前按 wimlib 算法归一化 datalen；SET/mtime 打开 `FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_BACKUP_SEMANTICS`；FAILED 日志补 `(err=N)`（现场可评估）。
+  · **F4 就地还原补写**（PE / 非系统盘）：`RunDirectRestore` 增 `eaIndex` —— 主镜像 Apply 后从 ZJEA 子镜像 extract 到 `%TEMP%\SysRecoverEA-*`，**先 ApplyRepack（重解析点）再 ApplyPack（EA）** 到目标根；失败仅 WARN 非致命；提取后清临时目录。
+  · **F5 block 暂存预检**（fail-closed）：`StageRestoreImpl` Step 0.8（winload 预检后、一切写盘前）：`engine=block` 且镜像含不可设重解析点（`wim::FindUnsettableReparseInImage`，iterate_dir_tree 只读元数据）→ **rc=4 拒绝** + 指引（PE 就地还原 / 新版重备份）；swap 不查（目录交换不受影响）。**旧镜像在格式化之前就被拦下**。
+  · **F6 回归资产**：① 单测 `ea_unsettable_reparse` 全分支覆盖（`raw()` 造 blob；56 用例/433 断言）；② lab 工具 `tools/reparse-lab.cpp`（make/check/roundtrip，**不入产品、ad hoc 编译**）——宿主实测 PASS：GUID 形态 SET/GET（tag 0xDEAD）→ 谓词三口径全 UNSETTABLE → `CaptureReparse→删→ApplyRepack` 后 **blob 43B / content 39B 逐字节一致**（**repack 回放首次真机验证**）；③ 0x0/0x1 是 `IO_REPARSE_TAG_RESERVED_*`（SET 报 `err=4393`，lab 默认 0xDEAD）。
+  · **教训**：① "只查位标志"的快筛与上游真实拒绝面差一大截——移植上游校验必须逐行落齐；② "排除+记录+回放"链每一环都要有单测/实验台，否则长期未验证 = 形同虚设（本链 0.6.51→0.7.68 从未真机跑过）；③ 防御闸门设在代价最小处：F5 把拒绝提到格式化之前，用户零损失。
+  · 回归：`make check` 56 用例/433 断言 + check-docs/i18n(473)/widths/shell PASS；`make package` 双架构（`0.7.69`）。
+  · **W1 救援层动盘前预检（同日追加，`0.7.70`）——"旧镜像走救援层"通道，动盘前拦下而不是格完盘才发现**：F5 只管**暂存**路径；老镜像（契约无证书）在 Linux 侧于 mkntfs 之前做同款检查：
+    - **判据**：`reparse_scan=0` 且 `image_size` == 镜像实际字节数（Windows 侧出具的 fast-path 证书，秒级）→ 直接放行；否则 `wimlib-imagex dir --detailed`（timeout 180）逐行 awk —— `Reparse Tag = 0x...` 去 `0x` 后**长度<8 或（=8 且首字符 0-7）→ 计坏**（bit31=0 非微软；MS 标签如 0x8000001a/0xa0000003 不误报——合成测试 2 保留/5 标记）。BAD>0 → 拒绝；DIRRC≠0 或 SEEN 空（解析不了）→ **fail-closed 拒绝**。busybox 无 PIPESTATUS → `echo DIRRC=$? >&2` + sed 提取。
+    - **契约**：增量键 `image_size`（十进制字节）/`reparse_scan`（0=证书；-1/2=无证书），不升 contract_version；Windows 侧仅在 block 引擎且 F1 谓词扫描干净时写证书（`GetFileAttributesExW` 取实际大小）。
+    - **拒绝行为**：`RESULT=FAILED; STEP=reparse-unsettable; exit 1` → STAGE=0 ⇒ bb_final 自动重启回 Windows（`recover decision: reboot (target untouched, STEP=reparse-unsettable)`）；C 类、不提供一键重试；GUI 回执中文化（selfdiag `镜像含无法还原的重解析点`）；救援横幅指引旧镜像用户改走 A 引擎暂存（bootfix 中立格式）或 PE 就地还原。
+    - **QEMU 演练 4 例全过**：cert 11/11（快路径、无 metadata scan）、默认 scan 10/10、stale 11/11（image_size+1 → 尺寸不符强制全扫）、reject 10/10（`bad tag 0xdead` 列出、**mkntfs/apply 零发生**（负面断言）、rc=1、自动重启决策在案）。载体 = `tools/reparse-lab.cpp` 新 `capture` 模式（**无排除规则** libwim 捕获，模拟"老软件产物"含 GUID 0xDEAD 的 `reparse-test.wim`；宿主 capture→extract 往返 tag 保留、谓词 UNSETTABLE）+ mk-drill `ZJ_DRILL_REPARSE=cert|stale|reject` + run-drill `ZJ_EXPECT_REPARSE`（含 mkntfs/apply 不得出现的负面断言）+ `tools/vmtest/test-reparse-awk.sh` 合成分类测试。
+    - 回归：`make check` **57 用例/446 断言** + check-docs/i18n(474)/widths/shell PASS；`make package` 双架构（`0.7.70`）。
+    - **W2 EFS 加密内容（同日追加，`0.7.71`）——"EFS 文件被静默还原成空文件"的双端拦截**：与重解析点同族的第二类 Linux 还原不了的内容：**EFS 加密文件**。实测形态（宿主 + QEMU 演练双确认）：**Linux 侧 apply `rc=0`、wimlib 只打 `[WARNING] Ignoring EFS-encrypted data of 1 files`、文件落地 0 字节**（静默数据丢失，比 rc=58 更隐蔽）；**Windows 侧同镜像 extract 完整往返**（文件保持 Encrypted、解密后 SHA256 一致）⇒ 与 F5 同款结论：**block 引擎必须拒绝，A 引擎/PE 就地还原安全**。
+      - **检测**：元数据扫描合并进 F5 同一次遍历（`wim::FindUnsettableReparseInImage` → 改名 **`ScanImageForLinuxRestore`**，加 `encryptedCount` 出参；dentry `FILE_ATTRIBUTE_ENCRYPTED` 只读元数据）；救援侧复用 W1 同一次 `dir --detailed` awk —— imagex.c:2602-2615 的属性行 `    FILE_ATTRIBUTE_ENCRYPTED is set` 计数（与所带 wimlib 1.14.4 源码逐字对齐）。
+      - **契约**：新增增量键 **`efs_scan`**（0=干净/2=不可用/-1=未扫描；语义同 `reparse_scan`）。**救援层 fast path 改为要求 `reparse_scan=0` 且 `efs_scan=0` 且 `image_size` 匹配** —— 0.7.70 版 exe 的旧证书只有 reparse 键，缺 `efs_scan` 时强制全扫描（**版本偏斜防护**，否则旧暂存+新救援会漏掉 EFS）。
+      - **拒绝行为**：Windows 暂存（block）`rc=4` + 中文指引（改选「还原后重启」或 PE 就地还原）；救援层 `RESULT=FAILED; STEP=efs-encrypted`（C 类不可重试、selfdiag 回执「镜像含 EFS 加密文件（还原后会变成空文件）」）+ STAGE=0 自动重启回 Windows；均**未动目标分区**。
+      - **验证**：① 宿主实验（`cipher /e` 造密 → `reparse-lab capture` → 新 `dir` 模式验 ENCRYPTED 属性 + EFSRPC 原始数据流在镜像里；Windows exe extract 对照哈希一致）；② **观察轮**（W2 前代码）：apply rc=0 + warning + `efs1.bin` 盘上 **0 字节**（7z 读 NTFS 实证）；③ QEMU **拒绝轮**：`encrypted entries: 1`、**mkntfs/apply 零发生**（负面断言）、rc=1、自动重启（`ZJ_DRILL_EFS=1` + `ZJ_EXPECT_EFS=reject`，10/10）；④ **回归全套**：block 默认 10/10（全扫描+ok）、cert 11/11（**双键**快路径）、stale 11/11、**oldcert 12/12**（新增变体：只有 reparse_scan 的旧证书 → 强制全扫描、`mustNot certified clean`）、reparse-reject 10/10、swap 13/13；CLI 实机冒烟：EFS+block → rc=4 中文拒绝、EFS+swap → 不拦截（走到目标查找）、reparse 图 → rc=4（F5 回归）、干净图 → 无误报。
+      - **教训**：① "静默成功但数据没了"比"响亮失败"更危险 —— rc=0 路径也要过一遍"目标盘上实际落了什么"（本次靠 7z 读回实证）；② 证书类增量键升级时要检查**每个键都已写入才走快路径**（缺一个键 = 旧版本证书，必须退回全扫）；③ 同名具的不同危害可共用一次扫描（重解析点 + EFS 同趟完成，零额外开销）。
+      - 回归：`make check` **57 用例/453 断言**（+7：三 builder 的 efs_scan、默认值、TaskConfGet、RescueStepRetryable、日志）+ check-docs/i18n(**477**)/widths/shell PASS；`make package` 双架构（**`0.7.71`**，含 initramfs 重建 stamp 0.7.71）。
+    - **W3 提示文案前移（同日追加，`0.7.72`）——"选择时刻"就告诉用户该选哪个引擎**：W1/W2 的拒绝发生在选定引擎之后（弹错误框让用户重来），W3 把提示前移到三个面：
+      - **GUI 三选确认框扩到 4 行**（`CConfirmDlg`）：新增 `DlgMsg4`（skin/confirm.xml，y122）+ `MsgLineCount()` 动态加高 22px、按钮同步下移；**≤3 行的所有既有对话框（Ask2 等）尺寸/位置完全不变**（`extra=0` 不动布局）；第 4 行文案「含 EFS 加密文件或特殊重解析点的镜像，请选「还原后重启」」。
+      - **CLI**：`restore --engine block` 暂存前打印同款提示（中/英；swap 不打印）。
+      - **救援横幅**：沿用 W1/W2 已实现的英文拒绝指引（`use 'restore then reboot' ... or in-place restore from PE`），无需改动。
+      - 验证：i18n **478/478**（三端词条：对话框 4 行整串、CLI 提示）；CLI 冒烟 zh/en 均先出提示再 EFS 拒绝（rc=4）、`--engine swap` 无提示；`make check`/`make package` 绿（`0.7.72`）。🚧 4 行对话框的**外观**待 GUI 实测（逻辑：4 行时窗口 196→218、按钮 y140→162）。
+    - **W4 init 失败菜单全做（同日追加，`0.7.73`）——"永不给裸 `#`"的最后一块**：`bootfiles/alpine/init` 的 `menu_loop` 重写：① **取消 3 轮上限**（原来第 3 轮后直接 `exec /bin/sh`，等于又把用户扔回裸环境）；② **超时 120s 无输入 = 自动 [2] 重启**（原文提示 `auto-[2]` 与行为一致；旧实现超时走 `break` → 掉 shell，无人值守机器会永远干等）；③ **每轮重印 `RESULT: restore FAILED (rc=… STEP=…)`**（从 `/tmp/zjrestore.log` 取最后一条，屏幕滚动后仍能拍照留证）；④ **`#` 仅经 [3] 显式选择**（唯一 break 出口）；⑤ 非法输入 → 重新提示（不再一敲错就掉 shell）。
+      - **测试**：新增 `tools/vmtest/test-menu-loop.sh`（仿 test-caps-failpath：抽 `menu_loop()` + sed 注入可测点 `ZJ_MENU_TMO/ZJ_MENU_LOG/ZJ_STUB`；**14 断言 PASS**：超时→重启、非法输入重提示、retry 超 3 轮（round 4/5 在案）、RESULT/STEP/rc 重印、[3] 才出 shell）；已挂进 `check-shell.py` 的 `SYNTAX_ONLY`（连同 test-reparse-awk.sh，syntax 7→9）。
+      - **门禁基线（A/B 分类）**：init 新增 **2 处 `2>/dev/null`**（菜单里从日志取 rc/STEP 的两条 `sed` 读）——**A 类**：日志可能不存在，失败=空输出，调用方有 `${var:-?}`/`${var:-unknown}` 兜底，不是吞真故障 → 按纪律 `--update-baseline`（init 58→**60**），已在本次记录分类理由。
+      - **回归**：`make check`（57 用例/453 断言 + i18n 478 + shell PASS syntax 9）+ `make package`（**`0.7.73`**，initramfs 重建 stamp 0.7.73）；演练：**autorrecover 8/8**（STAGE=0 路径无菜单、自动重启）、**block 10/10**、**swap 13/13**、**EFS 拒绝 10/10**（最终 initramfs）。
+
+- PIT-158 **P4 用户试用反馈三项（`0.7.74`，2026-10-20）：空间不足前置禁用、删除旧系统后自删、目标盘 ZJRESTORE 成功即清**：
+  · **① 空间预检前移到确认框**（用户规格："开始前直接显示需要 X GB / 可用 Y GB；够就不提示；不够才把「还原后重启」变成红色「空间不足」且不可点"）：`CConfirmDlg::Ask3` 新增 `midDisabled`（红底红字、忽略点击，回车不落禁用项）；`MsgLineCount` 上限 4→5 并新增 `DlgMsg5`；ops 新增 **`QuerySwapSpace()`**（`ImageSize` + `EstimateSwapSpace`，GUI 在弹框前调用）；`StartRestore` 仅在 `freeBytes>0 && !enough` 时追加第 5 行并 `defaultIdx=0`（回车=取消，避免默认落到"会格盘"的 B 引擎）。
+  · **② 删除旧系统后自删**：`CConfirmDlg::Ask4`（四按钮、窗口运行时加宽到 520，顶栏/关闭/消息标签同步重排）；启动期备返对话框由 Ask3 改 Ask4（保留 / 返回旧系统 / 删除旧系统 / **删除旧系统后自删**，默认仍是"保留不动"）。选中后二次确认（默认「否」）→ ①删 ~old（进度窗）→ ②`RemoveBootLayer` + `DeleteMenuBinding` → ③**分离 cmd 自删程序目录**（`ping -n 5` 等本进程退出后 `rmdir /s /q` 重试 30 次；失败只记日志）。**保护**：旧系统没删干净、或启动菜单没清成功 → **取消自删**（不留下"程序没了、引导还坏着"的半成品）。
+  · **③ 目标盘 ZJRESTORE 成功即清**：`zj-ea-apply.exe` 在 EA 补写 **rc=0** 时，先把诊断归集到 `<软件目录>\logs\collected\ZJRESTORE-ea`（沿用 PIT-156），再**整目录删除**（分离 cmd 等补写器退出后 rmdir）。**保护**：目录里有 `SysRecover(.UI).exe`（SettleHome 程序的家）或 `boot/scripts`（已装启动菜单）→ 不动；失败（rc≠0）保留供重试；`--no-cleanup` 跳过。
+  · **验证**：`make check`（57 用例/453 断言 + i18n **491** + docs/widths/shell 全过）+ `make package` 双架构（**`0.7.74`**，`bootfiles/zj-ea-apply.exe` 529,408B）；自删 cmd 语法在 `%TEMP%` 沙箱实测可删空目录；🚧 **待实测**：① 4/5 行 + 四按钮对话框外观（≤3 行/三选尺寸不变）；② 空间不足时按钮禁用与回车行为；③ 真实首启 EA 后 `C:\ZJRESTORE` 立即消失；④ 真机"删除旧系统后自删"全链（删旧→删菜单→程序退出并自删）。
+  · **教训**：① 自删必须"分离 cmd + 等待 + 重试"——运行中的 exe/DLL 无法当场删；② 破坏性选项（自删）要有二次确认与"前置步骤失败就中止"的护栏；③ 用户可见的"空间够不够"必须用**可用空间**（A 引擎）而不是分区总大小（B 引擎才看总容量），两个引擎口径不同。
+
+- PIT-159 **新硬盘初始化向导 + 第三步启动方式提示 + GUI「修复引导」（`0.7.75`，2026-10-20/21；PE 首次在新机器上运行的需求）**：
+  · **背景**：PE 里遇到"没有任何分区的全新硬盘"时，第二步分区下拉为空，用户无从下手；且"当前启动方式 vs 目标盘风格"不一致（Legacy 会话 + GPT / UEFI 会话 + MBR）会导致"还原成功但起不来"，需要**选择时刻**提示。
+  · **① 新硬盘初始化（`src/disk/partinit.{h,cpp}`）**：`FindEmptyDisks()` 检测固定盘（排除可移动/U 盘/PE 盘；`EnumerateDisks` 对 RAW 盘会整体跳过 → 单独读 LBA0 探测）；方案：GPT（ESP 300MB + MSR 16MB + 系统盘默认 100GB + 其余数据）或 MBR（系统盘默认 60GB + 其余数据），容量可改。**硬限制**（技术不可能才禁）：>2TB 只能 GPT；Win7 x86/XP 只能 MBR；其余仅推荐 + 警告（**不剥夺用户选择**）。MBR 方案额外 **`bootsect /nt60 <系统盘>: /mbr` 写磁盘引导代码 + diskpart `active`**（新 MBR 盘不写 MBR 代码 → 还原完黑屏）。执行：diskpart 脚本（纯 ASCII）+ 回读校验（风格/分区数/ESP/MBR 引导代码）。
+  · **② 入口（用户拍板：不加按钮、不多一步）**：第二步分区下拉改自绘 `PartitionCombo`（`CPartitionComboUI`）——列表为空时点击**不再展开空下拉**，直接 `PostMessage(WM_SKIN_EMPTY_PARTITION)` → 打开向导；非空时行为不变。空列表原因区分：空盘 → 向导；磁盘未联机/BitLocker/无固定盘 → 明确提示（不弹向导）；多块空盘 → 提示只保留目标盘（MVP，避免选错盘）。
+  · **③ 启动方式提示**：新增 `disk::IsUefiBootSession()`（读固件变量判断**本次会话**；`IsUefiFirmware` 只是固件能力，Legacy 会话下仍可能是 UEFI 固件）；第三步确认框在"会话 vs 目标风格"不一致时追加一行（**只提示不阻止**）：Legacy+GPT → 还原后改 UEFI 启动、缺启动项用「修复引导」；UEFI+MBR → 改 Legacy/CSM。`CConfirmDlg` 消息上限 5→6 行（`DlgMsg6`）。
+  · **④ GUI「修复引导」**：新增 `FixBootBtn`（等价 CLI `repair-boot`），位置在「日志」「清除引导」之前（还原模式：静默 250..350 / 修复 356..438 / 日志 444..502 / 清除 508..590 / 菜单 596..684；备份模式不变、按钮隐藏）；worker 异步 + 结果框。
+  · **⑤ i18n 纪律**：新文件 `src/disk/partinit.cpp`、`src/gui/initdisk_dlg.cpp` 已加入 `tools/i18n-wrap.py` 的 `WRAP_FILES`（否则 skeleton 扫不到、还会把词条当死键删掉 —— PIT-109 教训）。
+  · **验证**：`make check`（57 用例/453 断言 + i18n **536** + docs/widths/shell 全过）+ `make package` 双架构 + initramfs 重建（stamp 0.7.75）（**`0.7.75`**）。🚧 **待实测**：① 真机/VM 空盘：向导 → 分区 → 还原 → 启动（BIOS 与 UEFI 各一次，验证 MBR 引导代码与 ESP）；② 向导对话框外观与容量校验；③ 空下拉点击/空因提示；④ 第三步提示与「修复引导」按钮；⑤ PE 里 `bootsect.exe` 是否可用（缺失时 MBR 方案会明确失败，需随包补资产或提示改 GPT）。
+  · **VM 反馈修正（2026-10-21，`0.7.76`）**：① 向导窗口 **400→430px**（原高度按钮被裁）；② **小容量磁盘规则**（用户规格）：`PartSizeHint SuggestPartitionSizes()` 纯逻辑 —— Win10/11 可用 ≥105GB → 100+数据、65~104 → 60+数据、**<65 → 整盘做系统盘（不建数据盘）**；Win7 ≥65 → 60+数据、35~64 → **30+数据**、<35 → 整盘；剩余 <5GB 一律不建数据盘。新增 `PartInitPlan.createData`（diskpart 脚本/回读校验按需跳过数据盘）；对话框显示"将创建：系统盘 XGB + 数据盘约 YGB / 整盘"并随方案与输入实时更新；容量超可用空间明确报错。验证：`make check`（57/453 + i18n **543** + 门禁全过）+ `make package`（**`0.7.76`**）。🚧 仍需 VM 复测：60GB 盘 Win10 应为"整盘 53GB、无数据盘"；Win7 应为"30GB + 数据盘"；窗口按钮不再被裁。
+  · **VM 实测 MBR 分区失败（2026-10-21，`0.7.77`）**：BIOS/Win10 VM 里分区后报"写入 MBR 引导代码失败（bootsect 不可用）"。根因：**`bootsect` 命令漏了 `/nt60`**——`bootsect X: /mbr` 被当成用法错误（返回非 0），旧代码把所有非 0 都误报成"不可用"。修：`bootsect /nt60 <盘符>: /mbr`；并区分两种失败（**PE 缺 bootsect.exe** → 提示换 GPT/手动命令；**返回错误** → 提示看日志/手动命令），日志记录完整命令与输出。i18n **544**；`make check`/`package`（**`0.7.77`**）。⚠️ 已失败的测试盘：在 PE 里手动 `bootsect /nt60 <系统盘盘符>: /mbr`，或 `diskpart` clean 后用 0.7.77 重来。
+  · **VM 端到端（2026-10-21，`0.8.0`）**：修后同一台 BIOS/Win10 VM 里 **MBR 分区 → 还原 → 重启成功**。首次启动在"检测硬件"阶段蓝屏并自动重启一次，再启动即进桌面（判定为 Windows 首次驱动适配/重启周期，**暂不追**；同一镜像在 UEFI VM 直接正常）。该阶段系统尚无可写设备，救援日志未保留（后续可考虑在首启早期落盘，暂记）。
+
+- **版本推进（2026-10-21）**：分区向导完成后版本定为 **0.8.0**（`version.py --set 0.8.0`，initramfs stamp 0.8.0）；下一任务 **异机还原**（还原到不同硬件/控制器），完成后进入 **0.9**。
+  · **教训**：① "只推荐不禁止"与"技术硬限制"要分开——用户选择权优先，但 >2TB/MBR 与 Win7 x86/UEFI 是物理/系统限制；② 新 MBR 盘必须补磁盘引导代码（本项目的还原流程只写 PBR，PIT-051/053）；③ 空下拉直接调用向导比"提示项/额外按钮"更简洁（用户拍板）；④ 新增含 Tr 的源文件**必须同时加 WRAP_FILES**。
+
+- PIT-160 **异机还原（0.9，2026-10-21）：仅 Win10/11；最小化=启用 in-box 启动存储驱动；可选用户驱动包（DISM 离线注入）**：
+  · **范围**：仅 Windows 10/11（`IsUniversalOsSupported` = major ≥ 10）；Win7/8.1 在暂存前拒绝并提示（同机还原 / PE 就地 / 新装）。异机只走 Windows 侧路径：**A 引擎（~new 解压后、交换前）** 或 **PE 就地还原（apply 后）**；B 引擎（Linux apply）与「安装菜单」直接拒绝（没有 DISM）。
+  · **最小化（零体积）**：`EnableInboxStorageDrivers` 离线 `reg load` 目标 `Windows\System32\config\SYSTEM`，读 `Select\Current`，把 `storahci/stornvme/pciide/atapi/amdsata/amdxata/usbstor` 的 `Start` 设为 0（只改存在的服务）。
+  · **可选驱动包**：用户选文件夹（不随包内置）；`ValidateDriverFolder` 递归数 `.inf`；`dism /English /Image:<root> /Add-Driver /Driver:<dir> /Recurse /LogPath:<logs>\dism-universal.log`。x64 镜像要求 64 位宿主/PE（`IsHost64`），否则拒绝。
+  · **失败语义**：A 引擎注入失败 → 删除 `~new`、旧系统原样保留（可回退）；就地还原失败 → 明确报错（目标已写入，需用正确驱动包重试/手动修）；`reg load` 失败也按失败处理（提示）。
+  · **界面/CLI（0.9.1~0.9.3 简化）**：还原模式只放一个 **「异机」勾选框**；勾选后**自动**使用程序目录 `Drivers\` 下的驱动（有 `.inf` 就注入，没有就仅启用内置驱动），不再弹设置窗。若用户选「重启后还原」立即提示不支持。CLI：`--universal [--drivers <目录>]`（显式目录优先）。**0.9.3/0.9.4**：`静默模式` → `静默`；两勾选框靠左、与右侧按钮留 22px 间隔（静默 248..330 / 异机 336..398 / 修复 420..490 / 日志 495..545 / 清除 550..620 / 菜单 625..709）；随包 `Drivers\README.txt` 改为**公开来源指引**：Dell WinPE 11 包（32MB，含 Intel RST/AMD RAID/LSI MegaRAID）、HP/Lenovo WinPE 包、virtio-win（BSD-3，可再分发）、SDIO、Microsoft Update Catalog，另加**社区整理包**：OSDeploy WinPEDriverPack 镜像（amd64 子目录，Intel-RAID 1.75MB/AMD 0.14MB/Dell 97MB/HP 126MB，按需取）、OSDeploy OSD 模块（自动抓厂商包）、52250179/WinPEDrivers（Intel VMD v19/v20 极简包）；**OEM 包只给链接、不再分发**。
+  · **预置驱动（2026-10-21，本机 dist）**：`dist\Drivers` 已放入 **Dell WinPE11 包**（58 个 .inf，112.7MB，含 Intel RST/VMD、AMD RAID、LSI MegaSAS、网卡）+ **Intel VMD v19/v20**（各 1 个 .inf，共 7.2MB）+ **VirtIO**（virtio-win 0.1.271 的 viostor/vioscsi/NetKVM，Win10/11 x64，6 个 .inf / 3.1MB），合计 **66 个 .inf / 123MB**；来源与 SHA256 写在 `dist\Drivers\PRELOADED.txt`。**Fedora 官方下载有反爬**，VirtIO 改用社区精简镜像（`caoquocdung/virtio-win-iso-lite`，内容=官方 ISO 0.1.271）；⚠️ **GitHub 上 `viostor`/`vioscsi` 是源码，不能直接注入**，必须用 ISO/MSI 里的已签名成品。`dist` 在 `.gitignore` 内（驱动不入库）；dist 总大小约 **165MB**（删除 `Drivers` 即回到约 40MB）。**Dell 包仅本机/本 U 盘使用，不再分发**。
+  · **体积**：代码增量 <0.1MB；**不内置厂商驱动包**（精选包由用户选择/自备），dist 维持约 40MB。
+  · **验证**：`make check`（57 用例/453 断言 + i18n **582** + docs/widths/shell 全过）+ `make package` 双架构 + initramfs 重建（**0.9.0**）。🚧 **待实测**：① P0 矩阵 AHCI→RAID/VMD、SATA↔NVMe、物理↔VM（对照：不勾选应复现 0x7B）；② GUI 设置框与按钮状态；③ 就地还原路径注入；④ Win7 镜像拒绝提示；⑤ 驱动包位数/签名错误提示。
+  · **教训**：① DISM 只能服务同/更高版本、同架构的离线镜像——x64 镜像别用 32 位 PE；② 驱动包只解决“启动关键”，不能保证芯片组/ACPI/激活；③ 新增含 Tr 的 `universal.cpp`/`universal_dlg.cpp` 必须加入 `WRAP_FILES`（本轮先漏、check C2 抓到）；④ 链接 `GetFileVersionInfoW` 需 `-lversion`。
+
+- PIT-161 **镜像路径输入汉字跑到最前面（UNC 路径）：聚焦时同步文本 + SetText 重置光标到 0；顺带目录被当成镜像**（2026-10-21 VM 实测，`0.9.5`）：
+  · **现象**：在还原模式手动输入 `\\192.168.110.236\d\我的备份`，输到 `\d\` 后再打汉字，结果显示为 `份备的我\\192.168.110.236\d\`（字符逐个插到最前面）。
+  · **根因**：① `CSkinEditUI::DoEvent` **每次事件**都 `SyncTextFromNative()`，而它调 `SetText` → `CEditUI::SetText` → `Edit_SetText` 会把原生 EDIT 光标重置到 **0**；② UNC 共享根 `\\server\share\` 在输入过程中是**合法目录**，`ImagePathReady` 仅看 `GetFileAttributes` → 被当成镜像去 `LoadWimImages`（同步阻塞），进一步触发事件/同步。二者叠加导致光标回 0，汉字逐个插到开头。
+  · **修复**：① `DoEvent` **只在失焦/未聚焦时**同步（自绘需要时才同步）；② 重写 `CSkinEditUI::SetText`，程序化更新后把光标放到**末尾**；③ `ImagePathReady` 对 `FILE_ATTRIBUTE_DIRECTORY` 返回 false（目录不是镜像）。
+  · **验证**：`make check`（57 用例/453 断言 + i18n 569/569 + 门禁）+ `make package`（**`0.9.5`**）。🚧 待 VM 复测：连续输入 UNC + 中文，顺序应为 `\\192...\d\我的备份`；目录/共享根不再触发阻塞读取。
+  · **教训**：① 文本同步只能在“非聚焦”时做（聚焦时原生控件才是真身）；② 任何程序化 `SetText` 之后都要恢复/设置光标（否则接着输入会插错位置）；③ “路径存在”不等于“镜像文件”，目录要排除。
+
+- PIT-162 **网络共享（Unicode 机器名 `\\REDACTED-SERVER\...`）备份 rc=47：改用 CreateFileW + 写 fd，绕开 wimlib 的 `_wopen`；并加目标预检与 wimlib 错误日志**（2026-10-21，`0.9.6`）：
+  · **现象**：客户 0.8.0 备份到 `\\<server>\<share>\<folder>\...wim` 报 `备份失败(rc=47): Failed to open a file`；同一共享其它软件正常。我们自己的中文**共享名**（`\\127.0.0.1\测试$`、`\\localhost\...`、本机名）备份全成功 → 不是通用中文/UNC 问题。
+  · **分析**：目标机器名是 **Unicode（`REDACTED-SERVER`）**；wimlib 路径接口用 `topen = _wopen`（CRT）打开输出，某些环境下 CRT 对 Unicode 主机名的 UNC 转换失败 → rc=47。其它软件用 `CreateFileW`，故正常。另两种可能（需日志排除）：UAC 提权后账号与共享授权账号不同（拒绝访问）；共享只读/网络不可达。
+  · **修复**：① `WimEngine::Capture` 改为 **`CreateFileW` 打开 `<dest>.tmp` + `_open_osfhandle` + `wimlib_write_to_fd`**（输出不再经 CRT 路径；简体/中文/Unicode 主机名与资源管理器同 API）；② `RunBackup` 新增**目标可写预检**（在目标目录建 `zjprobe-<pid>.tmp`，失败时把 Win32 错误码 5/53/67/64/3/2/123/206 翻译成可操作提示，含“UAC 提权账号可能不同”的提示）；③ `WimEngine` 构造时 `wimlib_set_error_file_by_name(<logs>\wimlib-errors.log)`，GUI 无控制台也能拿到 wimlib 的**具体失败路径/errno**。
+  · **验证**：本机中文共享名（127.0.0.1/localhost/本机名）备份成功（fd 路径回归）；只读共享预检输出“错误码 5 + 提权账号提示”；`make check`（57/453 + i18n **575** + 门禁）+ `make package`（**`0.9.6`**）。🚧 待客户用 0.9.6 复测 `\\REDACTED-SERVER\...`；若仍失败，直接看 `logs\wimlib-errors.log` 与预检错误码。**已知边界**：`Append`（追加镜像）仍走 `wimlib_open_wim`（路径/CRT）→ 对 Unicode 主机名的追加可能仍受限（本轮先保证新建备份）。
+  · **教训**：① 网络/Unicode 路径不要只靠 CRT 的 `_wopen`；关键输出用 `CreateFileW` 自己开；② 错误码要在**动作之前**预检并翻译（rc=47 的信息量几乎为零）；③ GUI 必须把库的详细错误落文件，否则现场只能看到“Failed to open a file”。
+  · ⚠️ **2026-10-23 更正**：客户 0.9.6 的新日志（`wimlib-errors.log`）显示 rc=47 的真正失败文件是 **VSS 快照内的 OneDrive 应用缓存**（`...\AppData\Local\Microsoft\OneDrive\...\fre_done.svg`，`status=c0000034`），**不是** Unicode 主机名；目标预检已通过。修复见 **PIT-164**（默认排除 OneDrive 应用缓存）。`CreateFileW` 改动保留（对 Unicode 目标仍更稳），但不要把它当成本次根因。
+
+- PIT-163 **0.9.7：备份保存路径与还原镜像路径分离 + 任务执行中锁定 UI + 救援层减少误判英文；UEFI repair-boot 虚拟机实测通过**（2026-10-23）：
+  · **备份保存位置被还原镜像路径顶回**（用户实测）：在“文件→系统”搜索到 `D:\2024...esd` 后切到“系统→文件”，手输 `D:\abc.esd`，点别处又变回搜索到的路径。根因：两个模式共用一个 `m_wimPath`，且路径同步依赖 `WM_COMMAND/EN_CHANGE`（原生 `CEditWnd` 的文本变化主要走 `DUI_MSGTYPE_TEXTCHANGED`），失焦/定时器可能把旧值写回。修复：新增独立 `m_backupPath`（`ActivePath()` 按模式取）；`BrowseSaveFile`/`StartBackup`/`SyncFormatFromPath`/`SyncPathExtFromFormat`/拖放/`UpdateMainAction` 全部走备份路径；`Notify` 增加 `DUI_MSGTYPE_TEXTCHANGED` → `SyncImagePathFromUi()`；模式切换时 `SetImagePathEdit(ActivePath())`。日志新增 `GUI mode: backup|restore path=...`。
+  · **任务执行中锁定 UI**（用户规格：仅「静默」「限速」可点）：`SetBusyControls(m_busy)` 由 `UpdateMainAction()` 统一调用，禁用浏览/搜索/路径/子镜像/备注/分区/格式/模式 Tab/修复/日志/菜单/ESP/异机/主按钮/SiteLink；`ImagePath` 的原生 EDIT 同时 `EnableWindow(FALSE)`；`Silent` 与 `CpuCapBox` 保持可用；关闭按钮仍在 `m_busy` 之前处理（PIT-071 的取消流程不变）。`Notify` 的 busy 守卫只放行 `Silent` 点击、`CpuCapBox` ITEMSELECT 与最小化/最大化。
+  · **救援层减少误判英文**：`init` 对 `blkid` 为空的分区（MSR/未格式化）打 `skip <dev> (no filesystem)`，不再把整段 `NTFS signature is missing` 刷屏；UEFI 下缺 bootfix 改为 `no bootfix needed (UEFI boot)`（BIOS 才 WARN）；`ufshcd-core/ufshcd-pci` 未打包时改为 `optional (not bundled; no UFS hardware)`，不再 WARN。`zjrestore-lite.sh` 的 image-scan 同款处理。
+  · **日志增强**：`GUI repair-boot start/done rc=...`、`GUI menu install/remove request: image/disk/part/index/keepOld`、`GUI mode: ...`；UEFI 启动项日志带 `desc=SysRecover` 与 OptionalData 长度。下次客户再报“菜单/修复”问题，日志可直接区分入口与阶段。
+  · **repair-boot 虚拟机实测（UEFI）**：把 `<lab>\e2e2\utarget.vhd` 复制成测试 VHD → 删除 ESP 的 `\EFI\Microsoft\Boot\BCD`（保留 `.bak`）→ 0.9.6/0.9.7 `SysRecover.exe repair-boot --disk 2 --part 4` → `bcdboot (UEFI) rc=0` + `displayorder {default}` + 校验通过；ESP 重新生成 BCD 20480B；QEMU + `edk2-x86_64-code.fd` 启动该 VHD，成功到 Windows 登录界面（截图 `<lab>\repairtest\shot3.png`）。**结论：UEFI repair-boot 路径可用**；BIOS 路径本轮未重复测（同一 `RepairBoot`，BIOS 分支此前 PIT-130 已测）。
+  · **验证**：`make check` 57 用例/453 断言 + i18n 575/575 + check-docs/widths/shell PASS；`make package` 双架构（**`0.9.7`**，initramfs stamp 0.9.7，494 模块）。🚧 待用户实测：① 备份模式手输保存位置不再被还原路径覆盖；② 任务中除静默/限速外全部点不动、关闭仍弹「继续等待/终止并退出」；③ 客户再次走菜单/修复时日志更完整。
+
 ---
 
+
+- PIT-164 **0.9.8：rc=47 真根因 = VSS 快照内 OneDrive 应用缓存（status=c0000034）；补强备份路径失焦持久化 + 备份模式隐藏「安装菜单」+ 菜单禁用原因日志**（2026-10-23，客户 20261022 测试日志）：
+  · **rc=47 更正**：客户 0.9.6 日志的 `wimlib-errors.log` 原文：
+    `"GLOBALROOT\Device\HarddiskVolumeShadowCopy6\Users\Administrator\AppData\Local\Microsoft\OneDrive\26.163.0823.0004\images\darkTheme\fre_done.svg": Can't open file (status=c0000034)`。
+    目标预检已通过、`dest=\\REDACTED-SERVER\...` 未报错 → **失败在源文件**，不是 Unicode 主机名/网络共享。`status=c0000034` = 对象名不存在（OneDrive 云占位/缓存文件在 VSS 快照中不可读）。修复：`DefaultExclusionConfig()` 增加 `\Users\*\AppData\Local\Microsoft\OneDrive*`（应用缓存，不是用户 OneDrive 数据目录；用户目录仍由 `CloudFolderNames` 按实际存在排除）。
+  · **验证（可复现）**：临时目录造 `Users\X\AppData\Local\Microsoft\OneDrive\26.1\images\skip.txt` + `Users\X\Desktop\keep.txt` → `backup --source <临时目录> --no-snapshot` → `extract`：`keep.txt` 存在（rc=0），OneDrive 缓存路径 `The path does not exist in the WIM image`（rc=1）→ 排除生效。单测 `exclude_default_has_essentials` 增加该行断言（57 用例/454 断言）。
+  · **备份路径失焦仍消失（0.9.7 首修不足）**：补 ① `CSkinEditUI::DoEvent` 在 `UIEVENT_KILLFOCUS` 先 `SyncTextFromNative()`，再 `SendNotify(DUI_MSGTYPE_TEXTCHANGED)`（把原生文本变化在失焦瞬间送回主窗口）；② `SyncImagePathFromUi()` / `EN_CHANGE` 在“原生 EDIT 已销毁且文本为空”时**不覆盖** `ActivePath()`，并从 `ActivePath()` 回填控件，避免 500ms 定时器把已输入路径清空。
+  · **「安装菜单」灰色**：`ApplyModeUi()` 备份模式 `BootMenuBtn` 改为隐藏（该按钮是还原专属；此前备份模式也显示一个永远灰的「安装菜单」，用户误判）；`RefreshBootMenuBtn()` 在未安装且不可点时落日志 `GUI boot menu disabled: backup=… pathEmpty=… imageOk=… part=… busy=…`，下次可直接判断是路径没进 `m_wimPath`、镜像未解析、分区未选还是 busy。
+  · **验证**：`make check` 57 用例/454 断言 + i18n 575/575 + check-docs/widths/shell PASS；`make package` 双架构（**`0.9.8`**，initramfs stamp 0.9.8，494 模块）。🚧 待客户用 0.9.8 复测 `\\REDACTED-SERVER\...` 备份；GUI 路径/锁定仍未自动化按键验证（Duilib 原生 `EditWnd` 不接受脚本 SetText/SendKeys），需用户实测。
+
+- PIT-165 **0.9.9：还原模式按钮改版（清除菜单/安装菜单同款样式 + 两两换位）**（2026-10-23，用户规格）：
+  · **改名**：`RepairBootBtn` 的 `清除引导` → **`清除菜单`**（`skin/main.xml` + `tools/i18n-en.py` 的 `清除菜单=Clear Menu`；旧 `清除引导` 键已删）。`BootMenuBtn` 仍叫 **`安装菜单`**（用户后续明确：不是「安装引导」）。
+  · **同款样式**：`RefreshBootMenuBtn()` 不再按 `can` 把 `BootMenuBtn` 的 `bkcolor` 设成 `C_DISABLED`；安装/未安装都保持 `#FFFFFFFF` 背景 + `C_TEXT` 文字（与 `清除菜单` 相同）。`SetEnabled(can)` 仍保留（不可用时只变文字色、不误点）。两个按钮宽度统一为 **84px**（`539..623` / `625..709`）。
+  · **换位**：还原模式最终顺序 = `日志`(420..465) → `修复引导`(467..537) → `安装菜单`(539..623) → `清除菜单`(625..709)。即「修复引导/日志」互换、「安装菜单/清除菜单」互换；`skin/main.xml` 初始位置与 `ApplyModeUi()` 的 `Pos()` 同步。备份模式仍隐藏这四个按钮。
+  · **门禁**：`check-widths` 首次因 70px 放不下 `Add Menu`(72)/`Clear Menu`(78) 报 FAIL；把两个按钮加宽到 84、`日志` 收到 45px 后通过。`make check` 57 用例/454 断言 + i18n 575/575 + check-docs/widths/shell PASS；`make package` 双架构（**`0.9.9`**，initramfs stamp 0.9.9，494 模块）。
+  · 🚧 待用户看界面：按钮文字/顺序/宽度/禁用色是否满意；`清除菜单` 的英文是 `Clear Menu`。
 
 ## 14. License 合规（SBOM，随版本更新）
 

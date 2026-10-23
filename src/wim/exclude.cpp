@@ -33,6 +33,7 @@ const char* DefaultExclusionConfig() {
         "\\Windows\\SoftwareDistribution\n"
         "\\Windows\\CbsTemp*\n"
         "\\Users\\*\\AppData\\Local\\Temp*\n"
+        "\\Users\\*\\AppData\\Local\\Microsoft\\OneDrive*\n"
         "\\Users\\*\\AppData\\Local\\Microsoft\\Windows\\INetCache*\n"
         "\\Users\\*\\AppData\\Local\\Microsoft\\Windows\\Explorer*\n"
         "\\Windows\\winsxs\\InstallTemp*\n"

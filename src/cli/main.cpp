@@ -278,6 +278,20 @@ int CmdRestore(const std::vector<std::string>& a) {
     // 默认 swap（A 引擎）；--engine block 回退 B 引擎（Linux apply）。
     req.engine = Opt(a, "--engine");
     if (req.engine.empty()) req.engine = "swap";
+    // 异机还原（0.9）：仅 Win10/11；--drivers 可选（用户驱动文件夹）。
+    req.universal = Has(a, "--universal");
+    if (req.universal) {
+        req.driverDir = ToWide(Opt(a, "--drivers"));
+        if (req.engine != "swap")
+            std::printf(Tr("提示：异机还原只能配合「还原后重启」（--engine swap）"
+                           "或 PE 就地还原；当前引擎会被拒绝。\n"));
+    }
+    // 1019 案 W3（2026-10-19）：特殊镜像提示前移到选择时刻 —— block 引擎的
+    // Linux apply 写不了特殊重解析点（rc=58）也还原不了 EFS（文件变空），
+    // 暂存预检（W2）会直接拒绝；这类镜像只能用默认的 --engine swap / PE 就地还原。
+    if (req.engine == "block")
+        std::printf(Tr("提示：含 EFS 加密文件或特殊重解析点的镜像只能用「还原后重启」"
+                       "（--engine swap，默认）；「重启后还原」会被自动拒绝。\n"));
     std::string err;
     bool needReboot = true;
     // BitLocker 提醒（同 GUI 规格）：有加密卷就醒目提示（脚本场景不阻塞，只提示）
@@ -314,6 +328,13 @@ int CmdRestore(const std::vector<std::string>& a) {
         std::printf(Tr("已暂存还原任务，重启后由引导层执行。\n"));
     else
         std::printf(Tr("还原已完成（目标分区未被占用，直接就地还原，无需重启）。\n"));
+    // Q1 settle 警告（2026-10-18）：程序目录在目标盘上但没找到安全分区
+    {
+        const auto& sr = sysrecover::LastSettleResult();
+        if (sr.noSafeDrive)
+            std::fprintf(stderr, "%s\n",
+                         Tr("警告：程序目录在目标盘上且无法安全搬迁——还原后程序可能丢失。"));
+    }
     return 0;
 }
 
@@ -746,7 +767,7 @@ const CmdHelp* CmdHelpTable(size_t* n) {
     {"backup",
      Tr("backup --dest <文件> [--source <目录>] [--compress fast|maximum|recovery]\n" "       [--name <名>] [--append] [--verify] [--esp] [--no-snapshot] [--yes]\n" "  --source 写盘符根（`C:` 或 `C:/` 都行）即自动走 VSS 热备；\n" "  --compress 决定体积/速度；--verify 写完立即校验；--append 追加为同一 WIM 的新子镜像；\n" "  --esp 把 ESP 分区并入同一镜像（子镜像名 ESP，还原系统时自动恢复回 ESP）；\n" "  --no-snapshot 冷备（PE/离线卷/VHD 卷上 VSS 不可用时用）；\n" "  本机没有 ESP 时自动跳过（不算失败）。")},
     {"restore",
-     Tr("restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--engine block|swap] [--yes]\n" "  目标是正在运行的系统盘 → 暂存并重启进救援层；否则就地还原（不重启）。\n" "  用 `list` 先确认磁盘号/分区号；镜像必须在**本地分区**。")},
+     Tr("restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--engine block|swap] [--universal [--drivers <目录>]] [--yes]\n" "  目标是正在运行的系统盘 → 暂存并重启进救援层；否则就地还原（不重启）。\n" "  用 `list` 先确认磁盘号/分区号；镜像必须在**本地分区**。\n" "  --universal 异机还原（仅 Win10/11；仅 A 引擎/PE 就地）：启用内置启动存储驱动，\n" "  --drivers 额外注入用户驱动文件夹（DISM，离线，不随包内置厂商驱动）。")},
     {"verify", Tr("verify --image <文件>\n  校验镜像完整性（成功 0，失败 5）。")},
     {"repair-boot",
      Tr("repair-boot [--disk N --part M]\n" "  修复引导（ESP 上的 BCD/bootmgfw）：给**引导坏了的机器**用，不必重装。\n" "  不给 --disk/--part 时自动找系统盘；流程 = bcdboot + 产物校验（docs/15）。")},
@@ -829,26 +850,9 @@ int main() {
         }
     }
     sysrecover::InitI18n(langArg.empty() ? nullptr : langArg.c_str());
-    // 只读介质 / U盘：自动整包搬到本地固定分区再运行（用户 2026-10-03 规格：
-    // CLI 不询问；等子进程结束并透传退出码。失败/无目的地 → 继续原地跑）。
-    {
-        sysrecover::RelocatePlan rp = sysrecover::CheckRelocate();
-        if (rp.needed) {
-            if (rp.destRoot.empty()) {
-                std::fprintf(stderr, "%s\n",
-                             Tr("程序在只读介质上，且没有可写磁盘：日志将无法保存。"));
-            } else {
-                std::printf("%s\n",
-                            Tr("程序在光盘或U盘上运行：正在复制到本地磁盘后继续..."));
-                int code = 0;
-                std::string rerr;
-                if (sysrecover::DoRelocate(rp, /*wait=*/true, &code, &rerr))
-                    return code;
-                std::fprintf(stderr, "%s%s\n", Tr("自动搬迁失败："),
-                             rerr.c_str());
-            }
-        }
-    }
+    // （Q1「先落盘后搬家」，用户 2026-10-18：启动搬迁块已删除 —— 搬家等用户
+    //  点「确定还原」后再做。SettleHome 由 StageRestoreImpl 在确认后自动调用，
+    //  仅还原/返回旧系统触发；无安全盘时在 CmdRestore 结束后打印警告。）
     if (args.empty())
         return Usage();
     // 帮助（问题清单 C1）：`help [命令]` / `--help` / `-h`，以及 `<命令> --help`。
@@ -868,6 +872,14 @@ int main() {
     std::wstring logsDir = sysrecover::LogBaseDir() + L"\\logs";
     sysrecover::LogInit(logsDir);
     sysrecover::ProgressInit(logsDir);
+    // PIT-156（2026-10-18）：每次运行先归纳日志（救援残留里的日志先搬进日志根），
+    // **再**收痕迹、**最后**清散件 —— 顺序不能反：清理器要能整个删掉还原残留的
+    // C:\ZJRESTORE 壳，前提是里面的日志已被归纳/收集（分类保护程序的家/启动菜单，
+    // 见 relocate.cpp::ClassifyZjrResidue）。守卫（PE / 暂存待还原）见 relocate.cpp。
+    {
+        const std::string mig = sysrecover::MigrateLogsToLogHome();
+        if (!mig.empty()) sysrecover::LogInfo(mig);
+    }
     // 自诊断与痕迹收集（用户 2026-10-03 规格）：启动即把 diag.txt/list.txt 写进 logs，
     // 并收集各盘上我们留下的部署文件 —— 用户排错只需发 logs 文件夹。
     // 磁盘表**只枚举一次**，diag/list/收集共用（问题 2，2026-10-12：每个盘符

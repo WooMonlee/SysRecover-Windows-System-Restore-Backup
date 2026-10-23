@@ -1,4 +1,4 @@
-﻿// 主窗口实现。Phase 5：CLI 逻辑经 app/ops 共享层桥接到 GUI。
+// 主窗口实现。Phase 5：CLI 逻辑经 app/ops 共享层桥接到 GUI。
 // 注意：所有 C++ 标准头已通过 main_form.h 在 StdAfx.h 之前 include（PIT-012）。
 #include "common/i18n.h"
 #include "main_form.h"
@@ -10,12 +10,14 @@
 #include "gui/confirm_dlg.h"
 #include "gui/imgsearch.h"
 #include "app/ops.h"
+#include "app/universal.h"
 #include "app/safety.h"
 #include "app/selfdiag.h"
 #include "app/swapleft.h"
 #include "boot/bcd.h"
 #include "boot/grub.h"
 #include "boot/uefi.h"
+#include "common/bioskey.h"
 #include "common/cpucap.h"
 #include "common/logger.h"
 #include "common/process.h"
@@ -23,6 +25,8 @@
 #include "common/sysinfo.h"
 #include "common/progress.h"
 #include "disk/disk.h"
+#include "disk/partinit.h"
+#include "gui/initdisk_dlg.h"
 #include "wim/wim.h"
 
 using namespace sysrecover;
@@ -68,8 +72,13 @@ bool LooksLikeImagePath(const std::wstring& p) {
 // （用户 2026-09-23 实测：本地路径能变蓝，网络/UNC 路径不变蓝）。改为：只要路径
 // 像镜像文件就交给 wimlib 去开 —— 开得了按钮变蓝，开不了也会给出明确错误。
 bool ImagePathReady(const std::wstring& p) {
-    return ::GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES ||
-           LooksLikeImagePath(p);
+    // ⚠️ 目录不是镜像：UNC 共享根（\\server\share\）在输入过程中会先变成
+    // 合法目录，若当成镜像去开，会同步阻塞并触发文本同步/光标跳动
+    //（2026-10-21 VM 实测：输入汉字跑到最前面）。
+    const DWORD a = ::GetFileAttributesW(p.c_str());
+    if (a != INVALID_FILE_ATTRIBUTES)
+        return (a & FILE_ATTRIBUTE_DIRECTORY) == 0;
+    return LooksLikeImagePath(p);
 }
 
 std::wstring FormatSize(uint64_t bytes) {
@@ -163,13 +172,15 @@ void CMainForm::InitWindow() {
     CreateDirectoryW(logsDir.c_str(), nullptr);
     LogInit(logsDir);
     ProgressInit(logsDir);
-    // 克隆（备返）后首次进入新系统：**先**把救援层/旧版本留在数据盘上的日志
-    // 搬进程序目录（用户 2026-10-17 规格），**再**问是否删除旧系统（那个框在
-    // main_win.cpp）。必须放在这里、也就是 StartupLazyWork（收痕迹 + 清散件）
-    // **之前** —— 否则收集器会先把这些文件收进 logs\collected 并清掉源目录，
-    // 搬运"无源可搬"（顺序由 WM_STARTUP_LAZY 在消息循环里才被处理保证）。
+    // 每次启动都归纳日志（PIT-156，2026-10-18 起不再只限备返克隆首启）：先把
+    // 救援层/旧版本留在数据盘上的日志搬进日志根，随后 StartupLazyWork 的收集器
+    // 才收 `source.txt` 等痕迹、清理器才能**整个**删掉还原残留的 C:\ZJRESTORE
+    // 壳（分类保护程序的家/启动菜单，见 relocate.cpp::ClassifyZjrResidue）。
+    // 必须放在 StartupLazyWork（收痕迹 + 清散件）**之前** —— 否则收集器先收
+    // 进 logs\collected 并清掉源目录，搬运"无源可搬"（顺序由 WM_STARTUP_LAZY
+    // 在消息循环里才被处理保证）。守卫（PE / 暂存待还原）见 relocate.cpp。
     // 失败只记日志不挡流程（拿不到日志也只是日志少几行）。
-    if (sysrecover::CloneFirstBootPending()) {
+    {
         const std::string mig = sysrecover::MigrateLogsToLogHome();
         if (!mig.empty()) sysrecover::LogInfo(mig);
     }
@@ -375,14 +386,17 @@ LRESULT CMainForm::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             if (p.empty())
                 p = pEdit->GetText().GetData();
-            if (p != m_wimPath) {
-                m_wimPath = p;
-                if (!m_backupMode && !m_wimPath.empty() &&
-                    m_wimPath != m_lastLoadedWim && ImagePathReady(m_wimPath)) {
-                    m_lastLoadedWim = m_wimPath;
-                    LoadWimImages(m_wimPath);
+            if (p.empty() && !hNative)
+                return 0;
+            std::wstring& active = ActivePath();
+            if (p != active) {
+                active = p;
+                if (!m_backupMode && !active.empty() &&
+                    active != m_lastLoadedWim && ImagePathReady(active)) {
+                    m_lastLoadedWim = active;
+                    LoadWimImages(active);
                 }
-                SyncFormatFromPath();  // 备份：路径带 .wim/.esd → 自动定格式
+                SyncFormatFromPath();  // 备份：路径带 .wim/.esd 时自动定格
                 UpdateMainAction();
             }
         }
@@ -466,6 +480,54 @@ LRESULT CMainForm::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         return 0;
     }
+    if (msg == WM_MENU_DONE) {
+        // 装/删菜单 worker 完成（2026-10-18）：wParam=rc, lParam=install(0/1)。
+        OnMenuDone((int)wParam, lParam != 0);
+        return 0;
+    }
+    if (msg == WM_SKIN_EMPTY_PARTITION) {
+        // 分区下拉为空时被点击（2026-10-20）：直接打开发分区向导。
+        if (!m_busy && !m_backupMode) OpenInitDiskWizard();
+        return 0;
+    }
+    if (msg == WM_PART_INIT_DONE) {
+        m_busy = false;
+        KillTimer(m_hWnd, 1);
+        ShowProgress(false);
+        if (m_worker.joinable()) m_worker.join();
+        const int rc = (int)wParam;
+        if (rc == 0) {
+            PopulatePartitions(EnumerateDisks());
+            SetStatus(Tr(L"新硬盘分区已创建，请选择镜像后开始还原"));
+            MessageBoxW(m_hWnd,
+                        Tr(L"分区已创建完成。\n请选择系统镜像，再选择新的系统分区开始还原。"),
+                        Tr(L"创建分区"), MB_OK | MB_ICONINFORMATION);
+        } else {
+            SetStatus(Tr(L"创建分区失败"));
+            MessageBoxW(m_hWnd,
+                        m_initErr.empty() ? Tr(L"创建分区失败，请打开日志查看详情。")
+                                          : m_initErr.c_str(),
+                        Tr(L"创建分区"), MB_OK | MB_ICONERROR);
+        }
+        UpdateMainAction();
+        return 0;
+    }
+    if (msg == WM_FIXBOOT_DONE) {
+        m_busy = false;
+        KillTimer(m_hWnd, 1);
+        ShowProgress(false);
+        if (m_worker.joinable()) m_worker.join();
+        const int rc = (int)wParam;
+        LogInfo("GUI repair-boot done rc=" + std::to_string(rc) + " / " + m_fixMsg);
+        std::wstring text = m_fixMsg.empty() ? Tr(L"修复引导失败，请打开日志查看详情。")
+                                             : U2W(m_fixMsg);
+        MessageBoxW(m_hWnd, text.c_str(), Tr(L"修复引导"),
+                    rc == 0 ? (MB_OK | MB_ICONINFORMATION)
+                            : (MB_OK | MB_ICONWARNING));
+        SetStatus(rc == 0 ? Tr(L"引导已修复") : Tr(L"修复引导未完全成功"));
+        UpdateMainAction();
+        return 0;
+    }
     if (msg == WM_SR_QUERY_BUSY) {
         // 新实例问「你在忙吗」——忙则不让它关掉本进程（见 instance_dlg.cpp）。
         return m_busy ? 1 : 0;
@@ -534,6 +596,9 @@ static std::wstring StageCn(const std::wstring& s) {
     if (s.compare(0, 6, L"verify") == 0) return Tr(L"校验镜像");
     if (s.compare(0, 5, L"probe") == 0) return Tr(L"完整性检查");
     if (s.compare(0, 7, L"ea-scan") == 0) return Tr(L"文件属性检查");
+    // 引导层部署（2026-10-18）：ops 在 apply 后上报的收官阶段（暂存与菜单
+    // 安装都经过；菜单安装的"无响应窗"正是发生在这里的 28MB 载荷写入）。
+    if (s.compare(0, 4, L"boot") == 0) return Tr(L"写入引导文件");
     return s;
 }
 
@@ -618,6 +683,15 @@ void CMainForm::OnTaskComplete(int rc) {
                      Tr(L"。\n重启后即可进入恢复的系统。"))
                         .c_str(),
                     Tr(L"还原成功"), MB_OK | MB_ICONINFORMATION);
+        // Q1 settle 警告（2026-10-18）：程序目录在目标盘上但没找到安全分区
+        // → 还原后程序可能被格式化掉。弹框让用户知道（fail-safe，静默模式也弹）。
+        {
+            const auto& sr = sysrecover::LastSettleResult();
+            if (sr.noSafeDrive)
+                MessageBoxW(m_hWnd,
+                            Tr(L"警告：程序目录在目标盘上且无法安全搬迁——还原后程序可能丢失。"),
+                            Tr(L"警告"), MB_OK | MB_ICONWARNING);
+        }
     }
 }
 
@@ -913,7 +987,13 @@ void CMainForm::Notify(TNotifyUI& msg) {
     // 「点击或**备份过程中**点击」都能调（改的是 Job 速率，随时可改，安全）。
     const bool cpuSel = msg.sType == DUI_MSGTYPE_ITEMSELECT &&
                         msg.pSender && msg.pSender->GetName() == _T("CpuCapBox");
-    if (m_busy && !cpuSel) return;  // 任务执行中忽略其他点击
+    const bool silentClick = msg.sType == DUI_MSGTYPE_CLICK && msg.pSender &&
+                             msg.pSender->GetName() == _T("Silent");
+    const bool windowBtn = msg.sType == DUI_MSGTYPE_CLICK && msg.pSender &&
+                           (msg.pSender->GetName() == _T("MinBtn") ||
+                            msg.pSender->GetName() == _T("MaxBtn"));
+    if (m_busy && !cpuSel && !silentClick && !windowBtn)
+        return;  // 任务执行中忽略其他点击
     if (msg.sType == DUI_MSGTYPE_CLICK) {
         CDuiString name = msg.pSender->GetName();
         if (name == _T("BrowseBtn")) {
@@ -922,6 +1002,8 @@ void CMainForm::Notify(TNotifyUI& msg) {
             OnSearchImages();  // 还原模式专属（备份模式按钮隐藏）
         } else if (name == _T("MainAction")) {
             if (m_backupMode) StartBackup(); else StartRestore();
+        } else if (name == _T("FixBootBtn")) {
+            StartRepairBoot();
         } else if (name == _T("RepairBootBtn")) {
             // 「清除引导」：删 BCD 条目 + 清 bootsequence + 删数据盘上的
             // grldr/grldr.mbr/menu.lst/ZJRESTORE（用户要求：要清就清干净）
@@ -953,7 +1035,13 @@ void CMainForm::Notify(TNotifyUI& msg) {
             COptionUI* pOpt = static_cast<COptionUI*>(msg.pSender);
             if (pOpt && pOpt->IsSelected()) {
                 bool bak = (name == _T("ModeBackup"));
-                if (bak != m_backupMode) { m_backupMode = bak; ApplyModeUi(); }
+                if (bak != m_backupMode) {
+                    m_backupMode = bak;
+                    ApplyModeUi();
+                    LogInfo(std::string("GUI mode: ") +
+                            (bak ? "backup" : "restore") +
+                            " path=" + W2U(ActivePath()));
+                }
             }
         } else if (name == _T("FormatBox")) { /* 见下方 ITEMSELECT 分支（Combo 发的是 ITEMSELECT） */ }
     } else if (msg.sType == DUI_MSGTYPE_ITEMSELECT) {
@@ -968,11 +1056,14 @@ void CMainForm::Notify(TNotifyUI& msg) {
             if (sel >= 0 && sel < (int)m_imgIdx.size())
                 m_selImageIndex = m_imgIdx[sel];
         } else if (name == _T("FormatBox")) {
-            // ★ 2026-09-30 用户规格：换「类型」→ **同步改文件名后缀**。
-            // 坑：Combo 发的是 DUI_MSGTYPE_ITEMSELECT，**不是** SELECTCHANGED ——
-            //   之前这句挂在 SELECTCHANGED 分支上，所以点了「类型」文件名后缀不变。
+            // 用户 2026-09-30 规格：换「类型」→ **同步改文件名后缀**。
+            // 坑：Combo 发出的是 DUI_MSGTYPE_ITEMSELECT，**不是** SELECTCHANGED——
+            // 之前挂在 SELECTCHANGED 分支上，所以点了「类型」文件名后缀不变。
             SyncPathExtFromFormat();
         }
+    } else if (msg.sType == DUI_MSGTYPE_TEXTCHANGED) {
+        if (msg.pSender && msg.pSender->GetName() == _T("ImagePath"))
+            SyncImagePathFromUi();
     }
     WindowImplBase::Notify(msg);
 }
@@ -1020,11 +1111,14 @@ void CMainForm::RefreshBootMenuBtn() {
                 }
             }
             if (tgt.empty()) tgt = Tr(L"（原目标分区）");
-            if (uefiPath)
+            if (uefiPath) {
+                // 开机键按品牌/机型识别（bioskey：表移植自 BiosKC，2026-10-18）；
+                // 识别不到用中性措辞，绝不写死 F12（HP 是 F9，见客户反馈）。
                 swprintf(tip, 512,
-                         Tr(L"已安装：开机按 F12 启动菜单选「SysRecover」，\n把 %ls（第 %d 个镜像）还原到 %ls。\n点此删除（要换镜像请先删除、再安装）\n镜像请勿移动或删除，否则该菜单无法还原"),
-                         boundImg.c_str(), boundIdx, tgt.c_str());
-            else
+                         Tr(L"已安装：开机按 %ls 选「SysRecover」，\n把 %ls（第 %d 个镜像）还原到 %ls。\n点此删除（要换镜像请先删除、再安装）\n镜像请勿移动或删除，否则该菜单无法还原"),
+                         BootMenuKeyHint().c_str(), boundImg.c_str(), boundIdx,
+                         tgt.c_str());
+            } else
                 swprintf(tip, 512,
                          Tr(L"已安装：开机菜单里选「SysRecover」即可把\n%ls（第 %d 个镜像）还原到 %ls。\n点此删除（要换镜像请先删除、再安装）\n镜像请勿移动或删除，否则该菜单无法还原"),
                          boundImg.c_str(), boundIdx, tgt.c_str());
@@ -1041,10 +1135,17 @@ void CMainForm::RefreshBootMenuBtn() {
         // 镜像绑定 → 一律灰（该按钮只在还原模式有意义）。
         const bool can = !m_backupMode && !m_wimPath.empty() && m_imageOk &&
                          m_selPart >= 0 && !m_busy;
+        if (!can && !m_busy)
+            LogInfo("GUI boot menu disabled: backup=" +
+                    std::to_string(m_backupMode ? 1 : 0) +
+                    " pathEmpty=" + std::to_string(m_wimPath.empty() ? 1 : 0) +
+                    " imageOk=" + std::to_string(m_imageOk ? 1 : 0) +
+                    " part=" + std::to_string(m_selPart) + " busy=" +
+                    std::to_string(m_busy ? 1 : 0));
         p->SetText(Tr(L"安装菜单"));
         p->SetEnabled(can);
-        p->SetBkColor(can ? 0xFFFFFFFF : ui_skin::C_DISABLED);
-        btn->SetTextColor(can ? ui_skin::C_TEXT : ui_skin::C_DIS_TEXT);
+        p->SetBkColor(0xFFFFFFFF);
+        btn->SetTextColor(ui_skin::C_TEXT);
         wcscpy_s(tip, can
             ? Tr(L"把当前镜像写进开机菜单：重启后选「SysRecover」进恢复环境，\n自动把该镜像还原到第二步选中的目标分区\n镜像请勿移动或删除，否则该菜单无法还原")
             : Tr(L"请先选择镜像与目标分区，再安装菜单"));
@@ -1054,16 +1155,17 @@ void CMainForm::RefreshBootMenuBtn() {
 }
 
 void CMainForm::ToggleBootMenu() {
-    std::string detail, log;
-    if (BootMenuInstalled(detail)) {
-        bool ok = RemoveBootLayer(log);
-        // 绑定副契约必须一起删：否则 ReadMenuBinding 仍判"已安装" → 按钮
-        // 停在「删除菜单」回不到「安装菜单」（用户 2026-10-05 实测 bug）。
-        DeleteMenuBinding();
-        SetStatus(ok ? Tr(L"已删除启动还原") : Tr(L"删除启动还原未完全成功"));
-        LogInfo(std::string("GUI boot menu toggle: ") + log);
-        RefreshBootMenuBtn();
-        UpdateMainAction();
+    // 「已安装」判定与 RefreshBootMenuBtn 一致 = 引导层在 **或** 绑定契约在
+    //  —— 只比 BootMenuInstalled 会出现"按钮写着删除菜单、点了却走安装"的错位。
+    std::string detail;
+    std::wstring boundImg;
+    int boundIdx = 1;
+    unsigned long long boundOff = 0, boundSz = 0;
+    if (BootMenuInstalled(detail) ||
+        ReadMenuBinding(&boundImg, &boundIdx, &boundOff, &boundSz)) {
+        // 删除：无确认（按钮文案已是「删除菜单」）→ 异步执行（2026-10-18）：
+        // 删除要卸载 ESP 上 ~28MB 载荷，同步跑在慢盘上同样触发"无响应"。
+        StartMenuToggle(/*install=*/false);
         return;
     }
     // ── 安装（用户 2026-09-29 规格）：把**当前镜像 → 第二步选中的目标分区**写成
@@ -1078,9 +1180,11 @@ void CMainForm::ToggleBootMenu() {
         // ⚠️ CConfirmDlg 的正文只显示**最多 3 行**、且是**单行标签**（PIT-039），
         // 超长/超行会被静默裁掉（行宽预算 376px/fs13 ≈ 28 全角字）—— 刻意压成
         // 3 行短句：第 1 行 = 用法（按引导链分措辞：BIOS 是 bootmgr 启动菜单 /
-        // UEFI 是 F12 固件菜单，不能写"BIOS菜单"——会把用户误导进 BIOS 设置，
-        // 用户 2026-10-11 规格）；第 2 行只显示文件名（路径可能很长，裁到 18
-        // 字符）；第 3 行**必须保留"会格式化"的危险告知**（§11 二次确认红线）。
+        // UEFI 是固件启动项，键名按品牌/机型识别（bioskey），识别不到用中性
+        // 「快捷启动键」——不能写"BIOS菜单"会把用户误导进 BIOS 设置，也不能
+        // 写死 F12（HP 是 F9，2026-10-18 客户反馈）；第 2 行只显示文件名（路径
+        // 可能很长，裁到 18 字符）；第 3 行**必须保留"会格式化"的危险告知**
+        //（§11 二次确认红线）。
         std::wstring name = m_wimPath;
         size_t sl = name.find_last_of(L"\\/");
         if (sl != std::wstring::npos)
@@ -1088,45 +1192,162 @@ void CMainForm::ToggleBootMenu() {
         if (name.size() > 18)
             name = name.substr(0, 18) + L"...";
         wchar_t msg[512];
-        swprintf(msg, 512,
-                 UseUefiBootFor(part)
-                     ? Tr(L"重启后按 F12 选「SysRecover」还原？\n"
-                          L"镜像：%ls（第 %d 个）\n"
-                          L"目标：%ls: 盘 —— 选中即格式化该分区")
-                     : Tr(L"重启后在启动菜单选「SysRecover」还原？\n"
-                          L"镜像：%ls（第 %d 个）\n"
-                          L"目标：%ls: 盘 —— 选中即格式化该分区"),
-                 name.c_str(), m_selImageIndex,
-                 part.letter.empty() ? L"?" : part.letter.c_str());
+        if (UseUefiBootFor(part))
+            swprintf(msg, 512,
+                     Tr(L"重启后按 %ls 选「SysRecover」还原？\n"
+                        L"镜像：%ls（第 %d 个）\n"
+                        L"目标：%ls: 盘 —— 选中即格式化该分区"),
+                     BootMenuKeyHint().c_str(), name.c_str(), m_selImageIndex,
+                     part.letter.empty() ? L"?" : part.letter.c_str());
+        else
+            swprintf(msg, 512,
+                     Tr(L"重启后在启动菜单选「SysRecover」还原？\n"
+                        L"镜像：%ls（第 %d 个）\n"
+                        L"目标：%ls: 盘 —— 选中即格式化该分区"),
+                     name.c_str(), m_selImageIndex,
+                     part.letter.empty() ? L"?" : part.letter.c_str());
         // 与"确认还原"一致：右按钮（动作）高亮且为回车默认项，ESC 一律取消。
         if (CConfirmDlg::Ask2(m_hWnd, Tr(L"安装启动还原菜单"), msg, Tr(L"取消"),
                               Tr(L"安装"), /*defaultIsRight=*/true) != 1)
             return;
-        RestoreRequest req;
-        req.image = m_wimPath;
-        req.disk = (int)part.diskIndex;
-        req.part = (int)part.partNumber;
-        req.index = m_selImageIndex;
-        req.repairBoot = true;
-        req.engine = "swap";  // 0.7 默认 A 引擎
-        std::string err;
-        m_busy = true;
-        UpdateMainAction();
-        SetStatus(Tr(L"正在安装启动还原菜单（写入契约 + 部署救援环境）..."));
-        int rc = StageRestoreMenu(req, err, &last_adv_);
+        StartMenuToggle(/*install=*/true);
+    }
+    RefreshBootMenuBtn();
+    UpdateMainAction();
+}
+
+// 装/删菜单的异步执行（2026-10-18，用户实测"点了没反应"的修复）：
+// 之前 StageRestoreMenu 在 UI 线程同步跑（写 ~28MB 救援载荷 + 逐文件双读
+// CRC 校验 ≈ 56MB I/O），Windows 5 秒无消息泵即判定"无响应" → 幽灵窗。
+// 现在与备份/还原同款：worker 线程 + WM_PROGRESS_UPDATE 进度 + 完成消息。
+void CMainForm::StartMenuToggle(bool install) {
+    if (m_busy) return;
+    // 安装的请求在此定格（镜像/分区/子镜像索引在 busy 期间不可改）；
+    // 删除不用请求，但统一传一份默认值，worker 里按 install 分支取用。
+    RestoreRequest req;
+    req.image = m_wimPath;
+    if (m_selPart >= 0 && m_selPart < (int)m_parts.size()) {
+        req.disk = (int)m_parts[m_selPart].diskIndex;
+        req.part = (int)m_parts[m_selPart].partNumber;
+    }
+    req.index = m_selImageIndex;
+    req.repairBoot = true;
+    req.engine = "swap";  // 0.7 默认 A 引擎（安装时即完成 ~new 解压，见 ops.cpp）
+    m_busy = true;
+    m_menuInstall = install;
+    m_menuErr.clear();
+    LogInfo("GUI menu " + std::string(install ? "install" : "remove") +
+            " request: image=" + W2U(req.image) + " disk=" +
+            std::to_string(req.disk) + " part=" + std::to_string(req.part) +
+            " index=" + std::to_string(req.index) +
+            " keepOld=" + std::to_string(req.keepOld ? 1 : 0));
+    last_adv_ = sysrecover::ADV_NONE;
+    // m_lastStage 给 WM_TIMER(1) 每秒刷新「已用」用（状态栏文字 + 流逝时间）。
+    m_lastStage = install ? Tr(L"正在安装启动还原菜单（写入契约 + 部署救援环境）...")
+                          : Tr(L"正在删除启动还原菜单...");
+    SetStatus(m_lastStage);
+    SetProgress(0);
+    m_start = std::chrono::steady_clock::now();
+    SetTimer(m_hWnd, 1, 1000, nullptr);
+    UpdateMainAction();
+    RefreshBootMenuBtn();
+    LogInfo(std::string("GUI boot menu toggle: ") +
+            (install ? "install" : "remove"));
+    if (m_worker.joinable()) { m_worker.join(); }
+    m_cancel = false;
+    try {
+        m_worker = std::thread(&CMainForm::MenuToggleAsync, this, install, req);
+    } catch (...) {
         m_busy = false;
-        if (rc == 0)
+        UpdateMainAction();
+        RefreshBootMenuBtn();
+        SetStatus(Tr(L"线程创建失败"));
+        MessageBoxW(m_hWnd, Tr(L"无法创建工作线程，请重试"), Tr(L"错误"),
+                    MB_OK | MB_ICONERROR);
+    }
+}
+
+void CMainForm::MenuToggleAsync(bool install, const RestoreRequest& req) {
+    // 同 StartRestoreAsync：让出 CPU，写盘期间窗口仍可拖动（否则拖窗发飘）。
+    ::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    int rc = 0;
+    if (install) {
+        // 进度：ops 层 StageRestoreImpl 的 Apply（菜单安装同样要完整解压
+        // ~new，见 ops.cpp 注释）、引导层前有 progress(99,"boot") 收官标记。
+        // 约定：回调返回 **true = 请求中止**（与还原链路一致）。
+        auto progressFn = [this](int pct, const std::string& stage) -> bool {
+            if (m_cancel) return true;
+            auto now = std::chrono::steady_clock::now();
+            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          now - m_lastProgressPost).count();
+            bool stageChanged = stage != m_lastStageRaw;
+            if (ms < kProgressThrottleMs && pct < 100 && !stageChanged)
+                return false;
+            m_lastProgressPost = now;
+            m_lastStageRaw = stage;
+            PostMessage(WM_PROGRESS_UPDATE, (WPARAM)pct,
+                        (LPARAM)new std::wstring(U2W(stage)));
+            return false;
+        };
+        m_lastProgressPost = std::chrono::steady_clock::now();
+        m_lastStageRaw.clear();
+        std::string err;
+        rc = StageRestoreMenu(req, err, progressFn, &last_adv_);
+        m_menuErr = err;
+    } else {
+        std::string log;
+        bool ok = RemoveBootLayer(log);
+        // 绑定副契约必须一起删：否则 ReadMenuBinding 仍判"已安装" → 按钮
+        // 停在「删除菜单」回不到「安装菜单」（用户 2026-10-05 实测 bug）。
+        DeleteMenuBinding();
+        m_menuErr = log;
+        rc = ok ? 0 : 1;
+    }
+    PostMessage(WM_MENU_DONE, (WPARAM)rc, install ? 1 : 0);
+}
+
+void CMainForm::OnMenuDone(int rc, bool install) {
+    KillTimer(m_hWnd, 1);
+    m_busy = false;
+    if (m_worker.joinable()) m_worker.join();
+    LogInfo(std::string("GUI boot menu ") + (install ? "install" : "remove") +
+            " done rc=" + std::to_string(rc) + " / " + m_menuErr);
+    if (m_cancel) {
+        // 「终止并退出」流程：不要再弹提示（窗口马上关），只留日志。
+        ShowProgress(false);
+        return;
+    }
+    ShowProgress(false);
+    if (rc == 0) {
+        if (install) {
             // 两条引导链的"进菜单"方式不同（PIT-092/094）：BIOS 在 bootmgr 的
-            // 选择菜单里选；UEFI 是固件启动项，要开机按 F12。
-            SetStatus(UseUefiBootFor(part)
-                          ? Tr(L"启动还原菜单已安装：开机按 F12 启动菜单选「SysRecover」即可还原该镜像")
-                          : Tr(L"启动还原菜单已安装：开机选「SysRecover」即可还原该镜像"));
-        else if (!err.empty())
-            SetStatus(U2W(err));
-        else
-            SetStatus(Tr(L"安装启动还原菜单失败"));
-        LogInfo(std::string("GUI install boot menu rc=") + std::to_string(rc) +
-                " / " + err);
+            // 选择菜单里选；UEFI 是固件启动项，要开机按快捷启动键（键名按品牌/
+            // 机型识别，bioskey；识别不到用中性措辞，不写死 F12）。
+            bool uefiPath = m_selPart >= 0 && m_selPart < (int)m_parts.size() &&
+                            UseUefiBootFor(m_parts[m_selPart]);
+            if (uefiPath) {
+                wchar_t done[256];
+                swprintf(done, 256,
+                         Tr(L"启动还原菜单已安装：开机按 %ls 选「SysRecover」即可还原该镜像"),
+                         BootMenuKeyHint().c_str());
+                SetStatus(done);
+            } else {
+                SetStatus(Tr(L"启动还原菜单已安装：开机选「SysRecover」即可还原该镜像"));
+            }
+        } else {
+            SetStatus(Tr(L"已删除启动还原"));
+        }
+    } else if (install) {
+        // 失败必须看得见（静默模式也弹，fail-safe —— 与 OnTaskComplete 同款）。
+        std::wstring e = m_menuErr.empty() ? Tr(L"安装启动还原菜单失败")
+                                           : U2W(m_menuErr);
+        std::string advice = sysrecover::ErrorAdvice(rc, last_adv_);
+        SetStatus(e);
+        MessageBoxW(m_hWnd, (e + U2W(advice)).c_str(),
+                    rc == 4 ? Tr(L"安全门禁拒绝") : Tr(L"安装启动还原菜单失败"),
+                    MB_OK | MB_ICONERROR);
+    } else {
+        SetStatus(Tr(L"删除启动还原未完全成功"));
     }
     RefreshBootMenuBtn();
     UpdateMainAction();
@@ -1135,12 +1356,13 @@ void CMainForm::ToggleBootMenu() {
 // ────────────────── 分区枚举 ──────────────────
 
 void CMainForm::PopulatePartitions(const std::vector<DiskInfo>& disks) {
-    CComboUI* pCombo =
-        static_cast<CComboUI*>(m_PaintManager.FindControl(_T("PartitionBox")));
+    auto* pCombo = static_cast<CPartitionComboUI*>(
+        m_PaintManager.FindControl(_T("PartitionBox")));
     if (!pCombo) return;
 
     pCombo->RemoveAll();
     m_parts.clear();
+    m_partStyles.clear();
     m_selPart = -1;
     int selDefault = -1;
     for (const auto& disk : disks) {
@@ -1150,6 +1372,7 @@ void CMainForm::PopulatePartitions(const std::vector<DiskInfo>& disks) {
             if (part.sizeBytes < 2ULL * 1024 * 1024 * 1024)
                 continue;
             m_parts.push_back(part);
+            m_partStyles.push_back(disk.style);
             // 分区行四列自绘（对齐老项目 PartitionRow.cs，见 ui_skin.cpp::PaintRow）
             CPartItemUI* item = new CPartItemUI;
             item->SetFixedHeight(43);
@@ -1177,9 +1400,109 @@ void CMainForm::PopulatePartitions(const std::vector<DiskInfo>& disks) {
     if (pCombo->GetCount() > 0)
         pCombo->SelectItem(selDefault >= 0 ? selDefault : 0);
     m_selPart = selDefault >= 0 ? selDefault : (pCombo->GetCount() > 0 ? 0 : -1);
+    // 空列表：收起框显示提示；点击时（CPartitionComboUI::DoEvent）直接打开分区向导。
+    pCombo->SetEmptyHint(Tr(L"点击此处为新硬盘创建分区…"));
     CControlUI* pLoad = m_PaintManager.FindControl(_T("PartLoadingText"));
     if (pLoad) pLoad->SetVisible(false);
     UpdateMainAction();
+}
+
+// ────────────────── 新硬盘分区向导（2026-10-20） ──────────────────
+
+void CMainForm::OpenInitDiskWizard() {
+    if (m_busy) return;
+    auto empties = sysrecover::FindEmptyDisks();
+    if (empties.empty()) {
+        const auto disks = sysrecover::EnumerateDisks();
+        std::wstring msg =
+            disks.empty()
+                ? Tr(L"未检测到内置硬盘（磁盘可能未联机）。\n"
+                     L"请先在磁盘管理中联机后再试。")
+                : Tr(L"没有可用的系统分区。\n"
+                     L"若磁盘已经分区，请先用磁盘管理调整分区。");
+        MessageBoxW(m_hWnd, msg.c_str(), Tr(L"创建分区"),
+                    MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    if (empties.size() > 1) {
+        MessageBoxW(m_hWnd,
+                    Tr(L"检测到多块空硬盘。请只保留要安装系统的那一块后重试。"),
+                    Tr(L"创建分区"), MB_OK | MB_ICONWARNING);
+        return;
+    }
+    sysrecover::InitDiskRequest req;
+    req.disk = empties[0];
+    req.uefiSession = sysrecover::IsUefiBootSession();
+    std::wstring low = m_wimPath;
+    for (auto& ch : low) ch = (wchar_t)towlower(ch);
+    req.win7Family = low.find(L"win7") != std::wstring::npos ||
+                     low.find(L"windows 7") != std::wstring::npos;
+    sysrecover::DiskScheme first, second;
+    sysrecover::RankPartSchemes(req.uefiSession,
+                                sysrecover::IsUefiFirmware(), req.win7Family,
+                                req.disk.sizeBytes, first, second,
+                                req.mbrAllowed, req.gptAllowed);
+    req.preferred = first;
+    // 2026-10-21 用户 VM 反馈：小容量磁盘按规则推荐（60GB 盘 Win10/11 → 整盘
+    // 做系统盘；Win7 → 30GB + 其余数据盘），这里只给默认/建议下限。
+    const auto hint = sysrecover::SuggestPartitionSizes(
+        req.win7Family, first, req.disk.sizeBytes);
+    req.defaultSystemGb = hint.systemGb;
+    req.minSystemGb = req.win7Family ? 30 : 60;
+    const auto r = sysrecover::ShowInitDiskDialog(m_hWnd, req);
+    if (!r.ok) return;
+    sysrecover::PartInitPlan plan;
+    plan.diskIndex = req.disk.index;
+    plan.scheme = r.scheme;
+    plan.systemGb = r.systemGb;
+    plan.win7Family = req.win7Family;
+    m_busy = true;
+    UpdateMainAction();
+    SetStatus(Tr(L"正在为新硬盘创建分区..."));
+    SetProgress(0);
+    SetTimer(m_hWnd, 1, 1000, nullptr);
+    if (m_worker.joinable()) m_worker.join();
+    m_worker = std::thread([this, plan] {
+        std::wstring err;
+        std::string log;
+        const int rc = sysrecover::ApplyPartInitPlan(plan, err, log);
+        m_initErr = err;
+        m_initLog = log;
+        LogInfo("partinit rc=" + std::to_string(rc) + "\n" + log);
+        ::PostMessageW(m_hWnd, WM_PART_INIT_DONE, (WPARAM)rc, 0);
+    });
+}
+
+void CMainForm::StartRepairBoot() {
+    if (m_busy) return;
+    if (MessageBoxW(m_hWnd,
+                    Tr(L"将自动查找系统盘与 ESP，重建并校验引导文件。\n"
+                       L"确定继续吗？"),
+                    Tr(L"修复引导"),
+                    MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES)
+        return;
+    LogInfo("GUI repair-boot start");
+    m_busy = true;
+    UpdateMainAction();
+    SetStatus(Tr(L"正在修复引导..."));
+    SetProgress(0);
+    SetTimer(m_hWnd, 1, 1000, nullptr);
+    if (m_worker.joinable()) m_worker.join();
+    m_worker = std::thread([this] {
+        std::string msg;
+        const int rc = sysrecover::RepairBoot(-1, -1, msg);
+        m_fixMsg = msg;
+        LogInfo("repair-boot rc=" + std::to_string(rc) + ": " + msg);
+        ::PostMessageW(m_hWnd, WM_FIXBOOT_DONE, (WPARAM)rc, 0);
+    });
+}
+
+// ── 异机还原（2026-10-21，0.9）：只用一个勾选框 ────────────────────
+// 勾选后：程序目录 `Drivers\` 存在且含 .inf → 自动注入；否则仅启用内置驱动。
+bool CMainForm::IsUniversalChecked() {
+    COptionUI* p = static_cast<COptionUI*>(
+        m_PaintManager.FindControl(_T("Universal")));
+    return p && p->IsSelected();
 }
 
 // ────────────────── 文件对话框 ──────────────────
@@ -1203,9 +1526,7 @@ void CMainForm::BrowseWimFile() {
             if (psz) {
                 m_wimPath = psz;
                 CoTaskMemFree(psz);
-                CEditUI* pEdit =
-                    static_cast<CEditUI*>(m_PaintManager.FindControl(_T("ImagePath")));
-                if (pEdit) pEdit->SetText(m_wimPath.c_str());
+                SetImagePathEdit(m_wimPath);
                 LoadWimImages(m_wimPath);
             }
             pItem->Release();
@@ -1263,11 +1584,9 @@ void CMainForm::BrowseSaveFile() {
                         m_PaintManager.FindControl(_T("FormatBox")));
                     if (pFmt && pFmt->GetCount() > want) pFmt->SelectItem(want, false, false);
                 }
-                m_wimPath = path;
-                CEditUI* pEdit =
-                    static_cast<CEditUI*>(m_PaintManager.FindControl(_T("ImagePath")));
-                if (pEdit) pEdit->SetText(m_wimPath.c_str());
-                SetStatus(Tr(L"备份保存至：") + m_wimPath);
+                m_backupPath = path;
+                SetImagePathEdit(m_backupPath);
+                SetStatus(Tr(L"备份保存至：") + m_backupPath);
             }
             pItem->Release();
         }
@@ -1287,8 +1606,7 @@ void CMainForm::OnSearchImages() {
     }
     const std::wstring best = m_searchHits[0];
     m_wimPath = best;
-    CControlUI* pEdit = m_PaintManager.FindControl(_T("ImagePath"));
-    if (pEdit) pEdit->SetText(best.c_str());  // 同步原生 EDIT → EN_CHANGE 闭环
+    SetImagePathEdit(best);  // 同步原生 EDIT → EN_CHANGE 闭环
     wchar_t buf[512];
     // MinGW %d=int ✓（路径等宽串在 swprintf 外拼接，避 PIT-007 的 %ls 坑）
     swprintf(buf, 512, Tr(L"找到 %d 个镜像文件，已填入最新："),
@@ -1360,17 +1678,16 @@ void CMainForm::HandleDroppedFiles(WPARAM wParam) {
         SetStatus(Tr(L"只支持拖入 .esd / .wim 镜像文件"));
         return;
     }
-    m_wimPath = dropped;
-    CEditUI* pEdit =
-        static_cast<CEditUI*>(m_PaintManager.FindControl(_T("ImagePath")));
-    if (pEdit) pEdit->SetText(m_wimPath.c_str());
+    std::wstring& active = ActivePath();
+    active = dropped;
+    SetImagePathEdit(active);
     if (m_backupMode) {
-        SetStatus(Tr(L"备份保存至：") + m_wimPath);
+        SetStatus(Tr(L"备份保存至：") + active);
         SyncFormatFromPath();  // 拖进来的 .wim/.esd 同样决定格式
         UpdateMainAction();
     } else {
-        LoadWimImages(m_wimPath);  // 内部设 m_imageOk 并刷新主按钮
-        SetStatus(Tr(L"已载入镜像：") + m_wimPath);
+        LoadWimImages(active);  // 内部会置 m_imageOk 并刷新主按钮
+        SetStatus(Tr(L"已载入镜像：") + active);
     }
 }
 
@@ -1438,7 +1755,7 @@ int CMainForm::BackupFmt() const {
 // 只在**路径变化**时同步 —— 手动换格式不会改路径，所以不会被反复顶回去。
 void CMainForm::SyncFormatFromPath() {
     if (!m_backupMode) return;
-    std::wstring p = m_wimPath;
+    std::wstring p = m_backupPath;
     while (!p.empty() && (p.back() == L' ' || p.back() == L'"' || p.back() == L'\''))
         p.pop_back();
     size_t slash = p.find_last_of(L"\\/");
@@ -1458,20 +1775,18 @@ void CMainForm::SyncFormatFromPath() {
 // 例：`D:\x\20260921Win10备份.esd` 选「wim(中)」→ `...备份.wim`。
 // 与 SyncFormatFromPath 互为反向：那个是「后缀→下拉」，这个是「下拉→后缀」。
 void CMainForm::SyncPathExtFromFormat() {
-    if (!m_backupMode || m_wimPath.empty()) return;
+    if (!m_backupMode || m_backupPath.empty()) return;
     const wchar_t* wantExt = (BackupFmt() == 0) ? L".esd" : L".wim";
-    std::wstring p = m_wimPath;
+    std::wstring p = m_backupPath;
     size_t slash = p.find_last_of(L"\\/");
     size_t base = (slash == std::wstring::npos) ? 0 : slash + 1;
     size_t dot = p.find_last_of(L'.');
     std::wstring np = (dot != std::wstring::npos && dot > base)
                           ? p.substr(0, dot) + wantExt   // 换掉旧后缀
                           : p + wantExt;                 // 本来就没后缀
-    if (np == m_wimPath) return;
-    m_wimPath = np;
-    CEditUI* pEdit =
-        static_cast<CEditUI*>(m_PaintManager.FindControl(_T("ImagePath")));
-    if (pEdit) pEdit->SetText(m_wimPath.c_str());  // 同步原生 EDIT（EN_CHANGE 闭环）
+    if (np == m_backupPath) return;
+    m_backupPath = np;
+    SetImagePathEdit(m_backupPath);
 }
 
 // 「限制CPU」下拉 → 上限百分比（下标 0/1/2/3 = 不限/25/50/75，见 skin/main.xml）。
@@ -1508,6 +1823,7 @@ void CMainForm::StartRestore() {
         SetStatus(Tr(L"请选择目标分区")); return;
     }
     const PartitionInfo& part = m_parts[m_selPart];
+    const bool universal = IsUniversalChecked();
     // BitLocker 提醒（用户规格 2026-09-23）：**只要系统里有加密卷**就提醒。
     if (!AskBitLockerWarning(sysrecover::BitLockerVolumes()))
         return;
@@ -1545,24 +1861,82 @@ void CMainForm::StartRestore() {
                         "read-only)");
             }
         }
-        wchar_t confirm[640];
+        wchar_t confirm[1200];
+        // 2026-10-20：启动方式与目标盘风格不一致时，在确认框里追加一行提示
+        // （只提示、不阻止 —— 用户明确要求保留选择权；具体文案见下）。
+        std::wstring bootNote;
+        {
+            const bool sessionUefi = sysrecover::IsUefiBootSession();
+            const bool targetGpt =
+                m_selPart >= 0 && m_selPart < (int)m_partStyles.size() &&
+                m_partStyles[m_selPart] == sysrecover::PartitionStyle::GPT;
+            if (!sessionUefi && targetGpt)
+                bootNote = Tr(L"当前恢复环境以 Legacy 方式启动、目标盘为 GPT："
+                              L"还原后请在 BIOS 中改为 UEFI 启动；若启动菜单里没有 "
+                              L"Windows，用「修复引导」。");
+            else if (sessionUefi && !targetGpt)
+                bootNote = Tr(L"当前恢复环境以 UEFI 方式启动、目标盘为 MBR："
+                              L"还原后请在 BIOS 中改为 Legacy/CSM 启动。");
+        }
         // 2026-10-14 用户规格：确认框三选 —— 取消 / 还原后重启 / 重启后还原。
         // 还原后重启 = A 引擎（Windows 解压 + Linux 交换），可返回旧系统；
         // 重启后还原 = B 引擎（Linux 直写），C 盘内容全丢。
         // 文案按用户给定原文（Ask3 恰好 3 行）；盘符/分区号沿用现有格式化惯例。
         if (needReboot) {
-            swprintf(confirm, 640,
+            // 2026-10-19（1019 案 W3）：第 4 行前移特殊镜像提示 —— 含 EFS 加密
+            // 文件/特殊重解析点的镜像走「重启后还原」会被暂存预检拒绝（W1/W2），
+            // 在选择时刻就告诉用户该选哪个（CConfirmDlg 已扩到 4 行）。
+            // 2026-10-20（用户规格）：空间不足时，开始前就显示「需要/可用」，
+            // 并把「还原后重启」按钮变成红色「空间不足」且不可点；空间够则
+            // 与以前完全一样（不追加提示）。默认回车落在「取消」（安全项）。
+            sysrecover::SwapSpaceEstimate se{};
+            bool spaceShort = false;
+            if (sysrecover::QuerySwapSpace(m_wimPath, m_selImageIndex, part,
+                                           se) &&
+                se.freeBytes > 0 && !se.enough) {
+                spaceShort = true;
+                LogWarn("A-engine space short: need=" +
+                        std::to_string(se.required) + " free=" +
+                        std::to_string(se.freeBytes) +
+                        " (mid button disabled)");
+            }
+            swprintf(confirm, 1200,
                      Tr(L"即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n"
                         L"还原后重启，是解压镜像后重启修复引导，可以恢复到现在状态\n"
-                        L"重启后还原，是重启格式化%ls: 盘后还原镜像，无法恢复现在状态"),
+                        L"重启后还原，是重启格式化%ls: 盘后还原镜像，无法恢复现在状态\n"
+                        L"含 EFS 加密文件或特殊重解析点的镜像，请选「还原后重启」"),
                      part.letter.empty() ? L"?" : part.letter.c_str(),
                      part.diskIndex, part.partNumber,
                      part.letter.empty() ? L"?" : part.letter.c_str());
-            int r = CConfirmDlg::Ask3(m_hWnd, Tr(L"确认还原"), confirm,
-                                      Tr(L"取消"), Tr(L"还原后重启"),
-                                      Tr(L"重启后还原"),
-                                      /*defaultIdx=*/1);  // 回车=还原后重启（推荐）；ESC=取消
+            if (spaceShort) {
+                wchar_t sp[192];
+                swprintf(sp, 192,
+                         Tr(L"A 引擎需要约 %.1f GB 可用空间，当前 %.1f GB"
+                            "（已禁用）"),
+                         se.required / 1073741824.0,
+                         se.freeBytes / 1073741824.0);
+                wcscat(confirm, L"\n");
+                wcscat(confirm, sp);
+            }
+            if (!bootNote.empty()) {
+                wcscat(confirm, L"\n");
+                wcscat(confirm, bootNote.c_str());
+            }
+            int r = CConfirmDlg::Ask3(
+                m_hWnd, Tr(L"确认还原"), confirm, Tr(L"取消"),
+                spaceShort ? Tr(L"空间不足") : Tr(L"还原后重启"),
+                Tr(L"重启后还原"), /*defaultIdx=*/spaceShort ? 0 : 1,
+                /*midDisabled=*/spaceShort);  // 回车=还原后重启（推荐）；ESC=取消
             if (r == 0) return;  // 取消
+            if (r == 2 && universal) {
+                // 异机还原需要 Windows 侧 DISM；B 引擎（Linux apply）做不到。
+                MessageBoxW(m_hWnd,
+                            Tr(L"异机还原仅支持「还原后重启」（A 引擎），"
+                               L"或在 PE 中使用就地还原；\n"
+                               L"「重启后还原」在 Linux 救援层执行，无法注入启动驱动。"),
+                            Tr(L"异机还原"), MB_OK | MB_ICONWARNING);
+                return;
+            }
             if (r == 1) {        // 还原后重启：A 引擎 swap + keepOld
                 m_restoreEngine  = "swap";
                 m_restoreKeepOld = true;
@@ -1571,12 +1945,16 @@ void CMainForm::StartRestore() {
                 m_restoreKeepOld = false;
             }
         } else {
-            swprintf(confirm, 640,
+            swprintf(confirm, 1200,
                      Tr(L"即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n"
                         L"该分区上的所有数据将丢失！%ls\n"
                         L"目标分区当前未被占用，将立即就地还原，不需要重启。"),
                      part.letter.empty() ? L"?" : part.letter.c_str(),
                      part.diskIndex, part.partNumber, logNote.c_str());
+            if (!bootNote.empty()) {
+                wcscat(confirm, L"\n");
+                wcscat(confirm, bootNote.c_str());
+            }
             if (CConfirmDlg::Ask2(m_hWnd, Tr(L"确认还原"), confirm, Tr(L"取消"),
                                   Tr(L"开始还原"), /*defaultIsRight=*/true,
                                   Tr(L"丢失！")) != 1)
@@ -1620,6 +1998,19 @@ void CMainForm::StartRestoreAsync() {
     req.repairBoot = true;
     req.engine = m_restoreEngine;       // "swap"=还原后重启 / "block"=重启后还原
     req.keepOld = m_restoreKeepOld;     // swap 时 true=保留 ~old 可返回；block 恒 false
+    req.universal = IsUniversalChecked();  // 异机还原（2026-10-21）
+    if (req.universal) {
+        // 只认程序目录下的 Drivers\（用户放驱动包的位置）；没有 .inf 就仅内置。
+        std::wstring drivers = ExeDir() + L"\\Drivers";
+        int n = 0;
+        std::wstring uerr;
+        if (GetFileAttributesW(drivers.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            if (sysrecover::ValidateDriverFolder(drivers, &n, uerr))
+                req.driverDir = drivers;
+            else
+                LogWarn("universal: Drivers folder ignored (" + W2U(uerr) + ")");
+        }
+    }
     std::string err;
     bool needReboot = true;
     // 进度：把 ops 层 apply 的进度转投到界面 —— 用户 2026-09-23 反馈"还原时进度条
@@ -1655,7 +2046,7 @@ void CMainForm::StartBackup() {
     int fmt = BackupFmt();
     const char* compress = fmt == 0 ? "recovery" : (fmt == 1 ? "maximum" : "fast");
     // 目标路径
-    std::wstring dest = m_wimPath;
+    std::wstring dest = m_backupPath;
     if (dest.empty()) {
         std::wstring dataDrive = FindDataDrive();
         if (dataDrive.empty()) {
@@ -1670,6 +2061,8 @@ void CMainForm::StartBackup() {
                (fmt == 0 ? L".esd" : L".wim");
     }
     // 「ESP」勾选（备份专属）：只读状态，起线程前定格到 m_workerEsp
+    m_backupPath = dest;
+    SetImagePathEdit(m_backupPath);
     bool esp = IsEspChecked();
     if (GetFileAttributesW(dest.c_str()) != INVALID_FILE_ATTRIBUTES) {
         std::wstring msg = Tr(L"目标镜像文件已存在，覆盖？");
@@ -1750,6 +2143,42 @@ void CMainForm::StartBackupAsync() {
 
 // ────────────────── 模式切换 / 可用态 ──────────────────
 
+void CMainForm::SetImagePathEdit(const std::wstring& p) {
+    CControlUI* pEdit = m_PaintManager.FindControl(_T("ImagePath"));
+    if (pEdit) pEdit->SetText(p.c_str());
+}
+
+void CMainForm::SetBusyControls(bool busy) {
+    auto enable = [this, busy](const TCHAR* name, bool keep) {
+        CControlUI* p = m_PaintManager.FindControl(name);
+        if (p) p->SetEnabled(!busy || keep);
+    };
+    enable(_T("Silent"), true);
+    enable(_T("CpuCapBox"), true);
+    enable(_T("BrowseBtn"), false);
+    enable(_T("SearchBtn"), false);
+    enable(_T("ImagePath"), false);
+    enable(_T("ImageIndexBox"), false);
+    enable(_T("NoteInput"), false);
+    enable(_T("PartitionBox"), false);
+    enable(_T("FormatBox"), false);
+    enable(_T("ModeRestore"), false);
+    enable(_T("ModeBackup"), false);
+    enable(_T("RepairBootBtn"), false);
+    enable(_T("FixBootBtn"), false);
+    enable(_T("LogBtn"), false);
+    enable(_T("BootMenuBtn"), false);
+    enable(_T("EspChk"), false);
+    enable(_T("Universal"), false);
+    enable(_T("SiteLink"), false);
+    enable(_T("MainAction"), false);
+    CControlUI* pEdit = m_PaintManager.FindControl(_T("ImagePath"));
+    if (pEdit) {
+        HWND h = static_cast<CSkinEditUI*>(pEdit)->GetNativeEditHWND();
+        if (h) ::EnableWindow(h, busy ? FALSE : TRUE);
+    }
+}
+
 void CMainForm::ApplyModeUi() {
     auto Vis = [this](const TCHAR* name, bool vis) {
         CControlUI* p = m_PaintManager.FindControl(name);
@@ -1810,7 +2239,9 @@ void CMainForm::ApplyModeUi() {
         // 备份模式不给「清除引导项」（那是还原/清理用的，用户 2026-09-28 规格），
         // 空出来的位置换成「限制CPU」下拉（见上方 Vis(CpuCapBox)）；还原模式反过来。
         Vis(_T("RepairBootBtn"),false);
-        Vis(_T("BootMenuBtn"),  true);
+        Vis(_T("FixBootBtn"),   false);  // 「修复引导」是还原模式专属（2026-10-20）
+        Vis(_T("Universal"), false);  // 「异机还原」是还原模式专属（2026-10-21）
+        Vis(_T("BootMenuBtn"),  false);
         Vis(_T("LogBtn"),       false);  // 「日志」按钮是还原模式专属（用户 2026-10-03 规格）
         Text(_T("PartTitle"),   Tr(L"备份源分区"));
         Text(_T("PartHint"),    Tr(L"选择要备份为镜像的源分区（移动盘已隐藏）"));
@@ -1819,7 +2250,7 @@ void CMainForm::ApplyModeUi() {
         //   （与「搜索」按钮同位置同尺寸 639,77,710,115），ESP 勾选换到第三步原
         //   「格式：」处（388,296,510,329）。第三步右侧一组：
         //   静默 248..340 / ESP 388..510 / CPU 下拉 530..612 / 菜单 618..706
-        Pos(_T("Silent"),        248, 302, 340, 326);
+        Pos(_T("Silent"),        248, 302, 330, 326);
         Pos(_T("FormatBox"),     639, 77, 710, 115);   // 第一步：类型下拉
         Pos(_T("EspChk"),        388, 296, 510, 329);  // 第三步：ESP 勾选
         // 注：状态栏在空闲时显示**当前模式说明**（见本函数末尾），任务执行中
@@ -1837,15 +2268,22 @@ void CMainForm::ApplyModeUi() {
         Vis(_T("FormatBox"),    false);
         Vis(_T("CpuCapBox"),    false);
         Vis(_T("RepairBootBtn"),true);
+        Vis(_T("FixBootBtn"),   true);
+        Vis(_T("Universal"), true);
         Vis(_T("BootMenuBtn"),  true);
         Vis(_T("LogBtn"),       true);
         Text(_T("PartTitle"),   Tr(L"系统安装位置"));
         Text(_T("PartHint"),    Tr(L"选择要安装恢复镜像的目标分区（移动盘已隐藏）"));
-        // 还原模式几何（切回时必须复位第三步右侧那几个）。2026-10-03 用户规格：
-        // 「日志」按钮插在 静默模式 与 清除引导 之间 → 整组左移给按钮腾位：
-        //   静默 360..460 / 日志 466..524 / 清除引导 530..612 / 菜单 618..706。
-        Pos(_T("Silent"),        360, 302, 460, 326);
-        Pos(_T("LogBtn"),        466, 296, 524, 329);
+        // 还原模式几何（切回时必须复位第三步右侧那几个）。2026-10-20 用户规格：
+        // 「修复引导」插在 静默模式 之后、「日志」「清除引导」之前：
+        //   静默 250..350 / 修复 356..438 / 日志 444..502 / 清除 508..590 /
+        //   菜单 596..684。
+        Pos(_T("Silent"),        248, 302, 330, 326);
+        Pos(_T("Universal"),     336, 302, 398, 326);
+        Pos(_T("FixBootBtn"),    467, 296, 537, 329);
+        Pos(_T("LogBtn"),        420, 296, 465, 329);
+        Pos(_T("RepairBootBtn"), 625, 296, 709, 329);
+        Pos(_T("BootMenuBtn"),   539, 296, 623, 329);
         Pos(_T("FormatLabel"),   350, 302, 388, 326);
         Pos(_T("FormatBox"),     388, 296, 510, 329);
     }
@@ -1857,18 +2295,21 @@ void CMainForm::ApplyModeUi() {
     //     —— 没有定时器、没有“谁优先”，正好是规格里“切换即替换”的语义。
     // 放在 UpdateMainAction() **之后**：那里面在按钮不可用时会写
     // 「请先选择镜像文件」之类的提示，会把说明行冲掉。
+    SetImagePathEdit(ActivePath());
     SetStatus(Tr(m_backupMode
                      ? L"把当前系统热备份为镜像文件（VSS 快照，可在运行中备份）"
                      : L"选择镜像与目标分区后开始；还原系统盘会重启进恢复环境，非系统盘就地还原"));
 }
 
 void CMainForm::UpdateMainAction() {
+    SetBusyControls(m_busy);
     CButtonUI* p =
         static_cast<CButtonUI*>(m_PaintManager.FindControl(_T("MainAction")));
     if (!p) return;
-    // 备份模式同样要求「已选保存位置 + 已选源分区」才转蓝；还原模式还要求
-    // 镜像确实可读（m_imageOk），否则主按钮保持灰色（避免用坏镜像去还原）。
-    bool ok = !m_wimPath.empty() && m_selPart >= 0 && !m_busy &&
+    // 还原模式同样需要先选好分区；备份模式还要选源分区，主按钮才转蓝；
+    // 还原模式要求 m_imageOk，否则按钮保持灰色（避免用户拿不可读的镜像去还原）。
+    std::wstring& active = ActivePath();
+    bool ok = !active.empty() && m_selPart >= 0 && !m_busy &&
               (m_backupMode || m_imageOk);
     p->SetEnabled(ok);
     // 经典 Duilib 的 CButtonUI 没有状态图时 DoPaint 继承自 CControlUI，
@@ -1880,7 +2321,7 @@ void CMainForm::UpdateMainAction() {
     // 按钮为什么是灰的？在状态栏说清楚（用户 2026-09-23：手输路径后按钮不亮，
     // 完全无从判断缺哪一步）。只在空闲且确实不可用时提示，避免覆盖任务中的状态。
     if (!ok && !m_busy) {
-        if (m_wimPath.empty())
+        if (active.empty())
             SetStatus(m_backupMode ? Tr(L"请先选择保存位置") : Tr(L"请先选择镜像文件"));
         else if (m_selPart < 0)
             SetStatus(m_backupMode ? Tr(L"请选择第二步的源分区")
@@ -1913,15 +2354,21 @@ void CMainForm::SyncImagePathFromUi() {
     }
     if (p.empty())
         p = pEdit->GetText().GetData();
-    if (p == m_wimPath)
+    std::wstring& active = ActivePath();
+    if (p.empty() && !hNative) {
+        if (!active.empty() && pEdit->GetText().IsEmpty())
+            SetImagePathEdit(active);
         return;
-    m_wimPath = p;
-    if (!m_backupMode && !m_wimPath.empty() && m_wimPath != m_lastLoadedWim &&
-        ImagePathReady(m_wimPath)) {
-        m_lastLoadedWim = m_wimPath;
-        LoadWimImages(m_wimPath);
     }
-    SyncFormatFromPath();  // 备份：路径带 .wim/.esd → 自动定格式
+    if (p == active)
+        return;
+    active = p;
+    if (!m_backupMode && !active.empty() && active != m_lastLoadedWim &&
+        ImagePathReady(active)) {
+        m_lastLoadedWim = active;
+        LoadWimImages(active);
+    }
+    SyncFormatFromPath();  // 备份：路径带 .wim/.esd 时自动定格
     UpdateMainAction();
 }
 

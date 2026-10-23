@@ -3,6 +3,7 @@
 #include "ops.h"
 #include "shortcut.h"
 #include "swapleft.h"
+#include "universal.h"
 
 #include <windows.h>
 
@@ -155,19 +156,81 @@ PartitionStyle DiskStyleOf(uint32_t diskIndex) {
     return PartitionStyle::Unknown;
 }
 
-// 取一个**可用的 ESP 根**（形如 "X:\\"）。顺序（docs/15 · P4）：
+// ②b：目标盘 ESP **无盘符**时按**卷 GUID** 直接挂（GPT 下卷 GUID = 分区 GUID，
+// 由 GuidToString 给出、已去花括号小写；mountvol 只认 `\\?\Volume{...}` 格式，
+// GUID 解析大小写不敏感，这里仍转大写求稳）。多盘机「还原到非固件盘」时 ①（固件
+// ESP 在别的盘）被盘号校验拒掉、③ 又要求有盘符 —— 没有 ②b 就只能硬失败。
+bool MountEspByGuid(const std::wstring& partGuid, std::wstring& root,
+                    std::string& log) {
+    if (partGuid.empty())
+        return false;
+    std::wstring g = partGuid;
+    for (auto& ch : g)
+        ch = (wchar_t)towupper(ch);
+    DWORD mask = GetLogicalDrives();
+    for (wchar_t c = L'S'; c <= L'Z'; ++c) {
+        if (mask & (1u << (c - L'A')))
+            continue;
+        std::string out;
+        std::wstring args =
+            std::wstring(1, c) + L": \\\\?\\Volume{" + g + L"}";
+        if (RunProcess(SysToolPath(L"mountvol.exe"), args, out) != 0)
+            continue;
+        std::wstring r = std::wstring(1, c) + L":\\";
+        if (GetFileAttributesW(r.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            std::string o2;  // 挂上了却看不到内容 → 撤掉换下一个空闲符
+            RunProcess(SysToolPath(L"mountvol.exe"),
+                       std::wstring(1, c) + L": /d", o2);
+            continue;
+        }
+        root = r;
+        log += "ESP mounted by volume GUID at ";
+        log += (char)c;
+        log += ":\\\n";
+        return true;
+    }
+    return false;
+}
+
+// 取一个**可用的 ESP 根**（形如 "X:\\"）。顺序（docs/15 · P4 + Q2 盘号限定，
+// 2026-10-18）：
 //   ① `mountvol <空闲盘符>: /s` —— 固件**真正启动**的那个分区。关键点：它按固件
 //      启动项找，**不依赖分区类型 GUID**，所以 DiskGenius 把 ESP 标成 Basic Data
-//      时它照样挂得上；
-//   ② 类型 GUID 匹配到的分区若**已有盘符**，直接用（mountvol 失败时的兜底）；
-//   ③ 回退：FAT 分区且根下有 \EFI\Microsoft\Boot\bootmgfw.efi（故障 B 的正解）。
+//      时它照样挂得上。**Q2：targetDisk>=0 时挂完校验盘号**（VolumeDiskIndex =
+//      IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS）—— 多盘机固件 ESP 可能在别的盘，
+//      往那儿写引导 = 写错盘；**证实**在别的盘 → UnmountEsp + 清空 espRoot 续查
+//      ②③（UnmountEsp 是 const 引用、不清字符串，必须手动 clear）；盘号取不到
+//      （-1）→ 保留挂载 + WARN（fail-open：ioctl 失败极罕见，不能因它把合法还原
+//      卡死）。
+//   ② 目标盘上类型 GUID 认对的 ESP：**有盘符**直接用（mountvol 失败时的兜底）；
+//      **无盘符** → ②b 按卷 GUID 挂载（见上）。
+//   ③ 回退：目标盘 FAT 分区且根下有 \EFI\Microsoft\Boot\bootmgfw.efi（故障 B 的正解）。
+// targetDisk>=0 且三路都失败 → false（**绝不回退到错盘**）；-1 = 不限盘
+// （备份本机 ESP 等，行为与 Q2 之前完全一致）。
 // guidMatched=true 表示"GPT 类型 GUID 也认对了"（正常机器；false 时调用方只记警告）。
-bool AcquireEspRoot(std::wstring& espRoot, bool& guidMatched, std::string& log) {
+bool AcquireEspRoot(std::wstring& espRoot, bool& guidMatched, std::string& log,
+                    int targetDisk = -1) {
     PartitionInfo esp;
-    guidMatched = FindEspPartition(esp);
+    guidMatched = FindEspPartition(esp, targetDisk);
+    // ① 固件 ESP（mountvol /s）+ 盘号校验
     espRoot = MountEsp(log);
-    if (!espRoot.empty())
-        return true;
+    if (!espRoot.empty()) {
+        if (targetDisk >= 0) {
+            int d = VolumeDiskIndex(espRoot[0]);
+            if (d >= 0 && d != targetDisk) {
+                log += "mounted ESP is on disk " + std::to_string(d) +
+                       " but target is disk " + std::to_string(targetDisk) +
+                       "; unmount, look on target disk\n";
+                UnmountEsp(espRoot, log);
+                espRoot.clear();
+            } else if (d < 0) {
+                log += "WARN: cannot verify mounted ESP disk index; keeping it\n";
+            }
+        }
+        if (!espRoot.empty())
+            return true;
+    }
+    // ② 目标盘 GUID ESP：有盘符
     if (guidMatched && !esp.letter.empty()) {
         std::wstring root = esp.letter + L":\\";
         if (GetFileAttributesW(root.c_str()) != INVALID_FILE_ATTRIBUTES) {
@@ -176,8 +239,13 @@ bool AcquireEspRoot(std::wstring& espRoot, bool& guidMatched, std::string& log) 
             return true;
         }
     }
+    // ②b 目标盘 GUID ESP：无盘符 → 按卷 GUID 挂
+    if (guidMatched && esp.letter.empty() &&
+        MountEspByGuid(esp.guid, espRoot, log))
+        return true;
+    // ③ 回退（仍限定目标盘）
     PartitionInfo fb;
-    if (FindEspPartitionFallback(fb) && !fb.letter.empty()) {
+    if (FindEspPartitionFallback(fb, targetDisk) && !fb.letter.empty()) {
         espRoot = fb.letter + L":\\";
         log += "ESP via fallback (FAT partition with \\EFI boot files)\n";
         return true;
@@ -211,7 +279,7 @@ bool BiosBcdLooksValid(wchar_t letter, std::string& detail) {
 // 就地还原：快速格式化 → wimlib 目录模式应用（PIT-008）→ 镜像带 ESP 子镜像
 // 就恢复 ESP → 系统镜像才 bcdboot 修引导。**全程不重启**。
 int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
-                     const std::wstring& imagePath, int espIndex,
+                     const std::wstring& imagePath, int espIndex, int eaIndex,
                      std::string& err, ProgressFn progress) {
     std::wstring letter(1, target.letter[0]);
     LogInfo("in-place restore -> " + W2U(letter) + ": (" + W2U(imagePath) +
@@ -251,6 +319,19 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
         ProgressDone("restore", "failed");
         return 1;
     }
+    // 异机还原（2026-10-21）：Windows 侧 apply 完、修引导之前注入启动驱动。
+    if (req.universal) {
+        std::string ulog;
+        std::wstring uerr;
+        if (!PrepareUniversal(letter + L":", req.driverDir, ulog, uerr)) {
+            err = Tr("就地还原已完成，但异机还原准备失败：") + W2U(uerr);
+            LogError(err);
+            LogError("universal log:\n" + ulog);
+            ProgressDone("restore", "failed");
+            return 1;
+        }
+        LogInfo("universal: in-place prepared\n" + ulog);
+    }
     // 2.5) ESP 子镜像恢复（方案 C · 就地还原侧；2026-09-30 用户规格：
     //      "还原时根据其备份的ESP分区自动还原ESP"）。与救援层同款语义：
     //      镜像里带 ESP 子镜像（备份时勾了 --esp，任务 esp_index>0）且本机
@@ -263,7 +344,7 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
         std::wstring espRoot;
         bool guidMatched = false;
         std::string blog;
-        if (AcquireEspRoot(espRoot, guidMatched, blog)) {
+        if (AcquireEspRoot(espRoot, guidMatched, blog, (int)target.diskIndex)) {
             int erc = wim.Apply(imagePath, espIndex, espRoot, ProgressFn{});
             LogInfo("esp subimage apply (in-place) idx=" +
                     std::to_string(espIndex) + " -> " + W2U(espRoot) +
@@ -278,6 +359,63 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
                     ") but no ESP partition found (skip)");
         }
     }
+    // 2.6) ZJEA 修复子镜像（PIT-122 / PIT-136；1019 案 F4 补上**就地还原侧**）：
+    //      Windows 侧 apply 原生保 EA（PIT-120），但"被排除的非微软重解析点
+    //      文件"（PIT-135）与整体 EA 修复数据都在 ZJEA 子镜像里 —— 就地还原
+    //      原先完全没走这条链。语义与救援层一致：解出 eapack/reppack 当场
+    //      写回（本进程在正常 Windows / PE，Windows API 直接可用，无需补写器
+    //      与 GPO 钩子）；失败**非致命**（主系统已还原不动摇，只记日志）。
+    //      顺序：先 reppack（重建被排除的文件）再 eapack（其 EA 才找得到文件）。
+    if (eaIndex > 0) {
+        std::wstring tmp;
+        {
+            wchar_t buf[MAX_PATH + 1] = {};
+            DWORD n = GetTempPathW(MAX_PATH, buf);
+            tmp.assign(buf, n);
+        }
+        while (!tmp.empty() && (tmp.back() == L'\\' || tmp.back() == L'/'))
+            tmp.pop_back();
+        wchar_t suffix[80] = {};
+        swprintf(suffix, 80, L"\\SysRecoverEA-%lu-%llu",
+                 (unsigned long)GetCurrentProcessId(),
+                 (unsigned long long)GetTickCount64());
+        tmp += suffix;
+        if (CreateDirectoryW(tmp.c_str(), nullptr)) {
+            // \* = 子镜像根全部条目（eapack.dat / reppack.dat / 补写器 / 策略
+            // 片段；后两者就地路径用不到，解出来无妨）。
+            int xrc = wim.ExtractPaths(imagePath, eaIndex, {L"\\*"}, tmp);
+            if (xrc != 0) {
+                LogWarn("EA fix pack (ZJEA) extract failed rc=" +
+                        std::to_string(xrc) + " (in-place restore continues)");
+            } else {
+                std::wstring root = letter + L":";
+                auto log = [](const std::string& s) {
+                    LogInfo("ea-apply: " + s);
+                };
+                std::wstring repPack = tmp + L"\\reppack.dat";
+                if (GetFileAttributesW(repPack.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                    unsigned long long rok = 0, rbad = 0;
+                    int rrc = ea::ApplyRepack(repPack, root, &rok, &rbad, log);
+                    LogInfo("reppack (in-place): rc=" + std::to_string(rrc) +
+                            " ok=" + std::to_string(rok) +
+                            " failed=" + std::to_string(rbad));
+                }
+                std::wstring eaPack = tmp + L"\\eapack.dat";
+                if (GetFileAttributesW(eaPack.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                    ea::ApplyStats st;
+                    int prc = ea::ApplyPack(eaPack, root, st, log);
+                    LogInfo("eapack (in-place): rc=" + std::to_string(prc) +
+                            " ok=" + std::to_string(st.ok) +
+                            " missing=" + std::to_string(st.missing) +
+                            " failed=" + std::to_string(st.failed));
+                }
+            }
+            DeleteTreeRec(tmp);
+        } else {
+            LogWarn("EA fix temp dir create failed; skipped (in-place restore "
+                    "continues)");
+        }
+    }
     // 3) 只有系统镜像才修引导（看目标里有没有 winload.exe）
     if (req.repairBoot) {
         std::wstring winDir = letter + L":\\Windows";
@@ -290,7 +428,8 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
                 bool guidMatched = false;
                 std::string blog;
                 std::string detail;
-                if (!AcquireEspRoot(espRoot, guidMatched, blog)) {
+                if (!AcquireEspRoot(espRoot, guidMatched, blog,
+                                     (int)target.diskIndex)) {
                     err = Tr("就地还原已完成，但找不到可用的 ESP 引导分区，无法修复引导：\n") +
                           W2U(DescribePartitions());
                     LogError(err);
@@ -557,6 +696,137 @@ int CheckRestoreSpace(const std::wstring& imagePath, int index,
     return 0;
 }
 
+// ── Q1「先落盘后搬家」（用户 2026-10-18）────────────────────────────────────
+// 还原确认后、写契约/格式化之前调用：程序家目录所在物理盘 == 目标盘时，
+// 静默整包复制到安全分区 + 日志跟过去（不 re-exec：当前进程照旧跑完本次操作，
+// 副本供还原后的下次使用）。触发范围仅还原/返回旧系统；备份不搬。
+// 静态变量：同一进程内只判一次（RetryStagedRestore 再次调用时直接返回上次结果）。
+namespace {
+SettleResult g_settleResult;
+}
+
+SettleResult SettleHome(int targetDiskIndex, int exeDiskIndex) {
+    if (g_settleResult.checked)
+        return g_settleResult;
+
+    g_settleResult.checked = true;
+
+    // 程序目录不在固定盘（PE 的 X:\ RAM 盘 / 光盘）→ 无需搬迁
+    std::wstring exeDir = ExeDir();
+    if (exeDir.empty() || exeDir.size() < 2 || exeDir[1] != L':') {
+        g_settleResult.detail = "exe dir not on a fixed drive -> no settle";
+        return g_settleResult;
+    }
+    wchar_t exeLetter = (wchar_t)towupper(exeDir[0]);
+
+    // 取不到程序目录盘号 → 不搬（fail-open，不阻断还原）
+    if (exeDiskIndex < 0) {
+        g_settleResult.detail = "cannot resolve exe disk index -> no settle";
+        return g_settleResult;
+    }
+
+    // 程序目录不在目标盘 → 无需搬迁
+    if (targetDiskIndex < 0 || exeDiskIndex != targetDiskIndex) {
+        g_settleResult.detail = "exe dir not on target disk -> no settle";
+        return g_settleResult;
+    }
+
+    // 程序目录在目标盘上 → 找安全分区（排除目标盘 + 系统盘优先非系统）
+    DWORD mask = GetLogicalDrives();
+    std::vector<wchar_t> candidates;
+    wchar_t winDir[MAX_PATH] = {};
+    GetWindowsDirectoryW(winDir, MAX_PATH);
+    wchar_t sysLetter = winDir[0];
+    // 构建候选列表：所有可写固定盘，排除目标盘符
+    std::vector<std::wstring> probeDirs;  // 记录探针建的目录，选完后清理未选中的
+    for (wchar_t c = L'A'; c <= L'Z'; ++c) {
+        if (!(mask & (1u << (c - L'A'))))
+            continue;
+        if (c == exeLetter)  // 目标盘（= 程序当前所在盘）
+            continue;
+        wchar_t root[4] = {c, L':', L'\\', 0};
+        if (GetDriveTypeW(root) != DRIVE_FIXED)
+            continue;
+        // 快速可写探针
+        std::wstring probeDir = std::wstring(root) + L"ZJRESTORE";
+        CreateDirectoryW(probeDir.c_str(), nullptr);
+        probeDirs.push_back(probeDir);
+        wchar_t probeFile[260];
+        swprintf(probeFile, 260, L"%s\\.zj-probe.tmp", probeDir.c_str());
+        HANDLE ph = CreateFileW(probeFile, GENERIC_WRITE, 0, nullptr,
+                                CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY |
+                                                    FILE_FLAG_DELETE_ON_CLOSE,
+                                nullptr);
+        if (ph != INVALID_HANDLE_VALUE) {
+            CloseHandle(ph);
+            candidates.push_back(c);
+        }
+    }
+
+    wchar_t chosen = SelectRelocateDrive(candidates, sysLetter, exeLetter);
+
+    // 清理未选中候选盘上的空探针目录（避免在无关盘上留 ZJRESTORE 残迹）
+    for (const auto& pd : probeDirs) {
+        wchar_t pdLetter = pd[0];
+        if (chosen != 0 && pdLetter == chosen)
+            continue;  // 选中的保留（后续还要用它放整包）
+        RemoveDirectoryW(pd.c_str());  // 只删空目录；有内容时静默失败
+    }
+    if (chosen == 0) {
+        g_settleResult.noSafeDrive = true;
+        g_settleResult.detail = "on target disk but no safe drive found";
+        LogWarn("settle: on target disk but no safe drive found (exe dir will "
+                "be lost with target)");
+        return g_settleResult;
+    }
+
+    // 复制整包 + 日志 到 <chosen>:\ZJRESTORE\（注意行尾不能有 \，会吞下一行）
+    std::wstring destRoot = std::wstring(1, chosen) + L":\\" + kRecoveryDir;
+    CreateDirectoryW(destRoot.c_str(), nullptr);
+
+    // 空间检查：整包大小 + 300MB 余量
+    unsigned long long needBytes = AppTreeSize() + (300ull << 20);
+    ULARGE_INTEGER avail = {};
+    std::wstring availPath = std::wstring(1, chosen) + L":\\";
+    if (GetDiskFreeSpaceExW(availPath.c_str(), &avail, nullptr, nullptr) &&
+        avail.QuadPart < needBytes) {
+        g_settleResult.noSafeDrive = true;
+        char buf[160];
+        snprintf(buf, sizeof(buf),
+                 "settle: not enough space on %c: need=%.1fGB avail=%.1fGB",
+                 (char)chosen, needBytes / 1073741824.0,
+                 avail.QuadPart / 1073741824.0);
+        g_settleResult.detail = buf;
+        LogWarn(buf);
+        return g_settleResult;
+    }
+
+    LogInfo("settle: copying app tree + logs to " + W2U(destRoot));
+    bool copyOk = CopyDir(exeDir, destRoot);
+    if (!copyOk) {
+        g_settleResult.noSafeDrive = true;
+        g_settleResult.detail = "copy to " + W2U(destRoot) + " failed";
+        LogWarn("settle: CopyDir to " + W2U(destRoot) + " failed");
+        return g_settleResult;
+    }
+
+    // 日志也跟过去（当前进程继续写原位置，但 LogBaseDir 从此返回新家）
+    std::wstring srcLogs = LogBaseDir() + L"\\logs";
+    std::wstring dstLogs = destRoot + L"\\logs";
+    CreateDirectoryW(dstLogs.c_str(), nullptr);
+    CopyDir(srcLogs, dstLogs);
+
+    // 设置日志根覆盖 + 返回结果
+    SetLogHomeOverride(destRoot);
+    g_settleResult.moved = true;
+    g_settleResult.newHome = destRoot;
+    g_settleResult.detail = "copied to " + W2U(destRoot);
+    LogInfo("settle: done, new home = " + W2U(destRoot));
+    return g_settleResult;
+}
+
+const SettleResult& LastSettleResult() { return g_settleResult; }
+
 // 失败后的"下一步"（P8）已迁到 advice.cpp —— 见 advice.h。原因（PLAN §14 M1）：
 // 本文件里旧版靠「中文关键词匹配中文消息」，消息一被翻译就全部失配 → 静默不给建议。
 // 下面这行 = 把老签名**声明为已删除**：谁在本翻译单元里再按旧签名调用，编译期就报错。
@@ -671,6 +941,58 @@ static std::wstring EnsureEspExclusionConfig() {
     return path;
 }
 
+// 备份目标可写预检（2026-10-21）：wimlib 只回 rc=47 "Failed to open a file"，
+// 分不清“权限/网络路径/无效名/路径过长”。这里用 CreateFileW 在目标目录建一个
+// 探针文件（与资源管理器同一 API），失败时把 Win32 错误码翻译成可操作的提示。
+static std::wstring Win32ErrorText(DWORD e) {
+    wchar_t* p = nullptr;
+    const DWORD n = FormatMessageW(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+            FORMAT_MESSAGE_IGNORE_INSERTS,
+        nullptr, e, 0, (LPWSTR)&p, 0, nullptr);
+    std::wstring s = (n && p) ? std::wstring(p, n) : std::wstring();
+    if (p) LocalFree(p);
+    while (!s.empty() && (s.back() == L'\r' || s.back() == L'\n' ||
+                          s.back() == L' '))
+        s.pop_back();
+    return s;
+}
+
+static bool ProbeBackupDest(const std::wstring& dest, std::string& err) {
+    const std::wstring dir = ParentDir(dest);
+    if (dir.empty()) return true;
+    wchar_t name[64] = {};
+    swprintf(name, 64, L"\\zjprobe-%lu.tmp",
+             (unsigned long)GetCurrentProcessId());
+    const std::wstring probe = dir + name;
+    HANDLE h = CreateFileW(probe.c_str(), GENERIC_WRITE, 0, nullptr,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        const DWORD e = GetLastError();
+        std::wstring msg = Tr(L"备份目标不可写（错误码 ") +
+                           std::to_wstring((unsigned long)e) + Tr(L"）：") +
+                           Win32ErrorText(e);
+        if (e == 5)
+            msg += Tr(L"\n提示：本程序以管理员运行；若共享是按当前登录用户"
+                      L"授权的，UAC 提权可能使用了另一个账号，请确认提权后"
+                      L"的账号也能访问该共享。");
+        else if (e == 53 || e == 67 || e == 64)
+            msg += Tr(L"\n提示：请检查机器名/共享名是否正确、网络是否可达。");
+        else if (e == 3 || e == 2)
+            msg += Tr(L"\n提示：目标文件夹不存在。");
+        else if (e == 123)
+            msg += Tr(L"\n提示：路径格式不正确（应为 \\\\机器名\\共享名\\...）。");
+        else if (e == 206)
+            msg += Tr(L"\n提示：路径过长。");
+        err = W2U(msg);
+        LogError("backup preflight failed: " + err);
+        return false;
+    }
+    CloseHandle(h);
+    DeleteFileW(probe.c_str());
+    return true;
+}
+
 int RunBackup(const BackupRequest& req, ProgressFn progress,
               std::string& err, ErrAdvice* adv) {
     if (adv) *adv = ADV_NONE;
@@ -696,6 +1018,7 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
             return 1;
         }
     }
+    if (!ProbeBackupDest(req.dest, err)) return 1;
     if (!AcquireOpLock()) {
         err = Tr("已有备份/还原实例在运行");
         return 1;
@@ -758,15 +1081,17 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
         err = Tr("wimlib 初始化失败");
         return 1;
     }
-    // 非微软重解析点检出（PIT-135，2026-10-08）：Linux 侧 wimlib（NTFS-3G 块
-    // 模式）无法设置非微软 reparse（libntfs-3g 已知 bug，wimlib NEWS 明说）——
-    // 实测 Intel ipfsrv.dptf 令整个 apply rc=58 中止、目标分区只剩半成品。
+    // 重解析点检出（PIT-135，2026-10-08；1019 案修订，2026-10-19）：Linux 侧
+    // wimlib（NTFS-3G 块模式）无法设置非微软 reparse（libntfs-3g 已知 bug，
+    // wimlib NEWS 明说），个别微软 tag 变体（junction 落文件等）同为 set 链
+    // EINVAL 必失败——实测 Intel ipfsrv.dptf 令整个 apply rc=58 中止、目标分区
+    // 只剩半成品。判定 = IsUnsettableReparse（valid_reparse_data 移植）。
     // 备份时排除（并留日志），否则重启类还原必然失败。
     std::vector<std::wstring> badRep;
-    int badN = ea::FindNonMsReparse(source, badRep);
+    int badN = ea::FindUnsettableReparse(source, badRep);
     if (badN > 0)
         LogWarn("reparse: " + std::to_string(badN) +
-                " non-Microsoft reparse file(s) excluded (Linux apply cannot "
+                " unsettable reparse entry(ies) excluded (Linux apply cannot "
                 "set them, PIT-135); first: " + W2U(badRep[0]));
     std::wstring cfg =
         EnsureExclusionConfig(source, badN > 0 ? &badRep : nullptr);
@@ -1174,6 +1499,110 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             return 4;
         }
     }
+    // 0.9) 异机还原前置检查（2026-10-21，0.9）：仅 Win10/11；只允许 Windows
+    //      侧路径（A 引擎 / PE 就地）；x64 镜像需 64 位环境（DISM 才能服务）。
+    if (req.universal) {
+        if (menuEntry) {
+            err = Tr("「安装菜单」不支持异机还原（菜单项在 Linux 救援层执行，"
+                     "无法注入启动驱动）。请直接执行还原并勾选异机还原。");
+            LogError(err);
+            return 4;
+        }
+        int major = 0, minor = 0;
+        bool img64 = false;
+        std::wstring uerr;
+        const int eff2 = req.index < 1 ? 1 : req.index;
+        if (ProbeImageOs(req.image, eff2, &major, &minor, &img64, uerr) != 0) {
+            err = Tr("异机还原：无法读取镜像内的系统版本（") + W2U(uerr) + Tr("）");
+            LogError(err);
+            return 1;
+        }
+        if (!IsUniversalOsSupported(major, minor)) {
+            err = Tr("异机还原仅支持 Windows 10/11（镜像版本 ") +
+                  std::to_string(major) + "." + std::to_string(minor) +
+                  Tr("）。Win7/8.1 请使用同机还原、PE 就地还原或新装系统。");
+            LogError(err);
+            AppendHistory("restore-rejected", req.image, req.image, 0,
+                          "universal restore requires Win10/11");
+            return 4;
+        }
+        if (img64 && !IsHost64()) {
+            err = Tr("异机还原：镜像是 64 位，但当前环境不是 64 位"
+                     "（DISM 无法服务 x64 镜像）。请在 64 位 PE/系统中运行。");
+            LogError(err);
+            return 4;
+        }
+        if (!req.driverDir.empty()) {
+            int n = 0;
+            if (!ValidateDriverFolder(req.driverDir, &n, uerr)) {
+                err = Tr("异机还原：驱动文件夹无效（") + W2U(uerr) + Tr("）");
+                LogError(err);
+                return 4;
+            }
+            LogInfo("universal: driver pack inf count=" + std::to_string(n));
+        }
+        LogInfo("universal: image OS " + std::to_string(major) + "." +
+                std::to_string(minor) +
+                (img64 ? " x64" : " x86") + ", engine=" +
+                (req.engine.empty() ? "block" : req.engine));
+    }
+    // 0.8) Linux 侧无法还原的内容预检（1019 案 F5 + W2；**仅 B 引擎/block**）：
+    //   B 引擎重启进 Linux 救援层用 wimlib（NTFS-3G 块模式）apply，有两类内容
+    //   还原不了，都会在 **mkntfs 之后**才暴露：
+    //   ① 特定重解析点（PIT-135 + 1019 修订：非微软 tag、junction 落非目录
+    //      文件等）→ apply rc=58 中止（目标半成品、系统没了）。
+    //   ② EFS 加密文件（W2，2026-10-19 实测）→ apply **rc=0 但文件变 0 字节**
+    //      （wimlib 只打 "Ignoring EFS-encrypted data"），静默数据丢失。
+    //   只读元数据扫描（非微软/junction 零误报子集 + ENCRYPTED 属性）命中即
+    //   拒绝 —— 此时还没动任何分区。A 引擎（swap）由 Windows 侧 libwim 解压
+    //   （EFS/重解析点都能写回），无需检查。
+    //   结果随任务写进契约（reparse_scan / efs_scan：0=干净/2=不可用），救援层
+    //   据此决定是否走"契约认证"快路径（W1/W2；老契约缺键 → 救援层自行扫描）。
+    int reparseScan = -1;
+    int efsScan = -1;
+    if (req.engine == "block") {
+        WimEngine eng;
+        std::vector<std::wstring> bad;
+        size_t encrypted = 0;
+        const int eff = req.index < 1 ? 1 : req.index;
+        int frc =
+            eng.ScanImageForLinuxRestore(req.image, eff, bad, &encrypted);
+        if (frc == 0 && !bad.empty()) {
+            err = Tr("镜像里含 Linux 恢复环境无法写回的重解析点（如「") +
+                  W2U(bad[0]) +
+                  Tr("」）—— 用「重启后还原」会中止并留下半成品。请改选「还原后"
+                     "重启」，或进 PE 模式就地还原；也可用新版软件重新备份后再试。");
+            LogError("image has unsettable reparse point(s): " +
+                     W2U(bad[0]) + " (" + std::to_string(bad.size()) +
+                     " found; rejected before touching target)");
+            AppendHistory("restore-rejected", req.image, req.image, 0,
+                          "image has unsettable reparse point (Linux apply "
+                          "would fail; PIT-135)");
+            return 4;
+        }
+        if (frc == 0 && encrypted > 0) {
+            err = Tr("镜像里含 EFS 加密文件（") + std::to_string(encrypted) +
+                  Tr(" 个），Linux 恢复环境无法还原其内容（还原后这些文件会是"
+                     "空的）。请改选「还原后重启」，或进 PE 模式就地还原。");
+            LogError("image has EFS-encrypted entries: " +
+                     std::to_string(encrypted) +
+                     " (rejected before touching target; Linux apply would "
+                     "restore them empty)");
+            AppendHistory("restore-rejected", req.image, req.image, 0,
+                          "image has EFS-encrypted files (Linux apply would "
+                          "restore empty files; W2)");
+            return 4;
+        }
+        if (frc != 0) {
+            reparseScan = 2;  // 扫描不可用 → 救援层兜底自行判定（fail-closed）
+            efsScan = 2;
+            LogWarn("linux-restore precheck skipped rc=" + std::to_string(frc) +
+                    " (rescue layer will verify)");
+        } else {
+            reparseScan = 0;  // 已扫描且干净 → 救援层走契约认证快路径
+            efsScan = 0;
+        }
+    }
     // 1) 定位目标分区与所在磁盘
     DiskInfo tdisk;
     PartitionInfo target;
@@ -1200,7 +1629,7 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
     //     放在 <数据盘>\SysRecover\（持久保留，不参与还原后清理），绝不丢用户镜像。
     std::wstring imagePath = req.image;
     {
-        std::wstring dataDrive = FindDataDrive();
+        std::wstring dataDrive = FindDataDrive(target.letter.empty() ? 0 : target.letter[0]);
         wchar_t tgtLetter = target.letter.empty() ? 0 : target.letter[0];
         std::wstring keep = dataDrive.empty() ? L"" : dataDrive + L"SysRecover";
         // 8) 镜像在目标分区 → 必须移走，否则还原时被一起格式化掉
@@ -1225,14 +1654,13 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             }
             imagePath = dst;
         }
-        // 7) 软件在目标分区 → 复制一份到数据盘（还原后 C: 被覆盖，留个副本）
+        // 7) 软件在目标分区 → SettleHome（Q1「先落盘后搬家」）：静默整包复制到
+        //    安全分区 + 日志跟过去（不 re-exec：当前进程照旧跑完本次操作）。
         std::wstring exeDir0 = ExeDir();
-        if (tgtLetter && exeDir0.size() > 1 && exeDir0[1] == L':' &&
-            SameDrive(exeDir0[0], tgtLetter) && !keep.empty()) {
-            std::wstring appDst = keep + L"\\app";
-            LogInfo("software on target partition; copying to " + W2U(appDst));
-            if (!CopyDir(exeDir0, appDst))
-                LogError("复制软件到数据盘失败（不致命，仅副本未成功）");
+        if (ShouldSettleHome(exeDir0, tgtLetter)) {
+            int exeDisk = VolumeDiskIndex(exeDir0[0]);
+            int tgtDisk = (int)target.diskIndex;
+            SettleHome(tgtDisk, exeDisk);
         }
     }
     // 2) 安全门禁（fail-closed，§11）
@@ -1270,6 +1698,34 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
     LogInfo(std::string("restore path: ") +
             (inPlace ? "in-place" : (menuEntry ? "menu-entry" : "staged-reboot")) +
             (inplaceWhy.empty() ? "" : " (" + inplaceWhy + ")"));
+    // 异机还原只能走 Windows 侧路径：暂存的 B 引擎（Linux apply）没有 DISM。
+    if (!inPlace && req.universal && req.engine != "swap") {
+        err = Tr("异机还原不支持「重启后还原」（B 引擎在 Linux 里执行，无法注入"
+                 "启动驱动）。请改选「还原后重启」，或在 PE 中使用就地还原。");
+        LogError(err);
+        return 4;
+    }
+
+    // 2.25) 暂存路径的会话前置（Q2，2026-10-18）：就地还原任何组合放行；
+    //       「暂存+重启」/菜单项依赖重启后固件沿当前同一种方式引导，两种必坏
+    //       组合提前拒绝（见 bootpath.h::CheckStagedBootPath）。
+    if (!inPlace) {
+        switch (CheckStagedBootPath(IsUefiFirmware(),
+                                     DiskStyleOf(target.diskIndex))) {
+            case StagedBootPath::BiosSessionGptTarget:
+                err = Tr("当前会话是传统(CSM)引导，目标是 GPT 盘 —— 重启后无法通过 BIOS 链引导。"
+                         "请改用 UEFI 模式的 PE/U盘启动后就地还原（无需重启）。");
+                LogError("staged boot path rejected: BIOS session + GPT target");
+                return 4;
+            case StagedBootPath::UefiSessionMbrTarget:
+                err = Tr("当前会话是 UEFI 引导，目标是 MBR 盘 —— 重启后 UEFI 无法执行传统引导链。"
+                         "请改用传统(CSM)模式的 PE/U盘启动后就地还原（无需重启）。");
+                LogError("staged boot path rejected: UEFI session + MBR target");
+                return 4;
+            case StagedBootPath::Ok:
+                break;
+        }
+    }
 
     // A 引擎残留门禁（就地与暂存共用，docs/23 §5）：目标盘还有未处理的 ~old
     // （用户选「保留不动」/清理未跑）→ 不动盘、中止；重新运行程序会再次询问。
@@ -1304,8 +1760,8 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
                 std::to_string(req.disk) + " part=" + std::to_string(req.part));
         LogInfo(std::string("restore mode: in-place (") + inplaceWhy + ")");
         const ULONGLONG t1 = GetTickCount64();
-        int rc =
-            RunDirectRestore(req, target, imagePath, espIndex, err, progress);
+        int rc = RunDirectRestore(req, target, imagePath, espIndex, eaIndex,
+                                  err, progress);
         if (needReboot)
             *needReboot = false;
         ReleaseOpLock();
@@ -1392,6 +1848,20 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             err += W2U(WimEngine::ErrorString(erc));
             LogError(err);
             return 1;
+        }
+        // 异机还原（2026-10-21）：交换之前注入启动驱动；失败则丢弃 ~new，
+        // 旧系统原样保留（可回退）。
+        if (req.universal) {
+            std::string ulog;
+            std::wstring uerr;
+            if (!PrepareUniversal(newDir, req.driverDir, ulog, uerr)) {
+                DeleteTreeRec(newDir);
+                err = Tr("异机还原准备失败：") + W2U(uerr);
+                LogError(err);
+                LogError("universal log:\n" + ulog);
+                return 1;
+            }
+            LogInfo("universal: A-engine prepared\n" + ulog);
         }
         {   // 完成标记：zjswap.sh 先验后动；无标记 = 不完整 → 拒绝交换
             SYSTEMTIME stw = {};
@@ -1555,7 +2025,7 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
                           "staged; 实际结果见救援层日志");
     }
 
-    std::wstring exeDir = ExeDir();
+    std::wstring exeDir = ContractDir();  // Q1 settle 后返回新家；否则 = ExeDir()
     // 日志根同 LogBaseDir（PIT-105）：软件在系统盘时 BCD 备份也放数据盘，
     // 免得随系统盘一起被格式化。
     std::wstring logsDir = LogBaseDir() + L"\\logs";
@@ -1569,6 +2039,14 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
     t.imageIndex = req.index < 1 ? 1 : req.index;
     t.espIndex = espIndex;  // 方案 C：ESP 子镜像 index（0=镜像里没有）
     t.eaIndex = eaIndex;    // PIT-122：EA 修复子镜像 index（0=镜像里没有）
+    t.reparseScan = reparseScan;  // 1019 案：0=干净 / 2=扫描不可用 / -1=未扫描
+    t.efsScan = efsScan;  // 1019 案 W2：同义（EFS 加密内容预检结果）
+    {   // 镜像字节数（1019 案）：救援层"契约认证"精确比对用（SIZE 判"镜像未变"）
+        WIN32_FILE_ATTRIBUTE_DATA fad = {};
+        if (GetFileAttributesExW(imagePath.c_str(), GetFileExInfoStandard, &fad))
+            t.imageSize = ((uint64_t)fad.nFileSizeHigh << 32) |
+                          (uint64_t)fad.nFileSizeLow;
+    }
     t.targetGuid = target.guid;
     t.targetOffset = target.offsetBytes;
     t.targetSize = target.sizeBytes;
@@ -1596,7 +2074,7 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
         if (!onTarget && fixedDisk) {
             t.softwareDir = exeDir;
         } else {
-            std::wstring dataDrive = FindDataDrive();
+            std::wstring dataDrive = FindDataDrive(target.letter.empty() ? 0 : target.letter[0]);
             if (dataDrive.empty())
                 t.softwareDir = exeDir;
             else
@@ -1657,7 +2135,7 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
         bool okTask = WriteRestoreTask(exeDir, t, wtlog);
         std::wstring used = exeDir;
         if (!okTask) {
-            std::wstring dataDrive = FindDataDrive();
+            std::wstring dataDrive = FindDataDrive(target.letter.empty() ? 0 : target.letter[0]);
             std::wstring alt =
                 dataDrive.empty() ? std::wstring() : dataDrive + L"ZJRESTORE";
             if (!alt.empty()) {
@@ -1709,6 +2187,10 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             ", target disk style=" + StyleName(DiskStyleOf(target.diskIndex)) + ")");
     if (req.repairBoot) {
         std::string blog;
+        // 进度收官标记（2026-10-18）：apply 之后引导层还要写 ~28MB 救援载荷 +
+        // 逐文件 CRC 校验（暂存与菜单安装都走这里），期间没有字节级进度 →
+        // 切一个 "boot" 阶段名，让界面显示「写入引导文件」而不是停在「写入 100%」。
+        if (progress) progress(99, "boot");
         if (useUefi) {
             // UEFI/GPT：写**固件启动项**（Boot#### + BootOrder），由固件直接加载
             // 内核（EFI stub）并把 OptionalData 当内核命令行 —— 全程不经 bootmgr，
@@ -1728,7 +2210,8 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             std::wstring espRoot;
             bool guidMatched = false;
             std::string detail;
-            if (!AcquireEspRoot(espRoot, guidMatched, blog)) {
+            if (!AcquireEspRoot(espRoot, guidMatched, blog,
+                                 (int)target.diskIndex)) {
                 ReleaseOpLock();
                 ProgressDone("restore", "failed");
                 err = Tr("UEFI 机器未找到可用的 ESP 引导分区，无法部署引导层。\n"
@@ -1853,7 +2336,8 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             // 策略**只升不降**：原值 ≥1 一律保留（用户："原来大于 1 就保留原值"），
             // 0/缺失补成 1 秒（用户：1 秒足够用上下键选、几乎不拖慢开机）。
             // 仅 BCD 菜单路径需要（BIOS，或 Secure Boot 的 bootapp 模式）；
-            // UEFI 常驻项在固件 BootOrder（开机按 F12 选），与 bootmgr timeout 无关。
+            // UEFI 常驻项在固件 BootOrder（开机按快捷启动键选，键名按品牌识别：
+            // common/bioskey），与 bootmgr timeout 无关。
             if (!useUefi || CurrentSbMode() == SbMode::Bootapp) {
                 std::string tlog;
                 int cur = BcdGetBootmgrTimeout(tlog);
@@ -1946,9 +2430,10 @@ int StageRestore(const RestoreRequest& req, std::string& err, bool* needReboot,
                             /*menuEntry=*/false);
 }
 
-int StageRestoreMenu(const RestoreRequest& req, std::string& err, ErrAdvice* adv) {
+int StageRestoreMenu(const RestoreRequest& req, std::string& err,
+                     ProgressFn progress, ErrAdvice* adv) {
     bool needReboot = false;
-    return StageRestoreImpl(req, err, &needReboot, nullptr, adv,
+    return StageRestoreImpl(req, err, &needReboot, progress, adv,
                             /*menuEntry=*/true);
 }
 
@@ -2011,17 +2496,43 @@ int StageReturnOld(const PartitionInfo& target, std::string& err,
         return 1;
     }
 
-    std::wstring exeDir = ExeDir();
-    // 软件目录若在目标盘上：反向交换会把根整树挪走，程序与日志会一起被搬进
-    // ~/.new 并在收尾时删除 —— 等于程序把自己删了。**前置拒绝**，让用户把
-    // 程序拷到别的分区（或进 PE）再操作。
+    // Q2 暂存路径会话前置（与 StageRestoreImpl 同款，见 bootpath.h）：
+    // 返回旧系统 = 重启进 Linux 救援层，依赖重启后固件沿当前同一种方式引导。
+    switch (CheckStagedBootPath(IsUefiFirmware(), DiskStyleOf(target.diskIndex))) {
+        case StagedBootPath::BiosSessionGptTarget:
+            err = Tr("当前会话是传统(CSM)引导，目标是 GPT 盘 —— 返回旧系统需要重启进恢复环境，"
+                     "但 BIOS 链无法引导 GPT 盘。请改用 UEFI 模式启动后操作。");
+            LogError("return-old rejected: BIOS session + GPT target");
+            return 4;
+        case StagedBootPath::UefiSessionMbrTarget:
+            err = Tr("当前会话是 UEFI 引导，目标是 MBR 盘 —— 返回旧系统需要重启进恢复环境，"
+                     "但 UEFI 无法执行传统引导链。请改用传统(CSM)模式启动后操作。");
+            LogError("return-old rejected: UEFI session + MBR target");
+            return 4;
+        case StagedBootPath::Ok:
+            break;
+    }
+
+    std::wstring exeDir = ContractDir();  // Q1 settle 后返回新家；否则 = ExeDir()
+    // 软件目录若在目标盘上：先尝试 SettleHome（Q1「先落盘后搬家」，与 StageRestore
+    // 同款）——搬成功则 exeDir 指向新家、继续；搬不动才前置拒绝（让用户把程序
+    // 拷到别的分区或进 PE 再操作）。
     {
         wchar_t exLetter = exeDir.size() > 1 ? exeDir[0] : 0;
-        if (exLetter && SameDrive(exLetter, target.letter[0])) {
-            err = Tr("本程序当前运行在目标分区上 —— 返回旧系统会把该分区整树挪走，"
-                     "请先把程序复制到**别的分区**（如 D:\\）再执行。");
-            LogError("return-old rejected: software dir is on the target partition");
-            return 4;
+        if (ShouldSettleHome(exeDir, target.letter.empty() ? 0 : target.letter[0])) {
+            int exeDisk = VolumeDiskIndex(exLetter);
+            int tgtDisk = (int)target.diskIndex;
+            SettleResult sr = SettleHome(tgtDisk, exeDisk);
+            if (sr.moved) {
+                exeDir = ContractDir();  // settle 后 ContractDir 返回新家
+                LogInfo("return-old: settled to " + W2U(sr.newHome));
+            } else {
+                err = Tr("本程序当前运行在目标分区上 —— 返回旧系统会把该分区整树挪走，"
+                         "请先把程序复制到**别的分区**（如 D:\\）再执行。");
+                LogError("return-old rejected: software dir is on the target partition, "
+                         "settle failed: " + sr.detail);
+                return 4;
+            }
         }
     }
 
@@ -2074,7 +2585,7 @@ int StageReturnOld(const PartitionInfo& target, std::string& err,
         if (fixedDisk) {
             t.softwareDir = exeDir;
         } else {
-            std::wstring dataDrive = FindDataDrive();
+            std::wstring dataDrive = FindDataDrive(target.letter.empty() ? 0 : target.letter[0]);
             t.softwareDir = dataDrive.empty() ? exeDir : dataDrive + kRecoveryDir;
             CreateDirectoryW(t.softwareDir.c_str(), nullptr);
         }
@@ -2100,7 +2611,7 @@ int StageReturnOld(const PartitionInfo& target, std::string& err,
         bool okTask = WriteRestoreTask(exeDir, t, wtlog);
         std::wstring used = exeDir;
         if (!okTask) {
-            std::wstring dataDrive = FindDataDrive();
+            std::wstring dataDrive = FindDataDrive(target.letter.empty() ? 0 : target.letter[0]);
             std::wstring alt =
                 dataDrive.empty() ? std::wstring() : dataDrive + L"ZJRESTORE";
             if (!alt.empty()) {
@@ -2152,7 +2663,8 @@ int StageReturnOld(const PartitionInfo& target, std::string& err,
         }
         std::wstring espRoot;
         bool guidMatched = false;
-        if (!AcquireEspRoot(espRoot, guidMatched, blog)) {
+        if (!AcquireEspRoot(espRoot, guidMatched, blog,
+                             (int)target.diskIndex)) {
             ReleaseOpLock();
             ProgressDone("restore", "failed");
             err = Tr("UEFI 机器未找到可用的 ESP 引导分区，无法部署引导层。\n"
@@ -2274,11 +2786,11 @@ int StageReturnOldByDiskPart(int disk, int part, std::string& err,
     return StageReturnOld(target, err, needReboot);
 }
 
-// 读"已安装菜单项"绑定的镜像/目标：<exeDir>\restore-task.conf（UTF-8，key=value）。
+// 读"已安装菜单项"绑定的镜像/目标：<ContractDir()>\restore-task.conf（UTF-8，key=value）。
 bool ReadMenuBinding(std::wstring* imagePath, int* imageIndex,
                      unsigned long long* targetOffset,
                      unsigned long long* targetSize) {
-    std::wstring conf = ExeDir() + L"\\restore-task.conf";
+    std::wstring conf = ContractDir() + L"\\restore-task.conf";
     HANDLE h = CreateFileW(conf.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                            OPEN_EXISTING, 0, nullptr);
     if (h == INVALID_HANDLE_VALUE)
@@ -2311,7 +2823,7 @@ bool ReadMenuBinding(std::wstring* imagePath, int* imageIndex,
 // 删除"菜单绑定"副契约（用户 2026-10-05 bug：「删除菜单」后按钮仍是「删除菜单」，
 // 因为 ReadMenuBinding 读的 restore-task.conf 没被删）。
 void DeleteMenuBinding() {
-    std::wstring dir = ExeDir();
+    std::wstring dir = ContractDir();
     for (const wchar_t* nm : {L"restore-task.conf", L"restore-task.json"}) {
         std::wstring p = dir + L"\\" + nm;
         SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_NORMAL);
@@ -2324,14 +2836,14 @@ void DeleteMenuBinding() {
     DeleteFileW(pend.c_str());
 }
 
-// 一键重试（P3 / PIT-148）：从 <exeDir>\restore-task.conf 重建请求并
+// 一键重试（P3 / PIT-148）：从 <ContractDir()>\restore-task.conf 重建请求并
 // StageRestore。仅 A/B 类失败可走此路（调用方已用 RescueStepRetryable 把关）；
 // keepOld 恒 false（重试要备返请走正常流程，见 ops.h）。
 int RetryStagedRestore(std::string& err, bool* needReboot) {
     err.clear();
     if (needReboot) *needReboot = false;
     // ① 读 conf（key=value；TaskConfGet 已处理注释/转义，见 task.cpp）
-    std::wstring confPath = ExeDir() + L"\\restore-task.conf";
+    std::wstring confPath = ContractDir() + L"\\restore-task.conf";
     std::string text;
     {
         HANDLE h = CreateFileW(confPath.c_str(), GENERIC_READ, FILE_SHARE_READ,
@@ -2490,7 +3002,7 @@ int RepairBoot(int disk, int part, std::string& msg) {
     std::wstring espRoot;
     bool guidMatched = false;
     std::string detail;
-    if (!AcquireEspRoot(espRoot, guidMatched, blog)) {
+    if (!AcquireEspRoot(espRoot, guidMatched, blog, (int)target.diskIndex)) {
         msg = Tr("未找到可用的 ESP 引导分区，无法修复引导。\n"
                  "常见原因：DiskGenius 重建分区时漏建 ESP，或把 ESP 标成了 Basic "
                  "Data（应改为 EFI System 类型）。\n当前分区表：\n") +
@@ -2587,6 +3099,21 @@ bool EstimateSwapSpace(const PartitionInfo& target,
     if (!out.enough)
         out.certain = false;
     return true;
+}
+
+// 供 GUI 在确认框之前预判 A 引擎空间（用户 2026-10-20 规格）：
+// "开始前直接显示 需要 X GB / 可用 Y GB；够就不提示，不够才禁用 A 引擎按钮"。
+bool QuerySwapSpace(const std::wstring& imagePath, int index,
+                    const PartitionInfo& target, SwapSpaceEstimate& out) {
+    out = SwapSpaceEstimate{};
+    WimEngine eng;
+    if (!eng.ok())
+        return false;
+    unsigned long long bytes = 0;
+    int rc = eng.ImageSize(imagePath, index < 1 ? 1 : index, &bytes);
+    if (rc != 0 || bytes == 0)
+        return false;  // 读不到大小 → 无法判定（按"够"继续，与原行为一致）
+    return EstimateSwapSpace(target, bytes, out);
 }
 
 }  // namespace sysrecover

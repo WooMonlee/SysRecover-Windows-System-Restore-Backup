@@ -44,6 +44,8 @@ PRODUCT = [
 # 语法检查额外覆盖（工具脚本，不计棘轮）
 SYNTAX_ONLY = [
     "tools/vmtest/test-caps-failpath.sh",
+    "tools/vmtest/test-reparse-awk.sh",
+    "tools/vmtest/test-menu-loop.sh",
 ]
 BASELINE_PATH = os.path.join(ROOT, "tools", "shell-stderr-baseline.txt")
 TOKEN = "2>/dev/null"

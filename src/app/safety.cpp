@@ -87,10 +87,8 @@ std::string CheckRestoreTarget(const PartitionInfo& p,
     }
     // BitLocker 不再在这里硬拒绝（用户规格 2026-09-23）：改为"全系统扫描 + 提醒
     // 用户可选继续/退出"，见 BitLockerVolumes() 以及 GUI/CLI 的提示。
-    // GPT 目标：只有 UEFI 固件能引导（走 ESP 上的 bootmgfw + BCD）；BIOS 固件下
-    // GRUB4DOS 那套链（grldr.mbr = 16 位实模式）在 GPT 上也没法用 → 仍拒绝。
-    if (!p.guid.empty() && !IsUefiFirmware())
-        return Tr("拒绝：GPT 分区需要 UEFI 引导，当前机器是 BIOS 固件（请用 MBR 系统盘）");
+    // GPT 硬门禁已移除（2026-10-18 用户裁定，Q2）：PE/U盘就地还原任何组合全放行；
+    // "暂存+重启"由 CheckStagedBootPath 在 ops.cpp 暂存路径独立拦截（见 bootpath.h）。
     return "";
 }
 

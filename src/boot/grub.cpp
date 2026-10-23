@@ -50,16 +50,6 @@ bool FileCrc32(const std::wstring& path, uint32_t& out) {
     return true;
 }
 
-bool VerifyCopy(const std::wstring& src, const std::wstring& dst,
-                std::string& log) {
-    uint32_t a = 0, b = 0;
-    if (!FileCrc32(src, a) || !FileCrc32(dst, b) || a != b) {
-        log += "verify FAIL " + W2U(dst) + "\n";
-        return false;
-    }
-    return true;
-}
-
 bool WriteTextFile(const std::wstring& path, const std::string& utf8) {
     // 已存在的 menu.lst 带 Hidden+System 属性 —— 这种文件用 CREATE_ALWAYS 打开会
     // 直接被拒（实测 ERROR_ACCESS_DENIED=5），于是"第一次装成功、第二次起必失败"
@@ -88,6 +78,29 @@ bool CopyOne(const std::wstring& src, const std::wstring& dst,
     log += "copy FAIL " + s + " (err=" + std::to_string(GetLastError()) +
            ")\n";
     return false;
+}
+
+// B 优化（2026-10-18，用户实测"安装菜单点了没反应"）：重复部署时**跳过未
+// 变化的载荷** —— 原实现每次都把 28MB 内核+initramfs 重新拷贝并双读校验
+//（≈56MB I/O，慢盘上拖出数秒的"无响应"窗）。现在先比 CRC：目标与源一致 →
+// keep 跳过（连校验都不用）；不一致才复制，复制后拿**已算过的源 CRC**只读回
+// 目标一次校验（省掉旧 VerifyCopy 再读一遍源）。A6 的校验语义不变。
+bool CopyIfChanged(const std::wstring& src, const std::wstring& dst,
+                   std::string& log) {
+    uint32_t sc = 0, dc = 0;
+    bool srcOk = FileCrc32(src, sc);
+    if (srcOk && FileCrc32(dst, dc) && sc == dc) {
+        log += "keep " + W2U(dst) + " (unchanged)\n";
+        return true;
+    }
+    if (!CopyOne(src, dst, log))
+        return false;
+    // 源当时读不出（srcOk=false）才重读源；目标一律读回校验。
+    if ((!srcOk && !FileCrc32(src, sc)) || !FileCrc32(dst, dc) || sc != dc) {
+        log += "verify FAIL " + W2U(dst) + "\n";
+        return false;
+    }
+    return true;
 }
 
 // 引导文件平时不该在资源管理器里晃眼（还原完成后会被清掉；失败时也尽量不碍眼）
@@ -128,9 +141,10 @@ std::wstring ExeDir() {
     return AppDir();
 }
 
-std::wstring FindDataDrive() {
+std::wstring FindDataDrive(wchar_t avoidLetter) {
+    wchar_t avoid = (wchar_t)towupper(avoidLetter);
     UINT type = GetDriveTypeW(L"D:\\");
-    if (type == DRIVE_FIXED)
+    if (type == DRIVE_FIXED && (avoid == 0 || avoid != L'D'))
         return L"D:\\";
     wchar_t sysDir[MAX_PATH] = {};
     GetWindowsDirectoryW(sysDir, MAX_PATH);
@@ -140,6 +154,8 @@ std::wstring FindDataDrive() {
         if (!(mask & (1u << (c - L'A'))))
             continue;
         if (c == sysLetter)
+            continue;
+        if (avoid && c == avoid)
             continue;
         wchar_t root[4] = {c, L':', L'\\', 0};
         if (GetDriveTypeW(root) == DRIVE_FIXED)
@@ -202,18 +218,14 @@ bool CopyBootFiles(const std::wstring& dataDrive, const std::wstring& exeDir,
     CreateDirectoryW(scripts.c_str(), nullptr);
     Hide(rec);  // 整个 ZJRESTORE 隐藏，不在资源管理器里晃眼
     bool ok = true;
-    ok &= CopyOne(exeDir + L"\\bootfiles\\vmlinuz-zjrestore",
-                  boot + L"\\vmlinuz-zjrestore", log);
-    ok &= CopyOne(exeDir + L"\\bootfiles\\initramfs-zjrestore.cpio.gz",
-                  boot + L"\\initramfs-zjrestore.cpio.gz", log);
-    ok &= CopyOne(exeDir + L"\\bootfiles\\zjrestore-lite.sh",
-                  scripts + L"\\zjrestore-lite.sh", log);
-    // A6：部署后逐文件 CRC 校验（源 vs 落盘），不一致即视为部署失败 ——
-    // 杜绝"盘上是旧版救援、契约却是新版"的静默混用。
-    ok &= VerifyCopy(exeDir + L"\\bootfiles\\vmlinuz-zjrestore",
-                     boot + L"\\vmlinuz-zjrestore", log);
-    ok &= VerifyCopy(exeDir + L"\\bootfiles\\initramfs-zjrestore.cpio.gz",
-                     boot + L"\\initramfs-zjrestore.cpio.gz", log);
+    // B（2026-10-18）：CopyIfChanged = "内容一致就不写盘"，内含 A6 的复制后
+    // CRC 校验（详见函数头注释）。
+    ok &= CopyIfChanged(exeDir + L"\\bootfiles\\vmlinuz-zjrestore",
+                        boot + L"\\vmlinuz-zjrestore", log);
+    ok &= CopyIfChanged(exeDir + L"\\bootfiles\\initramfs-zjrestore.cpio.gz",
+                        boot + L"\\initramfs-zjrestore.cpio.gz", log);
+    ok &= CopyIfChanged(exeDir + L"\\bootfiles\\zjrestore-lite.sh",
+                        scripts + L"\\zjrestore-lite.sh", log);
     // 明文构建戳：diag/收集器可读，一眼核对盘上救援是哪一版
     WriteTextFile(rec + L"\\rescue-build.txt",
                   std::string(SYSRECOVER_VERSION) + "\n");
@@ -290,14 +302,15 @@ bool RemoveBootLayer(std::string& log) {
         ok &= RemoveTree(drive + L"menu.lst");
     }
     log += ok ? "removed files OK\n" : "removed some files FAILED\n";
-    // 3) UEFI：ESP 上的常驻救援文件 <ESP>\EFI\ZJRESTORE（约 51MB）
-    if (IsUefiFirmware()) {
-        std::wstring espRoot = MountEsp(log);
-        if (!espRoot.empty()) {
-            RemoveTree(espRoot + L"EFI\\ZJRESTORE");
-            UnmountEsp(espRoot, log);
-            log += "removed ESP rescue dir\n";
-        }
+    // 3) ESP 上的常驻救援文件 <ESP>\EFI\ZJRESTORE（约 51MB）
+    //    （Q2，2026-10-18：不再看 IsUefiFirmware() —— 固件类型可能漏报（PIT-092
+    //     同族），且"MBR 盘 + UEFI 固件"等组合下漏清就是残留；总是试着挂一下，
+    //     纯 BIOS 机器 mountvol /s 自然失败即跳过，只多几条日志、零副作用。）
+    std::wstring espRoot = MountEsp(log);
+    if (!espRoot.empty()) {
+        RemoveTree(espRoot + L"EFI\\ZJRESTORE");
+        UnmountEsp(espRoot, log);
+        log += "removed ESP rescue dir\n";
     }
     return ok;
 }

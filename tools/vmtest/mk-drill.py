@@ -21,6 +21,27 @@ NTFS 扩展属性，换机器/重新生成 test.wim 前先给样例文件打 EA�
   build\\ea-scan.exe --set tools\\vmtest\\drill-src\\ea-test.txt
   build\\ea-scan.exe --set tools\\vmtest\\drill-src\\DirA\\ea2.bin
   （ea-scan.exe 构建：g++ -O2 -static -municode -o build\\ea-scan.exe tools\\ea-scan.cpp -lntdll）
+
+环境变量（可选，见 AGENTS PIT 记录）：
+  ZJ_DRILL_ENGINE=swap      A 引擎（swap）演练盘
+  ZJ_DRILL_UNDO / _UNDORESUME   返回旧系统 / 中断续做
+  ZJ_DRILL_AUTORECOVER=1    镜像不存在 -> 自动回退演练
+  ZJ_DRILL_REPARSE=cert|stale|oldcert|reject   1019 案预检演练（PIT-157 W1/W2）：
+      cert/stale 在契约里写 reparse_scan=0 + efs_scan=0 证书（= 0.7.71 版 exe；
+      stale 把 image_size 加 1 逼出全扫描分支）；oldcert = 只写 reparse_scan=0
+      （模拟 0.7.70 版 exe 的旧证书）—— 救援层必须**不信任**它、强制全扫描
+      （防旧证书漏掉 EFS；W2 起 fast path 要求两个键都是 0）；
+      reject 把契约指向 images/reparse-test.wim —— 先一次性构建：
+        build\\reparse-lab.exe make build\\reparse-src\\zjtag.bin   （GUID tag 0xDEAD）
+        build\\reparse-lab.exe capture build\\reparse-src tools\\vmtest\\drill-images\\reparse-test.wim
+      （reparse-src = drill-src 的副本 + zjtag.bin；capture 走 libwim 无排除规则）
+  ZJ_DRILL_EFS=1            W2 EFS 演练盘：契约指向 images/efs-test.wim
+      （drill-src 副本里放一个 EFS 加密文件后用 reparse-lab.exe capture 生成）：
+        cipher /e <efs-src>/efs1.bin
+        build\\reparse-lab.exe capture build\\efs-src tools\\vmtest\\drill-images\\efs-test.wim
+      不加 reparse/efs 证书键 → 救援层走全量扫描；W2 之后应以
+      STEP=efs-encrypted 在 mkntfs 之前拒绝（W2 之前则正常 apply，wimlib 只警告
+      "Ignoring EFS-encrypted data"，内容丢成空文件——观察轮）。
 """
 import os
 import struct
@@ -167,6 +188,73 @@ if AUTORECOVER:
     LOG_TXT = LOG_TXT.replace('image_path=D:/images/test.wim\n',
                               'image_path=D:/images/no-such.wim\n')
 
+# ZJ_DRILL_REPARSE=cert|stale|oldcert|reject -> 1019-case rescue precheck drill
+# (PIT-157 W1/W2; the precheck lives right after the image scan and aborts
+# BEFORE mkntfs):
+#   cert   = contract carries the staging-side certificate (reparse_scan=0 AND
+#            efs_scan=0 AND image_size == the real file size) -> rescue must
+#            take the fast path ("certified clean by staging side") and NOT
+#            scan metadata.
+#   stale  = same certificate but image_size off by one -> the size mismatch
+#            must force the full metadata scan (guards against a stale disk).
+#   oldcert= 0.7.70-era certificate (reparse_scan=0 only, no efs_scan) -> the
+#            rescue layer must NOT fast-path (W2: both keys must be 0) and
+#            must run the full scan instead.
+#   reject = contract points at images/reparse-test.wim (built once with
+#            tools/reparse-lab.exe: "make" a GUID reparse file inside a copy of
+#            drill-src, then "capture" it - a no-exclusions libwim capture, so
+#            the image carries a non-MS reparse point like the 1019 machine's
+#            ipfsrv.dptf) -> rescue must refuse with STEP=reparse-unsettable
+#            and never run mkntfs/apply.
+REPARSE = os.environ.get('ZJ_DRILL_REPARSE', '').strip()
+RTWIM = os.path.join(HERE, 'drill-images', 'reparse-test.wim')
+if REPARSE in ('cert', 'stale'):
+    _rsz = os.path.getsize(WIM) if os.path.exists(WIM) else 0
+    if REPARSE == 'stale':
+        _rsz += 1
+    # 0.7.71-era certificate: BOTH keys (W2 requires reparse_scan=0 AND efs_scan=0
+    # before the rescue layer takes the fast path).
+    CONF_TXT += 'reparse_scan=0\nefs_scan=0\nimage_size=%d\n' % _rsz
+    LOG_TXT += 'reparse_scan=0\nefs_scan=0\nimage_size=%d\n' % _rsz
+if REPARSE == 'oldcert':
+    # Pre-W2 certificate: a 0.7.70-era exe wrote reparse_scan=0 but knew nothing
+    # about EFS -> the rescue layer MUST ignore the fast path and scan (else an
+    # old-stage + new-rescue combo would silently drop EFS content).
+    _rsz = os.path.getsize(WIM) if os.path.exists(WIM) else 0
+    CONF_TXT += 'reparse_scan=0\nimage_size=%d\n' % _rsz
+    LOG_TXT += 'reparse_scan=0\nimage_size=%d\n' % _rsz
+if REPARSE == 'reject':
+    CONF_TXT = (CONF_TXT
+                .replace('image_path=D:/images/test.wim\n',
+                         'image_path=D:/images/reparse-test.wim\n')
+                .replace('esp_index=2\n', 'esp_index=0\n')
+                .replace('ea_index=3\n', 'ea_index=0\n'))
+    LOG_TXT = (LOG_TXT
+               .replace('image_path=D:/images/test.wim\n',
+                        'image_path=D:/images/reparse-test.wim\n')
+               .replace('esp_index=2\n', 'esp_index=0\n')
+               .replace('ea_index=3\n', 'ea_index=0\n'))
+
+# ZJ_DRILL_EFS=1 -> W2 EFS drill (2026-10-19): contract points at
+# images/efs-test.wim (host-built: drill-src copy + `cipher /e` EFS file,
+# captured with reparse-lab.exe capture). No cert keys on purpose: the rescue
+# layer must run the full metadata scan and (after W2) refuse with
+# STEP=efs-encrypted BEFORE mkntfs. Against the pre-W2 rescue it applied anyway
+# and wimlib only warned "Ignoring EFS-encrypted data of N files" (observation).
+EFS = os.environ.get('ZJ_DRILL_EFS', '') != ''
+EFWIM = os.path.join(HERE, 'drill-images', 'efs-test.wim')
+if EFS:
+    CONF_TXT = (CONF_TXT
+                .replace('image_path=D:/images/test.wim\n',
+                         'image_path=D:/images/efs-test.wim\n')
+                .replace('esp_index=2\n', 'esp_index=0\n')
+                .replace('ea_index=3\n', 'ea_index=0\n'))
+    LOG_TXT = (LOG_TXT
+               .replace('image_path=D:/images/test.wim\n',
+                        'image_path=D:/images/efs-test.wim\n')
+               .replace('esp_index=2\n', 'esp_index=0\n')
+               .replace('ea_index=3\n', 'ea_index=0\n'))
+
 
 def run(*args):
     r = subprocess.run(args, capture_output=True)
@@ -221,7 +309,19 @@ def make_part(part_idx, files, subdirs=()):
 
 
 def main():
-    if not os.path.exists(WIM):
+    if REPARSE == 'reject':
+        if not os.path.exists(RTWIM):
+            print('missing %s - build it first:' % RTWIM)
+            print('  1) build/reparse-lab.exe make <tmp>/zjtag.bin  (GUID tag 0xDEAD)')
+            print('  2) build/reparse-lab.exe capture <tmp copy of drill-src> %s' % RTWIM)
+            return 1
+    elif EFS:
+        if not os.path.exists(EFWIM):
+            print('missing %s - build it first:' % EFWIM)
+            print('  1) cipher /e <efs-src>/efs1.bin  (efs-src = copy of drill-src)')
+            print('  2) build/reparse-lab.exe capture <efs-src> %s' % EFWIM)
+            return 1
+    elif not os.path.exists(WIM):
         print('missing %s - create it first:' % WIM)
         print('  dist/SysRecover.exe backup --source tools/vmtest/drill-src/ '
               '--dest tools/vmtest/drill-images/test.wim --compress fast --esp --yes')
@@ -271,8 +371,11 @@ def main():
     # ZJRESTORE/ = 软件目录（log 里 software_path=D:\ZJRESTORE\SysRecover.exe）：
     # 救援层 find_soft_dir 会命中它 → zjrestore-debug.log / zjrestore-apply.out
     # 落盘（回归：日志实时镜像与最终持久化）。
+    image_entry = ((RTWIM, 'images/reparse-test.wim') if REPARSE == 'reject'
+                   else (EFWIM, 'images/efs-test.wim') if EFS
+                   else (WIM, 'images/test.wim'))
     make_part(2, [
-        (WIM, 'images/test.wim'),
+        image_entry,
         (conf, 'restore-task.conf'),
         (os.path.join(bf, 'bootmgr'), 'bootfix/bootmgr'),
         (os.path.join(bf, 'Boot', 'BCD'), 'bootfix/Boot/BCD'),
@@ -281,6 +384,10 @@ def main():
                 'ZJRESTORE'))
 
     mode = 'undo-resume' if UNDO_RESUME else ('undo' if UNDO else ENGINE)
+    if REPARSE:
+        mode += '+reparse-' + REPARSE
+    if EFS:
+        mode += '+efs'
     print('== drill.raw ready: %s (%d bytes) engine=%s mode=%s bulk=%s ==' % (
         IMG, os.path.getsize(IMG), ENGINE, mode, BULK or 'off'))
     return 0

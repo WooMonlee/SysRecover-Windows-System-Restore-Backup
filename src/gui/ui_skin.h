@@ -252,6 +252,9 @@ public:
 
     LPCTSTR GetClass() const override { return _T("SkinEdit"); }
     void SetAttribute(LPCTSTR pstrName, LPCTSTR pstrValue) override;
+    // 程序化改文本后把光标放到末尾（CEditUI::SetText → Edit_SetText 会回到 0，
+    // 导致用户接着输入时字符插到最前面 — 2026-10-21 VM 实测）。
+    void SetText(LPCTSTR pstrText) override;
     void SetPos(RECT rc, bool bNeedInvalidate = true) override;
     bool DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopControl) override;
     void DoEvent(TEventUI& event) override;
@@ -317,6 +320,21 @@ private:
     bool  m_bold;
     DWORD m_color;
     std::wstring m_hl;
+};
+
+// ── 分区下拉（2026-10-20）：列表为空（新硬盘没有任何分区）时，点击**不再展开
+//    空下拉**，而是给主窗口发 WM_SKIN_EMPTY_PARTITION → 直接打开"为新硬盘创建
+//    分区"向导（用户规格：不增加额外按钮、不多一步）。收起状态画一行提示，
+//    避免看起来像坏控件。 ───────────────────────────────────────────
+#define WM_SKIN_EMPTY_PARTITION (WM_APP + 22)
+class CPartitionComboUI : public CComboUI {
+public:
+    void SetEmptyHint(const wchar_t* s) { m_hint = s ? s : L""; }
+    void DoEvent(TEventUI& event) override;
+    void PaintText(HDC hDC) override;
+
+private:
+    std::wstring m_hint;
 };
 
 // 在 CMainForm::CreateControl 里注册以上标签

@@ -76,6 +76,25 @@ public:
     int ImagePathExists(const std::wstring& imagePath, int index,
                         const std::wstring& path, bool* exists);
 
+    // 扫描子镜像里"Linux 侧（wimlib NTFS-3G 块模式）无法正确还原"的内容
+    // （1019 案 F5 + W2）。只读元数据、秒级（不解文件数据；solid ESD 也快）：
+    //  · 不可写回重解析点：判定 = ea::IsUnsettableReparse 的**无 blob 确定子集**
+    //    （非微软 tag + junction 落非目录）—— Linux apply 会 rc=58 中止在
+    //    mkntfs 之后（目标分区半成品）。
+    //    已知盲区：需 blob 才能定论的 tag 变体扫不出 —— 备份端已排除
+    //    （PIT-135 修订），这里只兜底旧镜像。
+    //  · EFS 加密内容（FILE_ATTRIBUTE_ENCRYPTED）：Linux wimlib 无 EFS 支持，
+    //    apply 会 **rc=0 但加密文件内容丢失（变成 0 字节）** —— 静默数据丢失
+    //    （W2 实测：wimlib 只打 "Ignoring EFS-encrypted data of N files"）。
+    // 用途：B 引擎暂存（重启进 Linux 救援层）前预检，命中任一即由调用方
+    // fail-closed（rc=4），杜绝"mkntfs 完才发现失败 / 数据静默丢失"。
+    // isEncrypted 判定只认 Windows 文件属性（wimlib 1.14 的 C API 不暴露流类型）。
+    // 返回 0 成功（badReparse 填命中全路径，最多 cap 条；encryptedCount 填命中
+    // 的加密目录项数）；非 0 = wimlib 错误码。
+    int ScanImageForLinuxRestore(const std::wstring& imagePath, int index,
+                                 std::vector<std::wstring>& badReparse,
+                                 size_t* encryptedCount, size_t cap = 8);
+
     static const wchar_t* ErrorString(int code);
 
 private:

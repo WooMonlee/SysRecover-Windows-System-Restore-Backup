@@ -29,9 +29,21 @@ public:
     // 通用三选（还原确认 取消/还原后重启/重启后还原、AskUndo 备返处理等）：
     // 返回 0（左）/ 1（中）/ 2（右）。
     // 三个按钮重排为等宽；defaultIdx 指定回车落在哪（0/1/2）；ESC 仍是 0（安全项）。
+    // midDisabled（2026-10-20，用户规格）：中间按钮不可选 —— 显示为红色
+    // 「空间不足」并忽略点击（A 引擎空间不足时用；调用方应同时把 defaultIdx
+    // 指到安全项/右按钮）。
     static int Ask3(HWND owner, const std::wstring& title, const std::wstring& msg,
                     const std::wstring& leftText, const std::wstring& midText,
-                    const std::wstring& rightText, int defaultIdx);
+                    const std::wstring& rightText, int defaultIdx,
+                    bool midDisabled = false);
+
+    // 通用四选（2026-10-20，用户规格：删除旧系统后自删）。
+    // 返回 0（左）/ 1（中）/ 2（右）/ 3（第 4 个）。
+    // 窗口加宽到 520，四个按钮等宽重排；defaultIdx 0..3；ESC 仍是 0（安全项）。
+    static int Ask4(HWND owner, const std::wstring& title, const std::wstring& msg,
+                    const std::wstring& leftText, const std::wstring& midText,
+                    const std::wstring& rightText, const std::wstring& moreText,
+                    int defaultIdx);
 
     // 兼容旧调用（还原确认）：左=退出、右=还原后重启（默认为右）。
     // 弹出模态确认框并返回 kExit / kExitReboot。
@@ -56,7 +68,9 @@ private:
     std::wstring m_leftText;
     std::wstring m_rightText;
     std::wstring m_midText;   // 非空 = 三选模式（Ask3）
+    std::wstring m_moreText;  // 非空 = 四选模式（Ask4）
+    bool         m_midDisabled = false;  // Ask3 中间按钮禁用（红「空间不足」）
     std::wstring m_hl;        // 非空 = 消息里红+粗的子串（Ask2 专用）
     bool         m_defaultRight = true;
-    int          m_defaultIdx = 1;  // 回车落点：二选 0/1、三选 0/1/2
+    int          m_defaultIdx = 1;  // 回车落点：二选 0/1、三/四选 0..2/0..3
 };

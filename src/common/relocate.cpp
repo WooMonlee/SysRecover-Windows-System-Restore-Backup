@@ -21,6 +21,9 @@ const unsigned long long kSpaceMargin = 32ull << 20;
 // 日志根是否"无处可写"（规则 ④）—— 由 LogBaseDir() 每次判定，见 LogHomeDegraded()。
 bool g_logHomeDegraded = false;
 
+// SettleHome 后的日志根覆盖（LogBaseDir 优先返回它）；空 = 无覆盖。
+std::wstring g_logHomeOverride;
+
 std::string ToUtf8(const std::wstring& w) {
     if (w.empty())
         return {};
@@ -286,22 +289,74 @@ std::wstring CmdLineTail() {
 namespace sysrecover {
 
 wchar_t SelectRelocateDrive(const std::vector<wchar_t>& candidates,
-                            wchar_t systemLetter) {
+                            wchar_t systemLetter, wchar_t avoidTarget) {
     wchar_t sys = (wchar_t)towupper(systemLetter);
+    wchar_t avoid = (wchar_t)towupper(avoidTarget);
     for (wchar_t c : candidates) {
         wchar_t u = (wchar_t)towupper(c);
-        if (u >= L'A' && u <= L'Z' && u != sys)
+        if (u >= L'A' && u <= L'Z' && u != sys && u != avoid)
             return u;
     }
-    for (wchar_t c : candidates)
-        if ((wchar_t)towupper(c) == sys)
-            return sys;
+    // 回退：都在系统分区上则用系统分区（单分区机器）；目标盘 != 系统盘时不回退到目标盘
+    for (wchar_t c : candidates) {
+        wchar_t u = (wchar_t)towupper(c);
+        // 回退条件：是系统盘，且（目标盘为空 或 系统盘就是目标盘 或 系统盘不是目标盘）
+        // —— 总之：系统盘本身就是最后的回退（哪怕它也是目标盘，单分区机器没办法）
+        if (u == sys)
+            return u;
+    }
     return 0;
+}
+
+void SetLogHomeOverride(const std::wstring& dir) {
+    g_logHomeOverride = dir;
+}
+
+std::wstring ContractDir() {
+    if (!g_logHomeOverride.empty())
+        return g_logHomeOverride;
+    return AppDir();
+}
+
+bool ShouldSettleHome(const std::wstring& exeDir, wchar_t targetLetter) {
+    // 还原只格式化目标分区 —— 同盘不同分区的程序不受影响，无需搬迁。
+    if (!targetLetter || exeDir.size() < 2 || exeDir[1] != L':')
+        return false;
+    return (wchar_t)towupper(exeDir[0]) == (wchar_t)towupper(targetLetter);
+}
+
+ZjrFolderKind ClassifyZjrResidue(const std::vector<std::wstring>& topNames) {
+    // 保守策略（PIT-156）：看得懂的删、看不懂的留 —— 宁可残留也不误删用户数据。
+    if (topNames.empty())
+        return ZjrFolderKind::Empty;
+    bool keepExe = false, keepMenu = false, ours = false;
+    for (const auto& raw : topNames) {
+        std::wstring n = raw;
+        for (auto& ch : n)
+            ch = (wchar_t)towlower(ch);
+        if (n == L"sysrecover.exe" || n == L"sysrecoverui.exe")
+            keepExe = true;  // SettleHome 复制来的程序的家（logs\ 正在被写）
+        else if (n == L"boot" || n == L"scripts")
+            keepMenu = true;  // 已安装启动菜单的救援载荷（精确名，非前缀：
+                              // bootfix/bootfiles 不命中）
+        else if (n == L"ea" || n == L"logs" || n == L"bootfix" ||
+                 n == L"source.txt" || n == L"rescue-build.txt")
+            ours = true;  // 我方一次性信号（还原期载荷/诊断）
+    }
+    if (keepExe || keepMenu)
+        return ZjrFolderKind::Keep;
+    if (ours)
+        return ZjrFolderKind::Delete;
+    return ZjrFolderKind::Keep;
 }
 
 unsigned long long AppTreeSize() { return TreeSizeRec(AppDir(), true); }
 
 std::wstring LogBaseDir() {
+    // SettleHome 覆盖（Q1「先落盘后搬家」）：优先返回覆盖目录
+    if (!g_logHomeOverride.empty())
+        return g_logHomeOverride;
+
     g_logHomeDegraded = false;
     const std::wstring appRoot = AppDir();
     wchar_t win[MAX_PATH] = {};
@@ -379,19 +434,30 @@ bool UseInstallDirLogHome(const std::wstring& installDir,
 bool LogHomeDegraded() { return g_logHomeDegraded; }
 
 std::string MigrateLogsToLogHome() {
-    // 只在规则 ① 命中（日志根 = 已安装的程序目录）时搬：否则日志根本来就在
-    // 数据盘上（就地运行/U盘），搬过去等于自搬自。
-    wchar_t win[MAX_PATH] = {};
-    DWORD winLen = GetWindowsDirectoryW(win, MAX_PATH);
-    const std::wstring winDir = winLen ? std::wstring(win, winLen) : std::wstring();
-    const std::wstring installDir = ProgramFilesSysRecoverDir();
-    if (!UseInstallDirLogHome(installDir, winDir, IsRunningInPe()))
+    // PIT-156（2026-10-18）：触发面推广到**每次启动**（不再只限"备返克隆首启"）
+    // —— 目的是给 CleanupStrayLogs 的"整个删掉残留文件夹"创造条件：先把残留里
+    // 还有价值的日志搬进日志根，再让清理器放心删壳。两个守卫：
+    //   · PE 不搬：日志根本来就在数据盘上（规则 ③），搬过去 = 自搬自；
+    //   · 暂存待还原/返回旧系统期间不搬（PIT-115/150）：pending-restore.txt 还在，
+    //     此刻日志根可能是临时位置、且马上要重启进救援层。
+    if (IsRunningInPe())
         return {};
-    const std::wstring dest = installDir + L"\\logs";
+    const std::wstring activeBase = LogBaseDir();
+    if (activeBase.empty())
+        return {};
+    const std::wstring dest = activeBase + L"\\logs";
     CreateDirectoryW(dest.c_str(), nullptr);
     if (!DirWritable(dest))
         return {};
+    if (GetFileAttributesW((dest + L"\\pending-restore.txt").c_str()) !=
+        INVALID_FILE_ATTRIBUTES) {
+        LogInfo("log migrate: skipped (pending restore)");
+        return {};
+    }
 
+    wchar_t win[MAX_PATH] = {};
+    DWORD winLen = GetWindowsDirectoryW(win, MAX_PATH);
+    const std::wstring winDir = winLen ? std::wstring(win, winLen) : std::wstring();
     const wchar_t sys = (winDir.size() >= 2 && winDir[1] == L':')
                             ? (wchar_t)towupper(winDir[0])
                             : 0;
@@ -409,15 +475,18 @@ std::string MigrateLogsToLogHome() {
         const std::wstring base = std::wstring(drv) + kCopyDirName;      // 软件目录回退
         const std::wstring fb = std::wstring(drv) + kFallbackLogDirName; // 黑匣子兜底窝
         if (GetFileAttributesW(base.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            HideDir(base);  // 用户 2026-10-17：<盘>:\ZJRESTORE 设隐藏
-            const std::wstring src = base + L"\\logs";
-            if (GetFileAttributesW(src.c_str()) != INVALID_FILE_ATTRIBUTES) {
-                ++sources;
-                MoveTreeMerge(src, dest, c);
-                if (RemoveEmptyDir(src))
-                    RemoveEmptyDir(base);  // 搬空且 ZJRESTORE 也空了 → 整个删掉
+            // 源 == 日志根本身 → 跳过（否则自搬自；AppDir/规则 ① 路径无尾斜杠）
+            if (_wcsicmp(base.c_str(), activeBase.c_str()) != 0) {
+                HideDir(base);  // 用户 2026-10-17：<盘>:\ZJRESTORE 设隐藏
+                const std::wstring src = base + L"\\logs";
+                if (GetFileAttributesW(src.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                    ++sources;
+                    MoveTreeMerge(src, dest, c);
+                    if (RemoveEmptyDir(src))
+                        RemoveEmptyDir(base);  // 搬空且 ZJRESTORE 也空了 → 整个删掉
+                }
+                HideDir(base);  // 兜一层：删不掉（还有 bootfix 等）时确保隐藏位在
             }
-            HideDir(base);  // 兜一层：删不掉（还有 bootfix 等）时确保隐藏位在
         }
         if (GetFileAttributesW(fb.c_str()) != INVALID_FILE_ATTRIBUTES) {
             HideDir(fb);
@@ -426,6 +495,8 @@ std::string MigrateLogsToLogHome() {
             RemoveEmptyDir(fb);
         }
     }
+    if (sources == 0 && c.moved == 0 && c.failed == 0)
+        return {};  // 无源：每次启动少一行噪音（PIT-156）
     // 结尾留证：现场只看这一行就能判断"搬了几个源、成功/失败多少"。
     return "log migrate: moved=" + std::to_string(c.moved) +
            " failed=" + std::to_string(c.failed) +

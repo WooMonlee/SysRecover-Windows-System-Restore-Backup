@@ -19,6 +19,7 @@
 #include "boot/task.h"
 #include "boot/uefi.h"
 #include "common/i18n.h"
+#include "common/bioskey.h"
 #include "common/pathutil.h"
 #include "common/refscan.h"
 #include "common/relocate.h"
@@ -124,6 +125,7 @@ TEST(exclude_default_has_essentials) {
     CHECK_CONTAINS(c, "\\hiberfil.sys");
     CHECK_CONTAINS(c, "\\swapfile.sys");
     CHECK_CONTAINS(c, "\\System Volume Information");
+    CHECK_CONTAINS(c, "\\Users\\*\\AppData\\Local\\Microsoft\\OneDrive*");
 }
 
 // ⭐ PIT-056 回归守卫：注册表事务日志**绝不能**被排除 ——
@@ -163,6 +165,9 @@ RestoreTask SampleTask() {
     t.imageRelPath = L"images/win10.esd";
     t.imageIndex = 2;
     t.espIndex = 2;  // 方案 C：镜像里含名为 ESP 的子镜像（index 2）
+    t.imageSize = 1517536768ull;  // 1019 案：镜像字节数（救援层契约认证比对用）
+    t.reparseScan = 0;            // 1019 案 W1：暂存侧已扫描干净
+    t.efsScan = 0;                // 1019 案 W2：EFS 预检也干净
     t.targetOffset = 105906176ull;
     t.targetSize = 716800000ull;
     t.targetDiskSerial = L"QEMU-DRILL-0001";
@@ -188,6 +193,9 @@ TEST(task_conf_has_required_keys) {
     CHECK_CONTAINS(c, "image_path=D:\\images\\win10.esd");
     CHECK_CONTAINS(c, "image_rel_path=images/win10.esd");
     CHECK_CONTAINS(c, "image_index=2");
+    CHECK_CONTAINS(c, "image_size=1517536768");  // 1019 案 W1：契约认证（size）
+    CHECK_CONTAINS(c, "reparse_scan=0");         // 1019 案 W1：暂存侧扫描干净
+    CHECK_CONTAINS(c, "efs_scan=0");             // 1019 案 W2：EFS 预检干净
     CHECK_CONTAINS(c, "esp_index=2");  // 方案 C：ESP 子镜像 index 进契约
     CHECK_CONTAINS(c, "target_offset=105906176");
     CHECK_CONTAINS(c, "target_size=716800000");
@@ -214,6 +222,28 @@ TEST(task_json_escapes_backslashes) {
     CHECK_CONTAINS(j, "D:\\\\images\\\\win10.esd");  // JSON 里反斜杠要转义
     CHECK_CONTAINS(j, "\"target_disk\":0");
     CHECK_CONTAINS(j, "\"esp_index\":2");
+    CHECK_CONTAINS(j, "\"image_size\":1517536768");  // 1019 案 W1
+    CHECK_CONTAINS(j, "\"reparse_scan\":0");         // 1019 案 W1
+    CHECK_CONTAINS(j, "\"efs_scan\":0");             // 1019 案 W2
+}
+
+// 1019 案 W1/W2：reparse_scan / efs_scan / image_size 是**增量键** —— 默认值
+// 必须安全：老调用点（StageReturnOld、未来新入口）不设 → reparse_scan=-1、
+// efs_scan=-1（救援层自行扫描）、image_size=0（与任何实际大小都不等 →
+// 不会误认证）。W2 关键：老的 0.7.70 版 exe 只写 reparse_scan=0、缺 efs_scan
+// → 救援层 fast path 要求两键都 0，缺一即全量扫描（防旧证书漏掉 EFS）。
+TEST(task_conf_reparse_defaults) {
+    RestoreTask t = SampleTask();
+    t.reparseScan = RestoreTask{}.reparseScan;
+    t.efsScan = RestoreTask{}.efsScan;
+    t.imageSize = RestoreTask{}.imageSize;
+    CHECK_EQ(t.reparseScan, -1);
+    CHECK_EQ(t.efsScan, -1);
+    CHECK_EQ(t.imageSize, 0ull);
+    std::string c = BuildTaskConf(t);
+    CHECK_CONTAINS(c, "reparse_scan=-1");
+    CHECK_CONTAINS(c, "efs_scan=-1");
+    CHECK_CONTAINS(c, "image_size=0");
 }
 
 TEST(task_restore_log_contract) {
@@ -226,6 +256,9 @@ TEST(task_restore_log_contract) {
     CHECK_CONTAINS(l, "target_fs=NTFS");
     CHECK_CONTAINS(l, "target_vol_label=Windows");
     CHECK_CONTAINS(l, "image_index=2");
+    CHECK_CONTAINS(l, "image_size=1517536768");  // 1019 案 W1：日志兜底路径也要有
+    CHECK_CONTAINS(l, "reparse_scan=0");         // 1019 案 W1
+    CHECK_CONTAINS(l, "efs_scan=0");             // 1019 案 W2：日志兜底路径也要有
     CHECK_CONTAINS(l, "esp_index=2");  // 主发现契约也要有（conf 缺失时的回退）
     CHECK_CONTAINS(l, "repair_boot=0");
     CHECK_CONTAINS(l, "pt_type=gpt");
@@ -445,6 +478,9 @@ TEST(task_conf_get) {
     std::string conf = BuildTaskConf(SampleTask());
     // 契约里写过的键要能取回来（SampleTask 的 imageIndex = 2）
     CHECK_EQ(TaskConfGet(conf, "image_index"), std::string("2"));
+    CHECK_EQ(TaskConfGet(conf, "image_size"), std::string("1517536768"));  // 1019 案
+    CHECK_EQ(TaskConfGet(conf, "reparse_scan"), std::string("0"));         // 1019 案
+    CHECK_EQ(TaskConfGet(conf, "efs_scan"), std::string("0"));             // 1019 案 W2
     CHECK_EQ(TaskConfGet(conf, "esp_index"), std::string("2"));
     CHECK_EQ(TaskConfGet(conf, "image_path"),
              std::string("D:\\images\\win10.esd"));
@@ -504,12 +540,33 @@ TEST(boot_path_choice) {
     CHECK(!ShouldUseUefiBoot(true, PartitionStyle::MBR));
     // BIOS 固件 + MBR 盘 → BIOS 链
     CHECK(!ShouldUseUefiBoot(false, PartitionStyle::MBR));
-    // GPT 盘 → UEFI 链（BIOS 固件 + GPT 由 safety.cpp 预拒，这里只断言判据）
+    // GPT 盘 → UEFI 链（BIOS 会话 + GPT 暂存由 CheckStagedBootPath 拦截，这里只断言判据）
     CHECK(ShouldUseUefiBoot(true, PartitionStyle::GPT));
     CHECK(ShouldUseUefiBoot(false, PartitionStyle::GPT));
     // 风格未知 → 退回固件类型
     CHECK(ShouldUseUefiBoot(true, PartitionStyle::Unknown));
     CHECK(!ShouldUseUefiBoot(false, PartitionStyle::Unknown));
+}
+
+// ── bootpath：暂存会话前置（Q2，2026-10-18）──────────────────────
+// 两种必坏组合拒绝、合法组合与 Unknown 放行。
+TEST(check_staged_boot_path) {
+    using sysrecover::CheckStagedBootPath;
+    using sysrecover::PartitionStyle;
+    using sysrecover::StagedBootPath;
+    // BIOS 会话 + GPT 目标 → 拒
+    CHECK(CheckStagedBootPath(false, PartitionStyle::GPT) ==
+          StagedBootPath::BiosSessionGptTarget);
+    // UEFI 会话 + MBR 目标 → 拒
+    CHECK(CheckStagedBootPath(true, PartitionStyle::MBR) ==
+          StagedBootPath::UefiSessionMbrTarget);
+    // UEFI 会话 + GPT 目标 → 放行
+    CHECK(CheckStagedBootPath(true, PartitionStyle::GPT) == StagedBootPath::Ok);
+    // BIOS 会话 + MBR 目标 → 放行
+    CHECK(CheckStagedBootPath(false, PartitionStyle::MBR) == StagedBootPath::Ok);
+    // Unknown 风格 → 放行（两种会话）
+    CHECK(CheckStagedBootPath(true, PartitionStyle::Unknown) == StagedBootPath::Ok);
+    CHECK(CheckStagedBootPath(false, PartitionStyle::Unknown) == StagedBootPath::Ok);
 }
 
 // ── bcd_parse：`bcdedit /enum` 输出断言（docs/15 · P3）────────────
@@ -593,6 +650,14 @@ TEST(relocate_drive_choice) {
     CHECK_EQ(SelectRelocateDrive({L'c'}, L'c'), L'C');
     // 候选顺序即优先级（C 被排除时取 D，即便 E 也在列表里）
     CHECK_EQ(SelectRelocateDrive({L'D', L'E'}, L'C'), L'D');
+    // Q1 avoidTarget（2026-10-18）：目标盘被跳过
+    CHECK_EQ(SelectRelocateDrive({L'C', L'D'}, L'C', L'D'), L'C');
+    // avoidTarget 与 systemLetter 同盘：D 不是目标 → 用 D
+    CHECK_EQ(SelectRelocateDrive({L'C', L'D'}, L'C', L'C'), L'D');
+    // avoidTarget 排除唯一候选 → 0
+    CHECK_EQ(SelectRelocateDrive({L'D'}, L'C', L'D'), L'\0');
+    // avoidTarget 大小写不敏感
+    CHECK_EQ(SelectRelocateDrive({L'C', L'D'}, L'C', L'd'), L'C');
 }
 
 // 用户 2026-10-17 规则 ①：日志根优先「已安装的程序目录」——
@@ -620,6 +685,91 @@ TEST(log_home_install_dir_rule) {
     CHECK(!UseInstallDirLogHome(L"Program Files\\SysRecover", L"C:\\Windows",
                                false));
     CHECK(!UseInstallDirLogHome(L"C:\\Program Files\\SysRecover", L"", false));
+}
+
+// Q1「先落盘后搬家」触发判据（relocate.h::ShouldSettleHome）：还原只格式化
+// 目标分区 → 同盘不同分区的程序不受影响，无需搬迁；只有同盘符才触发。
+TEST(settle_home_trigger) {
+    using sysrecover::ShouldSettleHome;
+    // 同盘符 → 触发（大小写不敏感）
+    CHECK(ShouldSettleHome(L"C:\\Program Files\\SysRecover", L'C'));
+    CHECK(ShouldSettleHome(L"C:\\SysRecover", L'c'));
+    CHECK(ShouldSettleHome(L"c:\\x", L'C'));
+    // 异盘 → 不触发
+    CHECK(!ShouldSettleHome(L"D:\\SysRecover", L'C'));
+    CHECK(!ShouldSettleHome(L"E:\\x", L'c'));
+    // targetLetter=0（目标无盘符）→ 不触发
+    CHECK(!ShouldSettleHome(L"C:\\x", 0));
+    // exeDir 为空 / 无盘符 / 太短 → 不触发
+    CHECK(!ShouldSettleHome(L"", L'C'));
+    CHECK(!ShouldSettleHome(L"\\x", L'C'));
+    CHECK(!ShouldSettleHome(L"C", L'C'));
+    CHECK(ShouldSettleHome(L"C:", L'C'));  // 盘符根也算同盘（边界）
+}
+
+// ZJRESTORE 残留目录分类（PIT-156）：保守 —— 看得懂的删、看不懂的留。
+TEST(zjr_residue_classify) {
+    using sysrecover::ClassifyZjrResidue;
+    using sysrecover::ZjrFolderKind;
+    // 空目录 → Empty（删目录本身）
+    CHECK(ClassifyZjrResidue({}) == ZjrFolderKind::Empty);
+    // 典型还原残留（EA 载荷）→ Delete
+    CHECK(ClassifyZjrResidue({L"ea"}) == ZjrFolderKind::Delete);
+    CHECK(ClassifyZjrResidue({L"ea", L"source.txt"}) == ZjrFolderKind::Delete);
+    CHECK(ClassifyZjrResidue({L"bootfix", L"logs", L"rescue-build.txt"}) ==
+          ZjrFolderKind::Delete);
+    // 已装启动菜单（boot/scripts）→ Keep（菜单本体，删不得）
+    CHECK(ClassifyZjrResidue({L"boot", L"ea"}) == ZjrFolderKind::Keep);
+    CHECK(ClassifyZjrResidue({L"scripts", L"bootfix"}) == ZjrFolderKind::Keep);
+    // SettleHome 程序的家（exe）→ Keep（logs\ 正在被写）
+    CHECK(ClassifyZjrResidue({L"SysRecover.exe", L"logs"}) ==
+          ZjrFolderKind::Keep);
+    CHECK(ClassifyZjrResidue({L"SysRecoverUI.exe", L"boot", L"ea"}) ==
+          ZjrFolderKind::Keep);
+    // 大小写不敏感（磁盘上的真实名字大小写不一）
+    CHECK(ClassifyZjrResidue({L"EA", L"SOURCE.TXT"}) == ZjrFolderKind::Delete);
+    CHECK(ClassifyZjrResidue({L"BOOT"}) == ZjrFolderKind::Keep);
+    // 精确名匹配 —— bootfix/bootfiles 不能命中"boot"（前缀陷阱）
+    CHECK(ClassifyZjrResidue({L"bootfix"}) == ZjrFolderKind::Delete);
+    CHECK(ClassifyZjrResidue({L"bootfiles"}) == ZjrFolderKind::Keep);
+    // 认不出的内容 → 保守保留
+    CHECK(ClassifyZjrResidue({L"_zjresy-1.log"}) == ZjrFolderKind::Keep);
+    CHECK(ClassifyZjrResidue({L"restore-task.conf", L"mydata"}) ==
+          ZjrFolderKind::Keep);
+    // 我方信号 + 未知杂物 → 仍删（整个 ZJRESTORE 是还原期重建的，杂物也一并清）
+    CHECK(ClassifyZjrResidue({L"ea", L"whatever.bin"}) ==
+          ZjrFolderKind::Delete);
+}
+
+// 开机快捷启动键识别（bioskey；表移植自 BiosKC，2026-10-18 客户反馈：
+// HP 是 F9 而文案写死 F12 → 按品牌/机型给键名，识别不到返回空=中性措辞）。
+TEST(bios_key_lookup) {
+    using sysrecover::LookupBootMenuKey;
+    // 客户机：HP laptop (redacted)（HP 全系 = F9）
+    CHECK_EQ(LookupBootMenuKey(L"HP", L"8846", L"HP", L"HP laptop (redacted)"),
+             L"F9");
+    // 大小写不敏感 + 主板厂商命中（ASUSTEK → F8）
+    CHECK_EQ(LookupBootMenuKey(L"ASUSTeK COMPUTER INC.", L"", L"", L""), L"F8");
+    // 整机厂商/型号也能命中（主板串为空时）
+    CHECK_EQ(LookupBootMenuKey(L"", L"", L"HP", L"HP Pavilion Gaming"), L"F9");
+    // Dell 全系 F12、Lenovo F12 or Fn+F12、Samsung F10 or ESC
+    CHECK_EQ(LookupBootMenuKey(L"Dell Inc.", L"0XXXXX", L"Dell Inc.",
+                               L"Inspiron 3880"),
+             L"F12");
+    CHECK_EQ(LookupBootMenuKey(L"LENOVO", L"20QF", L"LENOVO", L"ThinkPad X1"),
+             L"F12 or Fn+F12");
+    CHECK_EQ(LookupBootMenuKey(L"SAMSUNG ELECTRONICS", L"", L"", L""),
+             L"F10 or ESC");
+    // Surface：表里 boot 为空（用音量键）→ 返回空 = 中性措辞
+    CHECK(LookupBootMenuKey(L"Microsoft Corporation", L"Surface", L"", L"")
+              .empty());
+    // 完全未知 → 空
+    CHECK(LookupBootMenuKey(L"", L"", L"", L"").empty());
+    CHECK(LookupBootMenuKey(L"FooBar Tech", L"QQQ1234", L"", L"").empty());
+    // vendor 回填（展示/诊断用）
+    std::wstring ven;
+    LookupBootMenuKey(L"ASRock", L"", L"", L"", &ven);
+    CHECK_EQ(ven, L"ASRock");
 }
 
 // ────────────────────── rescue_decision（回执/待执行标记判定，PIT-115） ────
@@ -691,6 +841,9 @@ TEST(rescue_step_retryable) {
     CHECK(!RescueStepRetryable("swap-failed"));
     CHECK(!RescueStepRetryable("returnold-missing"));
     CHECK(!RescueStepRetryable("returnold-failed"));
+    // 1019 案 W1/W2：镜像级确定性拒绝（未动盘，但重试同一镜像+引擎必复败）→ 不提供
+    CHECK(!RescueStepRetryable("reparse-unsettable"));
+    CHECK(!RescueStepRetryable("efs-encrypted"));
     // 未知 step（老回执/新脚本）：fail-closed 不提供一键重试
     CHECK(!RescueStepRetryable(""));
     CHECK(!RescueStepRetryable("done"));
@@ -708,6 +861,112 @@ TEST(ea_non_ms_reparse_tag) {
     CHECK(!ea::IsNonMsReparseTag(0xA000000C));  // symlink（微软）
     CHECK(!ea::IsNonMsReparseTag(0x8000001B));  // APPEXECLINK（微软）
     CHECK(!ea::IsNonMsReparseTag(0x00000000));  // 0 = 无 tag，不算
+}
+
+// 1019 案 F1/F5：Linux 侧（wimlib NTFS-3G 块模式）写不了的重解析点判定
+// （ntfs-3g valid_reparse_data 忠实移植 + 非微软显式并入）。
+// blob==nullptr 路径 = 零误报子集（F5 镜像预检只用它在"只读元数据"下定论）。
+TEST(ea_unsettable_reparse) {
+    const unsigned long kDir = 0x10;
+    const unsigned long kReparse = 0x400;
+    const unsigned long kRecall = 0x40000;
+    // 原始 FSCTL_GET_REPARSE_POINT 缓冲：[tag u32][datalen u16][reserved u16]
+    // + payload（微软 tag 的 datalen 不含 8 字节头）。
+    auto raw = [](unsigned long tag, const std::vector<unsigned char>& payload) {
+        std::vector<unsigned char> b(8, 0);
+        for (int i = 0; i < 4; ++i)
+            b[i] = (unsigned char)((tag >> (8 * i)) & 0xFF);
+        b[4] = (unsigned char)(payload.size() & 0xFF);
+        b[5] = (unsigned char)((payload.size() >> 8) & 0xFF);
+        b.insert(b.end(), payload.begin(), payload.end());
+        return b;
+    };
+
+    // 非微软 tag：无论 blob 如何都不可写（PIT-135；wimlib 块模式写不过去）
+    CHECK(ea::IsUnsettableReparse(0x00000001UL, kReparse, nullptr, 0));
+    {
+        auto b = raw(0x00000001UL, {0, 0, 0, 0});
+        CHECK(ea::IsUnsettableReparse(0x00000001UL, kReparse, b.data(),
+                                      b.size()));
+    }
+
+    // 无 blob 子集（F5 预检口径）：junction 落非目录 = 1019 案真凶形态；
+    // 其余不确定项一律 false（零误报，宁可不拦）
+    CHECK(ea::IsUnsettableReparse(0xA0000003UL, kReparse, nullptr, 0));
+    CHECK(!ea::IsUnsettableReparse(0xA0000003UL, kReparse | kDir, nullptr, 0));
+    CHECK(!ea::IsUnsettableReparse(0xA000000CUL, kReparse, nullptr, 0));
+    CHECK(!ea::IsUnsettableReparse(0x80000017UL, kReparse, nullptr, 0));
+    CHECK(!ea::IsUnsettableReparse(0UL, kReparse, nullptr, 0));
+
+    // 有 blob：tag==0 → 拒；长度方程不成立 → 拒
+    {
+        auto b = raw(0UL, {});
+        CHECK(ea::IsUnsettableReparse(0UL, kReparse, b.data(), b.size()));
+    }
+    {
+        auto b = raw(0xA0000003UL, {});  // 实际 8 字节，声称 datalen=8
+        b[4] = 8;
+        b[5] = 0;
+        CHECK(ea::IsUnsettableReparse(0xA0000003UL, kReparse | kDir, b.data(),
+                                      b.size()));
+    }
+
+    // junction（有 blob）：合法（16B 目录）→ 放行；落非目录/越界/过短 → 拒
+    {
+        auto ok = raw(0xA0000003UL, {0, 0, 0, 0, 0, 0, 0, 0});
+        CHECK(!ea::IsUnsettableReparse(0xA0000003UL, kReparse | kDir,
+                                       ok.data(), ok.size()));
+        CHECK(ea::IsUnsettableReparse(0xA0000003UL, kReparse, ok.data(),
+                                      ok.size()));
+        auto shortB = raw(0xA0000003UL, {});
+        CHECK(ea::IsUnsettableReparse(0xA0000003UL, kReparse | kDir,
+                                      shortB.data(), shortB.size()));
+        auto outOfRange = raw(0xA0000003UL, {0, 0, 100, 0, 0, 0, 0, 0});
+        CHECK(ea::IsUnsettableReparse(0xA0000003UL, kReparse | kDir,
+                                      outOfRange.data(), outOfRange.size()));
+    }
+
+    // symlink：20B 合法 → 放行；过短 → 拒
+    {
+        auto ok = raw(0xA000000CUL, std::vector<unsigned char>(12, 0));
+        CHECK(!ea::IsUnsettableReparse(0xA000000CUL, kReparse, ok.data(),
+                                       ok.size()));
+        auto shortB = raw(0xA000000CUL, {});
+        CHECK(ea::IsUnsettableReparse(0xA000000CUL, kReparse, shortB.data(),
+                                      shortB.size()));
+    }
+
+    // LX symlink（WSL）：datalen>4 且 type==2 才放行
+    {
+        auto good = raw(0xA000001DUL, {2, 0, 0, 0, 0, 0, 0, 0});
+        CHECK(!ea::IsUnsettableReparse(0xA000001DUL, kReparse, good.data(),
+                                       good.size()));
+        auto small = raw(0xA000001DUL, {});
+        CHECK(ea::IsUnsettableReparse(0xA000001DUL, kReparse, small.data(),
+                                      small.size()));
+        auto wrong = raw(0xA000001DUL, {1, 0, 0, 0, 0, 0, 0, 0});
+        CHECK(ea::IsUnsettableReparse(0xA000001DUL, kReparse, wrong.data(),
+                                      wrong.size()));
+    }
+
+    // AF_UNIX 族：datalen 必须 0 且 RECALL_ON_OPEN 必须在
+    {
+        auto b = raw(0x80000023UL, {});
+        CHECK(!ea::IsUnsettableReparse(0x80000023UL, kReparse | kRecall,
+                                       b.data(), b.size()));
+        CHECK(ea::IsUnsettableReparse(0x80000023UL, kReparse, b.data(),
+                                      b.size()));
+        auto withData = raw(0x80000023UL, {1});
+        CHECK(ea::IsUnsettableReparse(0x80000023UL, kReparse | kRecall,
+                                      withData.data(), withData.size()));
+    }
+
+    // 其余微软 tag（WOF 等）→ 放行（不误伤）
+    {
+        auto b = raw(0x80000017UL, {1, 2, 3});
+        CHECK(!ea::IsUnsettableReparse(0x80000017UL, kReparse, b.data(),
+                                       b.size()));
+    }
 }
 
 // PIT-136：reppack 打包/解析往返（内容 + reparse 原始数据二进制安全；截断/坏
