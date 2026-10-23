@@ -1,0 +1,75 @@
+name: Bug report
+description: Report a reproducible problem (redact sensitive data)
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not attach customer logs, disk images, support bundles, passwords, or serial numbers.**
+        Redact paths and machine names before posting.
+  - type: input
+    id: version
+    attributes:
+      label: SysRecover version
+      description: Output of `SysRecover.exe version` or `version.json`
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Environment
+      options:
+        - Windows 7
+        - Windows 10
+        - Windows 11
+        - WinPE
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: firmware
+    attributes:
+      label: Firmware / boot mode
+      options:
+        - BIOS / MBR
+        - UEFI / GPT (Secure Boot off)
+        - UEFI / GPT (Secure Boot on)
+        - Unknown
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log excerpt (redacted)
+      description: Prefer a short excerpt from `logs/` after removing paths, names, and serials.
+      render: text
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Confirmation
+      options:
+        - label: I removed customer data, secrets, serial numbers, and personal paths.
+          required: true

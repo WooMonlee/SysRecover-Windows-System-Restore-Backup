@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows-x64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install MinGW-w64
+        shell: pwsh
+        run: |
+          choco install mingw --no-progress -y
+          $g = Get-ChildItem "C:\ProgramData\chocolatey\lib\mingw" -Recurse -Filter g++.exe |
+               Select-Object -First 1
+          if (-not $g) { throw "g++.exe not found after choco install" }
+          $mingw = Split-Path (Split-Path $g.FullName)
+          "MINGW64=$mingw" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "$mingw\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Build and test
+        shell: pwsh
+        run: |
+          $env:MINGW64 = (Get-Content $env:GITHUB_ENV | Where-Object { $_ -like "MINGW64=*" }).Substring(8)
+          $env:PYTHON = (Get-Command python).Source
+          mingw32-make -f Makefile check
+          mingw32-make -f Makefile all
+
+      - name: Upload x64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SysRecover-x64-${{ github.sha }}
+          path: dist/x64
+          if-no-files-found: error

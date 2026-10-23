@@ -2,6 +2,10 @@
 
 > **English** | [中文](README.md)
 
+[![ci](https://github.com/WooMonlee/SysRecover-Windows-System-Restore-Backup/actions/workflows/ci.yml/badge.svg)](https://github.com/WooMonlee/SysRecover-Windows-System-Restore-Backup/actions/workflows/ci.yml)
+
+> **Status: 0.9.9 pre-release.** Until 1.0, treat real-hardware regression results as authoritative; test on a small set of machines first and do not rely on it as your only backup.
+
 > Version `0.9.9` | **x64 + x86 dual architecture** (the Windows side follows the OS bitness; the Linux rescue layer is always x64) | Windows 7 / 10 / 11 / WinPE | Release package ≈41 MB (≈27 MB of it is the rescue kernel and initramfs)
 > License: own code **MIT** (see [`LICENSE`](LICENSE)); third-party components are *separately distributed* — full list, license texts and source-code provenance in [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt)
 
