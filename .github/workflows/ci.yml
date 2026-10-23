@@ -29,7 +29,6 @@ jobs:
       - name: Build and test
         shell: pwsh
         run: |
-          $env:MINGW64 = (Get-Content $env:GITHUB_ENV | Where-Object { $_ -like "MINGW64=*" }).Substring(8)
           $env:PYTHON = (Get-Command python).Source
           mingw32-make -f Makefile check
           mingw32-make -f Makefile all
