@@ -36,8 +36,11 @@ bool NeedsInstall(std::string& detail);
 bool RemoveBootLayer(std::string& log);
 
 // 一键安装引导层到 deployDrive（含 BCD 条目创建）。返回 true 表示全部就绪。
+// temporary=true：日常还原的一次性条目（独立 GUID/名称，首启自动清理）；
+// temporary=false：用户显式「安装菜单」的常驻条目。
 bool InstallBootLayer(const std::wstring& deployDrive,
-                      const std::wstring& exeDir, std::string& log);
+                      const std::wstring& exeDir, std::string& log,
+                      bool temporary = false);
 
 // ── UEFI（GPT）分支 ──────────────────────────────────────────────
 // 临时给 ESP 分配一个盘符（mountvol X: /s，需管理员）。成功返回 L"X:\\"。

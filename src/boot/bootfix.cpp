@@ -167,11 +167,12 @@ bool PrepareBootFixFiles(const std::wstring& recoveryDir, std::string& log) {
         // 删掉 GRUB4DOS 恢复条目（export 连它一起导出了）：先摘 displayorder 引用，
         // 再删条目。否则目标机多出一个无效恢复菜单项（device=partition=D: 在目标
         // 机上不存在），BCD 有多个条目时 timeout=0 仍可能弹菜单。
-        RunBcdEdit(store,
-                   L"/displayorder " + std::wstring(RecoveryGuid()) + L" /remove",
-                   log);
-        RunBcdEdit(store, L"/delete " + std::wstring(RecoveryGuid()) + L" /f",
-                   log);
+        // 常驻菜单 + 日常还原临时项都要删（两者 GUID 不同）。
+        for (const wchar_t* guid : {RecoveryGuid(), TemporaryGuid()}) {
+            RunBcdEdit(store,
+                       L"/displayorder " + std::wstring(guid) + L" /remove", log);
+            RunBcdEdit(store, L"/delete " + std::wstring(guid) + L" /f", log);
+        }
     } else {
         log += "no bootfix BCD\n";
         ok = false;

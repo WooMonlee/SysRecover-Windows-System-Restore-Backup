@@ -160,6 +160,18 @@ EA_APPLY_OUT = bootfiles/zj-ea-apply.exe
 ea-apply: $(EA_APPLY_OUT)
 $(EA_APPLY_OUT): $(EA_APPLY_SRC) src/common/version.h
 	$(EA_APPLY_X86) $(CXXFLAGS) $(INCLUDES) $(EA_APPLY_SRC) -o $(EA_APPLY_OUT) -static -mconsole -municode -s -lntdll -ladvapi32
+
+# ---- “恢复引导菜单”首启清理器（日常还原临时项；PIT-170）----
+BOOT_CLEANUP_SRC = src/tools/restore_boot_main.cpp
+BOOT_CLEANUP_RC = src/cli/SysRecover.rc
+BOOT_CLEANUP_RC_OBJ = $(OBJDIR)/boot-cleanup-rc.o
+BOOT_CLEANUP_X86 = $(MINGW32)/bin/i686-w64-mingw32-g++
+BOOT_CLEANUP_OUT = bootfiles/zj-restore-boot.exe
+boot-cleanup: $(BOOT_CLEANUP_OUT)
+$(BOOT_CLEANUP_RC_OBJ): $(BOOT_CLEANUP_RC) src/cli/SysRecover.manifest | $(OBJDIR)
+	$(MINGW32)/bin/windres.exe -I src/cli $(BOOT_CLEANUP_RC) -o $(BOOT_CLEANUP_RC_OBJ)
+$(BOOT_CLEANUP_OUT): $(BOOT_CLEANUP_SRC) $(BOOT_CLEANUP_RC_OBJ) src/boot/bcd.h src/boot/bootnames.h | $(OBJDIR)
+	$(BOOT_CLEANUP_X86) $(CXXFLAGS) $(INCLUDES) $(BOOT_CLEANUP_SRC) $(BOOT_CLEANUP_RC_OBJ) -o $(BOOT_CLEANUP_OUT) -static -mconsole -municode -s -ladvapi32
 # ---- 单元测试（0.7 线重做：2026-10-11 自 graveyard/tests 迁回；旧 45 用例对 0.7
 #      源码复验全绿后原样恢复，另补 0.7 新纯逻辑 DecideSwapLeftover 决策表用例）----
 TEST_SRC   = tests/tiny_test.cpp tests/unit_tests.cpp tests/main.cpp
@@ -193,7 +205,7 @@ check: $(TEST_BIN)
 # 递归调用 make 时**必须把 $(MAKE) 的正斜杠换成反斜杠**：mingw32-make 把 $(MAKE) 展开成
 # `D:/Prog/.../mingw32-make.exe`，而 shell 是 cmd，正斜杠路径会被判为"系统找不到指定的路径"。
 SELF = $(subst /,\,$(MAKE))
-package: ea-apply
+package: ea-apply boot-cleanup
 	@echo === [1/3] 构建 x64 -^> dist/x64 ===
 	$(SELF) -f Makefile ARCH=x64 all
 	@echo === [2/3] 构建 x86 -^> dist（根，入口）===
@@ -207,6 +219,7 @@ package: ea-apply
 	@copy /Y bootfiles\zjrestore-lite.sh dist\bootfiles\ >nul
 	@copy /Y bootfiles\zjlog.sh dist\bootfiles\ >nul
 	@copy /Y bootfiles\zj-ea-apply.exe dist\bootfiles\ >nul
+	@copy /Y bootfiles\zj-restore-boot.exe dist\bootfiles\ >nul
 # 异机还原：随包放一个 Drivers\ 说明（用户把启动驱动放这里；无 .inf 时仅内置）
 	@if not exist dist\Drivers mkdir dist\Drivers
 	@copy /Y bootfiles\Drivers-README.txt dist\Drivers\README.txt >nul

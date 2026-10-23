@@ -15,6 +15,7 @@
 
 #include "bcd.h"
 #include "bcd_parse.h"
+#include "bootnames.h"
 #include "../common/process.h"
 #include "../common/version.h"
 #include "../common/zip.h"  // Crc32（部署后校验，A6）
@@ -51,9 +52,11 @@ bool FileCrc32(const std::wstring& path, uint32_t& out) {
 // EFI_GLOBAL_VARIABLE 命名空间。
 const wchar_t kGlobalGuid[] = L"{8BE4DF61-93CA-11D2-AA0D-00E098032B8C}";
 
-// 条目描述 = 身份标识。固件启动菜单字体未必含中文（PIT-054 的方框教训），
-// 故用 ASCII；再配合 FilePath 里的 ZJRESTORE 判归属。
-const wchar_t kEntryDesc[] = L"SysRecover";
+// 条目描述 = 身份标识（ASCII；固件启动菜单字体未必含中文，PIT-054）。
+// 常驻菜单与日常还原临时项必须用不同描述，首启清理只认临时项。
+const wchar_t* EntryDesc(bool temporary) {
+    return temporary ? kTempEntryDesc : kMenuEntryDesc;
+}
 
 const wchar_t kKernelPath[] = L"\\EFI\\ZJRESTORE\\vmlinuz-zjrestore.efi";
 
@@ -187,15 +190,16 @@ bool ParseOption(const std::vector<BYTE>& b, std::wstring& desc,
     return true;
 }
 
-bool IsOurs(const std::vector<BYTE>& b) {
+bool IsOurs(const std::vector<BYTE>& b, const wchar_t* expectDesc) {
     std::wstring desc, dev;
     if (!ParseOption(b, desc, dev))
         return false;
-    return desc == kEntryDesc && dev.find(L"ZJRESTORE") != std::wstring::npos;
+    return desc == expectDesc && dev.find(L"ZJRESTORE") != std::wstring::npos;
 }
 
 // 找我们已存在的条目；找到返回条目号，否则 -1。
-int FindOurEntry() {
+int FindOurEntry(bool temporary) {
+    const wchar_t* expect = EntryDesc(temporary);
     std::vector<BYTE> order;
     if (!ReadVar(L"BootOrder", order))
         return -1;
@@ -206,7 +210,7 @@ int FindOurEntry() {
         std::vector<BYTE> b;
         if (!ReadVar(VarName(v), b))
             continue;
-        if (IsOurs(b))
+        if (IsOurs(b, expect))
             return v;
     }
     return -1;
@@ -360,7 +364,7 @@ int FirmwareTrustedUefiCas() {
 static bool BuildAndWrite(int num, const GUID& sig, DWORD partNum,
                           unsigned long long start, unsigned long long size,
                           const std::wstring& targetPath, const wchar_t* cmdLine,
-                          std::string& log) {
+                          const wchar_t* entryDesc, std::string& log) {
     EfiHdNode hd{};
     hd.type = 4;
     hd.subType = 1;
@@ -384,7 +388,7 @@ static bool BuildAndWrite(int num, const GUID& sig, DWORD partNum,
 
     DWORD fpll =
         (DWORD)(sizeof(EfiHdNode) + fpLen + sizeof(EfiDirNode));
-    size_t descBytes = (wcslen(kEntryDesc) + 1) * 2;
+    size_t descBytes = (wcslen(entryDesc) + 1) * 2;
     size_t cmdBytes = cmdLine ? (wcslen(cmdLine) + 1) * 2 : 0;
 
     std::vector<BYTE> buf(6 + descBytes + fpll + cmdBytes);
@@ -392,7 +396,7 @@ static bool BuildAndWrite(int num, const GUID& sig, DWORD partNum,
     memcpy(&buf[0], &attr, 4);
     memcpy(&buf[4], &fpll, 2);
     size_t off = 6;
-    memcpy(&buf[off], kEntryDesc, descBytes);
+    memcpy(&buf[off], entryDesc, descBytes);
     off += descBytes;
     memcpy(&buf[off], &hd, sizeof(hd));
     off += sizeof(hd);
@@ -412,7 +416,7 @@ static bool BuildAndWrite(int num, const GUID& sig, DWORD partNum,
     }
     // 回读校验
     std::vector<BYTE> back;
-    if (!ReadVar(name, back) || !IsOurs(back)) {
+    if (!ReadVar(name, back) || !IsOurs(back, entryDesc)) {
         log += "verify entry failed\n";
         return false;
     }
@@ -420,16 +424,18 @@ static bool BuildAndWrite(int num, const GUID& sig, DWORD partNum,
 }
 
 bool InstallUefiBootEntry(const std::wstring& espRoot,
-                          const std::wstring& exeDir, std::string& log) {
+                          const std::wstring& exeDir, std::string& log,
+                          bool temporary) {
     if (!EnableEnvPrivilege(log))
         return false;
 
-    // 0) 清掉旧版本残留：BCD 里的 bootapp 恢复条目（会出现在 Windows 启动菜单，
-    //    且必然 0xc000007b 失败）+ 指向它的 bootsequence。
+    // 0) 清掉同类旧残留（只清本次这一类）：BCD 里的 bootapp 条目
+    //    + 指向它的 bootsequence。临时项绝不能删常驻菜单的 GUID。
     {
         std::string out;
+        const wchar_t* guid = temporary ? TemporaryGuid() : RecoveryGuid();
         RunProcess(SysToolPath(L"bcdedit.exe"),
-                   L"/delete " + std::wstring(RecoveryGuid()) + L" /f", out);
+                   L"/delete " + std::wstring(guid) + L" /f", out);
         RunProcess(SysToolPath(L"bcdedit.exe"),
                    L"/deletevalue {bootmgr} bootsequence", out);
     }
@@ -457,6 +463,7 @@ bool InstallUefiBootEntry(const std::wstring& espRoot,
 
     std::wstring targetPath = kKernelPath;
     const wchar_t* cmdLine = kCmdLine;
+    const wchar_t* entryDesc = EntryDesc(temporary);
     bool useFirmwareEntry = true;
 
     // 要写进 ESP 的文件（exeDir 相对路径 → ESP 里的文件名）
@@ -650,13 +657,14 @@ bool InstallUefiBootEntry(const std::wstring& espRoot,
     // ── bootapp 走法：BCD bootapp 条目（bootmgr → efiloader → 我们的 UKI）──
     // 不需要固件启动项；单次启动用 BCD `bootsequence`（与 BIOS 路径同法）。
     if (!useFirmwareEntry) {
-        std::wstring guid = RecoveryGuid();
+        std::wstring guid = temporary ? TemporaryGuid() : RecoveryGuid();
         std::string out;
         RunProcess(SysToolPath(L"bcdedit.exe"), L"/delete " + guid + L" /f",
-                   out);  // 幂等：先删旧条目
+                   out);  // 幂等：先删同类旧条目
         int rc = RunProcess(SysToolPath(L"bcdedit.exe"),
-                            L"/create " + guid +
-                                L" /d \"SysRecover\" /application bootapp",
+                            L"/create " + guid + L" /d \"" +
+                                std::wstring(entryDesc) +
+                                L"\" /application bootapp",
                             out);
         log += out;
         if (rc != 0) {
@@ -692,8 +700,8 @@ bool InstallUefiBootEntry(const std::wstring& espRoot,
             log += "set bcd bootsequence FAILED: " + out + "\n";
             return false;
         }
-        // 清掉可能残留的固件启动项（免得 BootOrder 里躺个走不通的）
-        RemoveUefiBootEntry(log);
+        // 清掉可能残留的**同类**固件启动项（临时项不得动常驻菜单）
+        RemoveUefiBootEntry(log, temporary);
         log += "bootapp ready: bootmgr -> efiloader -> zjrestore-uki.efi\n";
         return true;
     }
@@ -705,14 +713,15 @@ bool InstallUefiBootEntry(const std::wstring& espRoot,
     if (!QueryEspGpt(espRoot, sig, partNum, start, size, log))
         return false;
 
-    int num = FindOurEntry();
+    int num = FindOurEntry(temporary);
     if (num < 0)
         num = FindFreeEntry();
     if (num < 0) {
         log += "no free Boot#### slot\n";
         return false;
     }
-    if (!BuildAndWrite(num, sig, partNum, start, size, targetPath, cmdLine, log))
+    if (!BuildAndWrite(num, sig, partNum, start, size, targetPath, cmdLine,
+                       entryDesc, log))
         return false;
 
     // 3) 挂进 BootOrder（**末尾**：默认仍进 Windows，固件启动菜单里能选到）
@@ -739,8 +748,8 @@ bool InstallUefiBootEntry(const std::wstring& espRoot,
     }
     char line[160];
     snprintf(line, sizeof(line),
-             "firmware boot entry Boot%04X installed (desc=SysRecover, optional=%u chars)\n",
-             num, cmdLine ? (unsigned)wcslen(cmdLine) : 0u);
+             "firmware boot entry Boot%04X installed (desc=%ls, optional=%u chars)\n",
+             num, entryDesc, cmdLine ? (unsigned)wcslen(cmdLine) : 0u);
     log += line;
 
     // Secure Boot 且密钥**还没注册**时：把下一次启动指到我们的条目，这样重启就
@@ -762,7 +771,7 @@ bool InstallUefiBootEntry(const std::wstring& espRoot,
 }
 
 bool UefiBootEntryExists(std::string& detail) {
-    int num = FindOurEntry();
+    int num = FindOurEntry(false);
     if (num < 0) {
         detail = Tr("未安装（固件启动项不存在）");
         return false;
@@ -773,12 +782,13 @@ bool UefiBootEntryExists(std::string& detail) {
     return true;
 }
 
-bool RemoveUefiBootEntry(std::string& log) {
+bool RemoveUefiBootEntry(std::string& log, bool temporary) {
     if (!EnableEnvPrivilege(log))
         return false;
-    int num = FindOurEntry();
+    int num = FindOurEntry(temporary);
     if (num < 0) {
-        log += "no firmware entry to remove\n";
+        log += temporary ? "no temporary firmware entry to remove\n"
+                         : "no firmware entry to remove\n";
         return true;
     }
     // 1) 从 BootOrder 摘掉
@@ -808,12 +818,13 @@ bool RemoveUefiBootEntry(std::string& log) {
     return true;
 }
 
-bool SetUefiBootNext(std::string& log) {
+bool SetUefiBootNext(std::string& log, bool temporary) {
     if (!EnableEnvPrivilege(log))
         return false;
-    int num = FindOurEntry();
+    int num = FindOurEntry(temporary);
     if (num < 0) {
-        log += "SetUefiBootNext: entry not installed\n";
+        log += temporary ? "SetUefiBootNext: temporary entry not installed\n"
+                         : "SetUefiBootNext: entry not installed\n";
         return false;
     }
     WORD v = (WORD)num;

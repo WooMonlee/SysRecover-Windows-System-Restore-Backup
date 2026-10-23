@@ -15,6 +15,7 @@
 #include "app/swapleft.h"
 #include "boot/bcd.h"
 #include "boot/bcd_parse.h"
+#include "boot/bootnames.h"
 #include "boot/bootpath.h"
 #include "boot/task.h"
 #include "boot/uefi.h"
@@ -529,6 +530,15 @@ TEST(bcd_parse_bootmgr_timeout) {
     CHECK_EQ(ParseBootmgrTimeout("timeout abc\n"), -1);
     // 第二 token 是数字但不是 timeout 量级（>1 天）→ 跳过继续找
     CHECK_EQ(ParseBootmgrTimeout("foo 9999999\ntimeout 7\n"), 7);
+}
+
+// 常驻菜单与日常还原临时项必须使用不同 GUID + 不同显示名：
+// 首启清理只认临时项，绝不能误删用户显式安装的菜单。
+TEST(boot_entry_names_and_guids_distinct) {
+    CHECK(wcscmp(RecoveryGuid(), TemporaryGuid()) != 0);
+    CHECK(wcscmp(kMenuEntryDesc, kTempEntryDesc) != 0);
+    CHECK(wcscmp(kMenuBcdDesc, kTempEntryDesc) != 0);
+    CHECK(wcslen(kTempEntryDesc) > 0);
 }
 
 // ── bootpath：引导链选择（2026-09-29 用户实测回归）──────────────

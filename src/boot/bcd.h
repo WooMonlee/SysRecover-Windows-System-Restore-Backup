@@ -10,6 +10,12 @@ inline const wchar_t* RecoveryGuid() {
     return L"{12345678-1234-1234-1234-123456789abc}";
 }
 
+// 临时（日常还原一次性）条目 GUID：必须与常驻菜单 GUID 区分，
+// 否则首启清理会误删用户显式安装的菜单。
+inline const wchar_t* TemporaryGuid() {
+    return L"{87654321-4321-4321-4321-cba987654321}";
+}
+
 // 解析 `bcdedit /enum {bootmgr}` 输出里的 timeout（秒），找不到 → -1（PIT-094）。
 // **不依赖标签语言**：timeout 是 {bootmgr} 枚举里唯一「整行恰好两个空白分隔
 // token、且第二个 token 全为数字（≤1 天）」的元素 —— device/locale/description

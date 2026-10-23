@@ -48,9 +48,40 @@ bool IsNetworkPath(const std::wstring& p) {
     if (p.size() >= 2 && p[1] == L':') {
         wchar_t root[4] = {p[0], L':', L'\\', 0};
         if (GetDriveTypeW(root) == DRIVE_REMOTE)
-            return true;  // 映射网络驱动器 Z:\...
+            return true;
     }
     return false;
+}
+
+// 用户显式「安装菜单」的标记。日常还原的临时项用另一个名字/GUID，
+// 首启清理只认临时项；这个标记只用于“已安装常驻菜单”的判重，
+// 避免一次日常还原静默覆盖用户菜单。
+std::wstring MenuFlagPath() {
+    return ContractDir() + L"\\restore-menu.flag";
+}
+
+bool HasInstalledMenu() {
+    DWORD a = GetFileAttributesW(MenuFlagPath().c_str());
+    return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+void SetMenuFlag(bool installed) {
+    std::wstring p = MenuFlagPath();
+    if (!installed) {
+        SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_NORMAL);
+        DeleteFileW(p.c_str());
+        return;
+    }
+    HANDLE h = CreateFileW(p.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_HIDDEN, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        LogWarn("menu flag write failed err=" + std::to_string(GetLastError()));
+        return;
+    }
+    const char k[] = "installed\n";
+    DWORD wr = 0;
+    WriteFile(h, k, (DWORD)sizeof(k) - 1, &wr, nullptr);
+    CloseHandle(h);
 }
 
 std::string W2U(const std::wstring& w) {
@@ -576,6 +607,36 @@ bool InjectOfflineRunOnce(const std::wstring& newDir, const wchar_t* hiveName,
         LogWarn(std::string("A-engine: ") + what +
                 " RunOnce inject failed rc=" + std::to_string(rc));
     return rc == ERROR_SUCCESS;
+}
+
+// 把首启清理器写进新系统，并挂 RunOnce：
+//   - 只用于**日常还原的临时菜单**（menuEntry=false）；
+//   - 程序名/值名与「安装菜单」区分（“恢复引导菜单”）；
+//   - A 引擎有 ~new；B 引擎没有离线 hive，当前只能告警（后续可走救援层 GPO）。
+bool InstallFirstBootCleanup(const std::wstring& newDir,
+                             const std::wstring& exeDir, std::string& log) {
+    const std::wstring src = exeDir + L"\\bootfiles\\zj-restore-boot.exe";
+    if (GetFileAttributesW(src.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        log += "first-boot cleanup helper missing: zj-restore-boot.exe\n";
+        return false;
+    }
+    const std::wstring dir = newDir + L"\\ProgramData\\SysRecover";
+    CreateDirectoryW((newDir + L"\\ProgramData").c_str(), nullptr);
+    CreateDirectoryW(dir.c_str(), nullptr);
+    const std::wstring dst = dir + L"\\zj-restore-boot.exe";
+    SetFileAttributesW(dst.c_str(), FILE_ATTRIBUTE_NORMAL);
+    if (!CopyFileW(src.c_str(), dst.c_str(), FALSE)) {
+        log += "copy zj-restore-boot.exe failed err=" +
+               std::to_string(GetLastError()) + "\n";
+        return false;
+    }
+    // RunOnce 的**值名**是用户可见的启动项别名；命令仍是 ASCII 路径。
+    const bool ok = InjectOfflineRunOnce(
+        newDir, L"ZJRESTOREMENU", Tr(L"恢复引导菜单"),
+        L"%ProgramData%\\SysRecover\\zj-restore-boot.exe", REG_EXPAND_SZ,
+        "restore boot cleanup");
+    log += ok ? "first-boot cleanup injected\n" : "first-boot cleanup inject failed\n";
+    return ok;
 }
 
 }  // namespace
@@ -1708,6 +1769,16 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
     LogInfo(std::string("restore path: ") +
             (inPlace ? "in-place" : (menuEntry ? "menu-entry" : "staged-reboot")) +
             (inplaceWhy.empty() ? "" : " (" + inplaceWhy + ")"));
+    // 日常还原（暂存+重启）会使用独立的**临时**引导条目，不能覆盖用户显式
+    // 安装的常驻菜单。先让用户清菜单，避免“还原后旧菜单失效”。
+    if (!inPlace && !menuEntry && HasInstalledMenu()) {
+        err = Tr("已安装「安装菜单」的常驻启动项；为避免覆盖它，日常还原已中止。"
+                 "请先在主界面点「清除菜单」，再开始还原。");
+        LogError(err);
+        AppendHistory("restore-rejected", req.image, req.image, 0,
+                      "daily restore while persistent menu installed");
+        return 4;
+    }
     // 异机还原只能走 Windows 侧路径：暂存的 B 引擎（Linux apply）没有 DISM。
     if (!inPlace && req.universal && req.engine != "swap") {
         err = Tr("异机还原不支持「重启后还原」（B 引擎在 Linux 里执行，无法注入"
@@ -1780,6 +1851,9 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
         return rc;
     }
 
+    // 临时引导项的首启清理需要知道 A 引擎的 ~new 位置（B 引擎没有 ~new，
+    // 目前只能记录告警；见下方 InstallFirstBootCleanup 调用）。
+    std::wstring swapNewDir;
     // ── A 引擎（0.7，docs/21/22/23）：Windows 原生解压到 <目标>:\~new ──
     // 必须在写契约/部署引导之前完成：解压成功才继续。失败/中断 → 报错、不碰
     // 旧系统、清理 ~new（L1 定案：让用户换镜像重试；断电由下次启动清孤儿）。
@@ -1801,6 +1875,7 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
         // （免重解压）；过期/不完整/镜像已换 → 丢弃重解（docs/23 §5 决策表）。
         bool reuse = false;
         std::wstring newDir = target.letter + L":\\~new";
+        swapNewDir = newDir;
         {
             DWORD a = GetFileAttributesW(newDir.c_str());
             if (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY)) {
@@ -2300,7 +2375,7 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
                 }
             }
             // ⑤ 救援载荷（内核 + initramfs ≈ 33MB；它自带空间检查）
-            ok = InstallUefiBootEntry(espRoot, exeDir, blog);
+            ok = InstallUefiBootEntry(espRoot, exeDir, blog, !menuEntry);
             UnmountEsp(espRoot, blog);
             LogInfo(std::string("uefi boot entry: ") + (ok ? "ok" : "FAIL") +
                     " / " + blog);
@@ -2316,7 +2391,7 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             // 所以不必去动数据盘（D:/E:）的根目录。
             std::wstring deployDrive = std::wstring(1, target.letter[0]) + L":\\";
             // 每次都重装（幂等）：确保 menu.lst/bootfiles/initramfs 随本版本刷新。
-            if (!InstallBootLayer(deployDrive, exeDir, blog)) {
+            if (!InstallBootLayer(deployDrive, exeDir, blog, !menuEntry)) {
                 ReleaseOpLock();
                 ProgressDone("restore", "failed");
                 err = Tr("安装引导层失败: ") + blog;
@@ -2370,14 +2445,14 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             LogInfo("menu entry mode: no BootNext/bootsequence (user picks it in "
                     "the boot menu)");
         } else if (useUefi && CurrentSbMode() != SbMode::Bootapp) {
-            if (!SetUefiBootNext(blog)) {
+            if (!SetUefiBootNext(blog, true)) {
                 ReleaseOpLock();
                 ProgressDone("restore", "failed");
                 err = Tr("设置固件单次启动失败: ") + blog;
                 LogError(err);
                 return 1;
             }
-        } else if (!useUefi && !BcdSetBootsequence(RecoveryGuid())) {
+        } else if (!useUefi && !BcdSetBootsequence(TemporaryGuid())) {
             ReleaseOpLock();
             ProgressDone("restore", "failed");
             err = Tr("设置单次启动失败");
@@ -2385,6 +2460,22 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             return 1;
         }
     }
+    // 日常还原（非安装菜单）→ 新系统首启自动清掉**临时**启动项/载荷。
+    // 只处理 A 引擎（有离线 ~new 可写 RunOnce）；B 引擎当前没有离线 hive。
+    if (!menuEntry) {
+        if (req.engine == "swap" && !swapNewDir.empty()) {
+            std::string clog;
+            if (!InstallFirstBootCleanup(swapNewDir, exeDir, clog)) {
+                LogWarn("first-boot cleanup NOT installed: " + clog);
+            } else {
+                LogInfo(clog);
+            }
+        } else {
+            LogWarn("first-boot cleanup skipped (engine has no offline ~new; "
+                    "temporary UEFI/BCD entry may remain until manual clear)");
+        }
+    }
+
     // 把本次部署到目标盘的痕迹收进 logs（用户 2026-10-03 规格）：盘根的
     // grldr/grldr.mbr/menu.lst/_zjresy 日志 + ZJRESTORE\bootfix|scripts|logs + 清单。
     // 用户排错只需发 logs 文件夹（含这些 + diag.txt/list.txt + 救援日志）。
@@ -2399,6 +2490,7 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
         *needReboot = false;
     ProgressDone("restore", "staged");
     if (menuEntry) {
+        SetMenuFlag(true);
         LogInfo("restore menu entry installed (contract written; boots into the "
                 "rescue layer only if the user picks it)");
     } else {
@@ -2504,6 +2596,11 @@ int StageReturnOld(const PartitionInfo& target, std::string& err,
         err = Tr("目标分区无盘符，无法写恢复日志（Linux 侧将无法定位目标）");
         LogError(err);
         return 1;
+    }
+    if (HasInstalledMenu()) {
+        err = Tr("已安装常驻恢复菜单；返回旧系统会覆盖它。请先在主界面点「清除菜单」，再重试。");
+        LogError("return-old rejected: persistent menu installed");
+        return 4;
     }
 
     // Q2 暂存路径会话前置（与 StageRestoreImpl 同款，见 bootpath.h）：
@@ -2684,7 +2781,7 @@ int StageReturnOld(const PartitionInfo& target, std::string& err,
             LogError(err);
             return 1;
         }
-        if (!InstallUefiBootEntry(espRoot, exeDir, blog)) {
+        if (!InstallUefiBootEntry(espRoot, exeDir, blog, true)) {
             ReleaseOpLock();
             ProgressDone("restore", "failed");
             err = Tr("安装 UEFI 引导层失败: ") + blog;
@@ -2693,7 +2790,7 @@ int StageReturnOld(const PartitionInfo& target, std::string& err,
         }
     } else {
         std::wstring deployDrive = std::wstring(1, target.letter[0]) + L":\\";
-        if (!InstallBootLayer(deployDrive, exeDir, blog)) {
+        if (!InstallBootLayer(deployDrive, exeDir, blog, true)) {
             ReleaseOpLock();
             ProgressDone("restore", "failed");
             err = Tr("安装引导层失败: ") + blog;
@@ -2703,19 +2800,28 @@ int StageReturnOld(const PartitionInfo& target, std::string& err,
     }
     // 单次启动（只生效一次）
     if (useUefi && CurrentSbMode() != SbMode::Bootapp) {
-        if (!SetUefiBootNext(blog)) {
+        if (!SetUefiBootNext(blog, true)) {
             ReleaseOpLock();
             ProgressDone("restore", "failed");
             err = Tr("设置固件单次启动失败: ") + blog;
             LogError(err);
             return 1;
         }
-    } else if (!useUefi && !BcdSetBootsequence(RecoveryGuid())) {
+    } else if (!useUefi && !BcdSetBootsequence(TemporaryGuid())) {
         ReleaseOpLock();
         ProgressDone("restore", "failed");
         err = Tr("设置单次启动失败");
         LogError(err);
         return 1;
+    }
+    // 返回旧系统也是一次性引导：把清理器注入即将回到根的旧系统 ~old，
+    // 首启删除临时条目（常驻菜单已在入口处禁止覆盖）。
+    {
+        std::string clog;
+        if (!InstallFirstBootCleanup(target.letter + L":\\~old", exeDir, clog))
+            LogWarn("return-old first-boot cleanup NOT installed: " + clog);
+        else
+            LogInfo("return-old: " + clog);
     }
 
     CollectDeployArtifacts(logsDir + L"\\collected", target.letter[0]);
@@ -2800,6 +2906,10 @@ int StageReturnOldByDiskPart(int disk, int part, std::string& err,
 bool ReadMenuBinding(std::wstring* imagePath, int* imageIndex,
                      unsigned long long* targetOffset,
                      unsigned long long* targetSize) {
+    // 只有显式「安装菜单」才写 restore-menu.flag；日常还原的临时契约不能
+    // 让 GUI 把「安装菜单」按钮误显示成「删除菜单」。
+    if (!HasInstalledMenu())
+        return false;
     std::wstring conf = ContractDir() + L"\\restore-task.conf";
     HANDLE h = CreateFileW(conf.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                            OPEN_EXISTING, 0, nullptr);
@@ -2833,6 +2943,7 @@ bool ReadMenuBinding(std::wstring* imagePath, int* imageIndex,
 // 删除"菜单绑定"副契约（用户 2026-10-05 bug：「删除菜单」后按钮仍是「删除菜单」，
 // 因为 ReadMenuBinding 读的 restore-task.conf 没被删）。
 void DeleteMenuBinding() {
+    SetMenuFlag(false);
     std::wstring dir = ContractDir();
     for (const wchar_t* nm : {L"restore-task.conf", L"restore-task.json"}) {
         std::wstring p = dir + L"\\" + nm;

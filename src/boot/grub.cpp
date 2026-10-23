@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "bcd.h"
+#include "bootnames.h"
 #include "uefi.h"
 #include "../disk/disk.h"
 #include "../common/process.h"
@@ -254,14 +255,16 @@ bool NeedsInstall(std::string& detail) {
 }
 
 bool InstallBootLayer(const std::wstring& deployDrive,
-                      const std::wstring& exeDir, std::string& log) {
+                      const std::wstring& exeDir, std::string& log,
+                      bool temporary) {
     std::wstring drive = deployDrive;
     if (drive.empty()) {
         log += "no deploy drive\n";
         return false;
     }
     char line[128];
-    snprintf(line, sizeof(line), "deploy drive=%c\n", (char)drive[0]);
+    snprintf(line, sizeof(line), "deploy drive=%c (%s)\n", (char)drive[0],
+             temporary ? "temporary" : "menu");
     log += line;
     bool ok = true;
     ok &= CopyBootFiles(drive, exeDir, log);
@@ -269,11 +272,11 @@ bool InstallBootLayer(const std::wstring& deployDrive,
     ok &= WriteMenuLst(drive, log);
     std::string bcdLog;
     wchar_t dl = drive[0];
-    // 描述用 ASCII（"SysRecover Recovery Environment"）：bootmgr 菜单里中文描述
-    // 在部分机器上显示成方框（PIT-054 实测），且 ASCII 与 UEFI bootapp 条目
-    //（desc "SysRecover"）和 GUI 提示文案一致（PIT-094）。
-    if (!BcdCreateBootsector(RecoveryGuid(), L"SysRecover Recovery Environment", dl,
-                             bcdLog))
+    // 描述用 ASCII：bootmgr 菜单里中文描述在部分机器上显示成方框（PIT-054）。
+    // 临时条目必须与常驻菜单用不同的 GUID + 名称，首启清理只删临时条目。
+    const wchar_t* guid = temporary ? TemporaryGuid() : RecoveryGuid();
+    const wchar_t* desc = temporary ? kTempEntryDesc : kMenuBcdDesc;
+    if (!BcdCreateBootsector(guid, desc, dl, bcdLog))
         ok = false;
     log += bcdLog;
     return ok;
@@ -281,13 +284,16 @@ bool InstallBootLayer(const std::wstring& deployDrive,
 
 bool RemoveBootLayer(std::string& log) {
     log += "remove boot layer\n";
-    // 0) UEFI 固件启动项（Boot#### + BootOrder + BootNext），装了才删
-    RemoveUefiBootEntry(log);
-    // 1) BCD：删恢复条目 + 清除单次启动
+    // 0) UEFI 固件启动项（菜单 + 临时项都清），装了才删
+    RemoveUefiBootEntry(log, false);
+    RemoveUefiBootEntry(log, true);
+    // 1) BCD：删常驻菜单条目 + 临时条目 + 清除单次启动
     std::string out;
-    RunProcess(SysToolPath(L"bcdedit.exe"),
-               L"/delete " + std::wstring(RecoveryGuid()) + L" /f", out);
-    log += "delete entry: " + out + "\n";
+    for (const wchar_t* guid : {RecoveryGuid(), TemporaryGuid()}) {
+        RunProcess(SysToolPath(L"bcdedit.exe"),
+                   L"/delete " + std::wstring(guid) + L" /f", out);
+        log += "delete entry: " + out + "\n";
+    }
     RunProcess(SysToolPath(L"bcdedit.exe"),
                L"/deletevalue {bootmgr} bootsequence", out);
     // 2) 引导文件可能落在系统盘（新布局）或数据盘（旧布局）——两处都清

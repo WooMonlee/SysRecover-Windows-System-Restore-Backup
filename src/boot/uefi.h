@@ -11,17 +11,22 @@ namespace sysrecover {
 
 // 部署 UEFI 救援文件到 ESP 并创建固件启动项（幂等：已存在则更新）。
 // espRoot 形如 L"S:\\"（mountvol X: /s 挂上的 ESP 根），exeDir 提供 bootfiles。
+// temporary=true：日常还原的一次性条目（不同描述，首启只清它）；
+// temporary=false：用户显式「安装菜单」的常驻条目。
 bool InstallUefiBootEntry(const std::wstring& espRoot,
-                          const std::wstring& exeDir, std::string& log);
+                          const std::wstring& exeDir, std::string& log,
+                          bool temporary = false);
 
-// 是否已安装（按描述匹配 Boot####）。detail 给出解释，供 GUI/CLI 显示。
+// 是否已安装常驻菜单（按固定描述匹配 Boot####）。detail 给出解释。
 bool UefiBootEntryExists(std::string& detail);
 
 // 删除固件启动项（Boot#### + BootOrder 项 + 指向我们的 BootNext）。
-bool RemoveUefiBootEntry(std::string& log);
+// temporary=true 只删临时项，绝不动常驻菜单。
+bool RemoveUefiBootEntry(std::string& log, bool temporary = false);
 
-// 单次启动：BootNext = 我们的条目号（下一次开机进救援，之后自动回到 Windows）。
-bool SetUefiBootNext(std::string& log);
+// 单次启动：BootNext = 我们的条目号（下一次开机进救援，之后自动回 Windows）。
+// temporary=true 指向临时条目；false 指向常驻菜单。
+bool SetUefiBootNext(std::string& log, bool temporary = false);
 
 // 固件 Secure Boot 是否开启（读 `SecureBoot` 固件变量）。
 // 开着时：固件只加载微软签名的镜像 → 我们的内核（未签名）会被拒，

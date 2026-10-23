@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：584/584 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：587/587 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n建议：以管理员身份运行（本程序要读写分区与引导）。': '\n\nAdvice: run as administrator (this program reads and writes partitions and boot data).',
@@ -256,7 +256,9 @@ EN = {
     '已取消\n': 'Cancelled\n',
     '已取消（未做任何改动）。\n': 'Cancelled (nothing was changed).\n',
     '已安装 Boot%04X': 'Installed Boot%04X',
+    '已安装「安装菜单」的常驻启动项；为避免覆盖它，日常还原已中止。请先在主界面点「清除菜单」，再开始还原。': 'The persistent "Install Menu" entry is installed; daily restore stopped to avoid overwriting it. Click "Clear Menu" first, then restore again.',
     '已安装启动还原（旧版安装，未绑定镜像）。点此删除': 'Boot restore is installed (legacy install, no image bound). Click to remove',
+    '已安装常驻恢复菜单；返回旧系统会覆盖它。请先在主界面点「清除菜单」，再重试。': 'The persistent recovery menu is installed; returning to the old system would overwrite it. Click "Clear Menu" first, then retry.',
     '已安装：开机按 %ls 选「SysRecover」，\n把 %ls（第 %d 个镜像）还原到 %ls。\n点此删除（要换镜像请先删除、再安装）\n镜像请勿移动或删除，否则该菜单无法还原': 'Installed: press %ls and pick "SysRecover" at boot,\nthen %ls (image #%d) is restored to %ls.\nClick to remove (remove first, then install new)\nDo not move or delete the image, or this menu cannot restore',
     '已安装：开机菜单里选「SysRecover」即可把\n%ls（第 %d 个镜像）还原到 %ls。\n点此删除（要换镜像请先删除、再安装）\n镜像请勿移动或删除，否则该菜单无法还原': 'Installed: pick "SysRecover" in the boot menu,\nthen %ls (image #%d) is restored to %ls.\nClick to remove (remove first, then install new)\nDo not move or delete the image, or this menu cannot restore',
     '已导出诊断包（%d 个文件）：%ls\n': 'Diagnostics bundle exported (%d files): %ls\n',
@@ -304,6 +306,7 @@ EN = {
     '影子副本提供程序(swprv)': 'Shadow Copy Provider (swprv)',
     '待定扇区（读失败待重映射）': 'Pending sectors (read failures awaiting remap)',
     '快捷启动键': 'boot menu key',
+    '恢复引导菜单': 'Restore Boot Menu',
     '或重启后再删（还原前必须清干净）。': 'or reboot then delete again (must be clean before restore).',
     '所有文件': 'All files',
     '打开日志': 'Open Logs',
