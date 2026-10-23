@@ -138,7 +138,7 @@ jobs:
             $text = [IO.File]::ReadAllText((Join-Path $PWD $f)).Replace("`r`n", "`n")
             $tmp = Join-Path $env:RUNNER_TEMP ((Split-Path $f -Leaf) + ".sh")
             [IO.File]::WriteAllText($tmp, $text, [Text.UTF8Encoding]::new($false))
-            & $sc.Source -S error $tmp
+            & $sc.FullName -S error $tmp
             if ($LASTEXITCODE -ne 0) { $bad = $true }
           }
           if ($bad) { exit 1 }
