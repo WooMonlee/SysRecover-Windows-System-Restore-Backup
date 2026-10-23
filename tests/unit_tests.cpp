@@ -126,6 +126,7 @@ TEST(exclude_default_has_essentials) {
     CHECK_CONTAINS(c, "\\swapfile.sys");
     CHECK_CONTAINS(c, "\\System Volume Information");
     CHECK_CONTAINS(c, "\\Users\\*\\AppData\\Local\\Microsoft\\OneDrive*");
+    CHECK_CONTAINS(c, "\\ProgramData\\Alibaba\\AlibabaProtectDT\\Logs*");
 }
 
 // ⭐ PIT-056 回归守卫：注册表事务日志**绝不能**被排除 ——

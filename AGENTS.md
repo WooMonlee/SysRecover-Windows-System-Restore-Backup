@@ -1,4 +1,4 @@
-> ⚠️ **当前版本 0.9.10**。公开前准备、发布闸门与 1.0 观察期见 [`docs/26`](docs/26-公开前准备与1.0观察期.md)；PIT 是历史坑位记录，不是发布阻塞清单。
+> ⚠️ **当前版本 0.9.11**。公开前准备、发布闸门与 1.0 观察期见 [`docs/26`](docs/26-公开前准备与1.0观察期.md)；PIT 是历史坑位记录，不是发布阻塞清单。
 
 # AGENTS.md - SysRecover（一键还原，C++ 重写）开发指南
 
@@ -1132,6 +1132,14 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **修复**：① `grub.cpp` `snprintf` 的 `%lc` → `%c` + `(char)`；② `zjrestore-lite.sh` EA `ADD="$ADD[...]"` → `${ADD}[...]`（SC1087）；③ hidden sectors / boot region 的 `A && B || C` → `if/else`（SC2015）；④ `target sectors` 先落变量、`echo "$_g2"` 加引号（SC2046/SC2086）；⑤ `zjswap.sh` `rm -rf "${M:?}/$b"`（SC2115）；⑥ `EfiHdNode`/`DeployItem`/`LogFileItem`/`AtaSmartIn`/`Hit` 成员默认初始化；⑦ 去掉 `uefi.cpp` 的 `(void)0;`。
   · **回归**：`make check` 57 用例/454 断言 + i18n 575/575 + check-docs/widths/shell PASS；QEMU BIOS drill **PASS**（重建 `base/drill.raw` 后）；`make package` 双架构 **0.9.10**。
   · **剩余（不阻塞 1.0）**：15 处 C 风格 cast 逐步改 `static_cast/reinterpret_cast`；`ops.cpp` 2725 行等大文件拆分；CI 仍只 x64 `check+all`，x86/package/QEMU 冒烟/静态分析未入门禁。报告见 [`docs/27`](docs/27-质量检查报告（0.9.10）.md)。
+
+- PIT-167 **0.9.11：客户 0.9.9 仍 rc=47，真凶换成 `ProgramData\Alibaba\AlibabaProtectDT\Logs` 的损坏日志（status=c0000102）→ 默认排除**（2026-10-23，客户 `E:\我的下载\logs`）：
+  · **证据**：`wimlib-errors.log` 原文：
+    `"GLOBALROOT\Device\HarddiskVolumeShadowCopy6\ProgramData\Alibaba\AlibabaProtectDT\Logs\2025-04-05-INFO-2180-1.log": Can't open file (status=c0000102)`（ShadowCopy7 同样）。
+    `status=c0000102` = `STATUS_FILE_CORRUPT_ERROR`（文件/目录损坏，系统提示 Chkdsk）；目标 `dest=\\品管\...` 预检通过，**又是源文件问题**，不是 Unicode 主机名/OneDrive（0.9.9 已含 OneDrive 排除）。
+  · **修复**：`DefaultExclusionConfig()` 增加 `\ProgramData\Alibaba\AlibabaProtectDT\Logs*`（第三方保护软件日志，不参与系统启动；避免损坏日志令整个备份 rc=47）。
+  · **验证**：`make check` 57 用例/454 断言 + i18n 575/575 + check-docs/widths/shell PASS；`make package` 双架构（**`0.9.11`**，initramfs stamp 0.9.11）；单测新增该行断言。
+  · **说明/后续**：这是第二类“源文件在 VSS 快照中不可读”（第一类 OneDrive 云占位，PIT-164）。若客户还有其它损坏/云占位文件，继续按 `wimlib-errors.log` 的**具体路径**补排除；中期可考虑“捕获失败后读取错误日志、自动追加排除并重试一次”的通用兜底（尚未实现）。
 
 ## 14. License 合规（SBOM，随版本更新）
 

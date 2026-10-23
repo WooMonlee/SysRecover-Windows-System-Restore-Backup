@@ -34,6 +34,7 @@ const char* DefaultExclusionConfig() {
         "\\Windows\\CbsTemp*\n"
         "\\Users\\*\\AppData\\Local\\Temp*\n"
         "\\Users\\*\\AppData\\Local\\Microsoft\\OneDrive*\n"
+        "\\ProgramData\\Alibaba\\AlibabaProtectDT\\Logs*\n"
         "\\Users\\*\\AppData\\Local\\Microsoft\\Windows\\INetCache*\n"
         "\\Users\\*\\AppData\\Local\\Microsoft\\Windows\\Explorer*\n"
         "\\Windows\\winsxs\\InstallTemp*\n"
