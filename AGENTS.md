@@ -1,4 +1,4 @@
-> ⚠️ **当前版本 0.9.11**。公开前准备、发布闸门与 1.0 观察期见 [`docs/26`](docs/26-公开前准备与1.0观察期.md)；PIT 是历史坑位记录，不是发布阻塞清单。
+> ⚠️ **当前版本 0.9.12**。公开前准备、发布闸门与 1.0 观察期见 [`docs/26`](docs/26-公开前准备与1.0观察期.md)；PIT 是历史坑位记录，不是发布阻塞清单。
 
 # AGENTS.md - SysRecover（一键还原，C++ 重写）开发指南
 
@@ -1139,7 +1139,14 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
     `status=c0000102` = `STATUS_FILE_CORRUPT_ERROR`（文件/目录损坏，系统提示 Chkdsk）；目标 `dest=\\品管\...` 预检通过，**又是源文件问题**，不是 Unicode 主机名/OneDrive（0.9.9 已含 OneDrive 排除）。
   · **修复**：`DefaultExclusionConfig()` 增加 `\ProgramData\Alibaba\AlibabaProtectDT\Logs*`（第三方保护软件日志，不参与系统启动；避免损坏日志令整个备份 rc=47）。
   · **验证**：`make check` 57 用例/454 断言 + i18n 575/575 + check-docs/widths/shell PASS；`make package` 双架构（**`0.9.11`**，initramfs stamp 0.9.11）；单测新增该行断言。
-  · **说明/后续**：这是第二类“源文件在 VSS 快照中不可读”（第一类 OneDrive 云占位，PIT-164）。若客户还有其它损坏/云占位文件，继续按 `wimlib-errors.log` 的**具体路径**补排除；中期可考虑“捕获失败后读取错误日志、自动追加排除并重试一次”的通用兜底（尚未实现）。
+  · **说明/后续**：这是第二类“源文件在 VSS 快照中不可读”（第一类 OneDrive 云占位，PIT-164）。**0.9.12 起不再按软件逐个补排除**：`WimEngine::Capture/Append` 注册 `WIMLIB_PROGRESS_MSG_HANDLE_ERROR`，对 `OPEN/OPENDIR/READ/READLINK/STAT` 设置 `will_ignore=true` 并写 `backup: skipped unreadable file: <path> (wimlib error=N)`；只对捕获/追加生效，**Apply/Verify 不忽略**（避免还原时静默丢文件）。客户仍可按具体路径补排除，但不再需要每次发版。
+
+- PIT-168 **0.9.12：不再按软件逐个排除——用 `WIMLIB_PROGRESS_MSG_HANDLE_ERROR` 通用跳过 VSS 快照里不可读的源文件**（2026-10-23，用户质问“难道要为全世界每个软件都升级一次”）：
+  · **背景**：rc=47 先后由 OneDrive 应用缓存（PIT-164）、AlibabaProtectDT 损坏日志（PIT-167）触发；逐个加排除是打地鼠，任何软件的云占位/损坏/独占文件都可能再次触发。
+  · **正解**：wimlib 的 `HANDLE_ERROR` 进度消息允许应用设置 `info->handle_error.will_ignore = true` 后继续。`ProgressThunk` 对 `WIMLIB_ERR_OPEN/OPENDIR/READ/READLINK/STAT` 设置忽略，并写日志 `backup: skipped unreadable file: <path> (wimlib error=N)`。
+  · **边界**：`ProgCtx.skipFileErrors` 只在 `Capture`/`Append` 置 true；`Apply`/`Verify` 保持 false —— **还原/校验遇到写/读错误仍然 fail-closed**，不会静默丢文件。
+  · **验证**：`make check` 57 用例/455 断言 + 门禁；`make package` 0.9.12；客户复测时即使还有其它不可读文件，也应继续备份并在 `SysRecover-*.log` 里列出跳过路径，而不是整盘失败。
+  · **后续**：若要“跳过即警告用户/汇总 skipped 清单”，可在 `RunBackup` 收尾读取日志中的 skipped 行；当前先保证不因单文件中止。
 
 ## 14. License 合规（SBOM，随版本更新）
 

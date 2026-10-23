@@ -66,11 +66,24 @@ enum wimlib_compression_type CompressType(const std::string& name,
 
 struct ProgCtx {
     ProgressFn* fn = nullptr;
-    // P4：速度/ETA 用 —— 上一次的字节数与时刻（GetTickCount64）
+    // P4：速度/ETA —— 记录上一次回调的字节数与时间点（GetTickCount64）
     uint64_t lastBytes = 0;
     uint64_t lastTick = 0;
-    double   mbps = 0.0;  // 平滑后的速度（MB/s）
+    double   mbps = 0.0;  // 平均写入速度（MB/s）
+    bool skipFileErrors = false;
 };
+
+std::string WideToUtf8(const wchar_t* w) {
+    if (!w || !*w)
+        return {};
+    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr,
+                                nullptr);
+    if (n <= 1)
+        return {};
+    std::string s(static_cast<size_t>(n - 1), 0);
+    WideCharToMultiByte(CP_UTF8, 0, w, -1, s.data(), n, nullptr, nullptr);
+    return s;
+}
 
 int Pct(uint64_t done, uint64_t total) {
     if (total == 0)
@@ -84,6 +97,25 @@ enum wimlib_progress_status ProgressThunk(enum wimlib_progress_msg msg,
                                           union wimlib_progress_info* info,
                                           void* ctx) {
     auto* c = static_cast<ProgCtx*>(ctx);
+    if (msg == WIMLIB_PROGRESS_MSG_HANDLE_ERROR && info && c &&
+        c->skipFileErrors) {
+        auto& e = info->handle_error;
+        switch (e.error_code) {
+            case WIMLIB_ERR_OPEN:
+            case WIMLIB_ERR_OPENDIR:
+            case WIMLIB_ERR_READ:
+            case WIMLIB_ERR_READLINK:
+            case WIMLIB_ERR_STAT:
+                e.will_ignore = true;
+                LogWarn("backup: skipped unreadable file: " +
+                        WideToUtf8(e.path ? e.path : L"<unknown>") +
+                        " (wimlib error=" +
+                        std::to_string(e.error_code) + ")");
+                return WIMLIB_PROGRESS_STATUS_CONTINUE;
+            default:
+                break;
+        }
+    }
     if (!c || !c->fn || !*c->fn)
         return WIMLIB_PROGRESS_STATUS_CONTINUE;
     int pct = -1;
@@ -214,6 +246,7 @@ int WimEngine::Capture(const std::wstring& source,
         return rc;
     h.w = raw;
     ProgCtx ctx{&progress};
+    ctx.skipFileErrors = true;
     wimlib_register_progress_function(h.w, ProgressThunk, &ctx);
     // 注意：WIMLIB_ADD_FLAG_NTFS 是"裸卷捕获模式"（源须为未挂载 NTFS 卷），
     // 目录捕获（含 C:/ 热备，配合 SNAPSHOT 做 VSS）必须 flags=0（见 PIT-008）。
@@ -280,6 +313,7 @@ int WimEngine::Append(const std::wstring& source,
         return rc;
     h.w = raw;
     ProgCtx ctx{&progress};
+    ctx.skipFileErrors = true;
     wimlib_register_progress_function(h.w, ProgressThunk, &ctx);
     int flags = 0;  // 同 Capture：目录源不用 NTFS 标志（PIT-008）
     if (snapshot)
