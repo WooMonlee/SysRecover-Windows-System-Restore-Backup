@@ -84,6 +84,7 @@ third_party/duilib-master/TestApp1/
 
 # customer evidence bundles (large, private)
 customer-material (removed)/
+故障用户的资料/
 
 # local support bundles / crash dumps / test binaries
 SysRecover-logs-*.zip
