@@ -53,7 +53,8 @@ struct RestoreRequest {
 // adv（可选）：失败时给出**建议码**，供 ErrorAdvice 取"下一步怎么办"
 //（M1：不再靠中文关键词猜，见 advice.h）。
 int RunBackup(const BackupRequest& req, ProgressFn progress, std::string& err,
-              ErrAdvice* adv = nullptr);
+              ErrAdvice* adv = nullptr,
+              std::vector<std::wstring>* skipped = nullptr);
 
 // 就地还原不可行的原因码（M1：替代 GUI 里 `why.find("系统盘")` 这种中文子串匹配，
 // 否则消息一翻译判定就失效）。文案仍由调用方决定（各自语言各自渲染）。

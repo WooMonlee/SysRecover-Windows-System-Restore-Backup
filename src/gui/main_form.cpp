@@ -660,13 +660,44 @@ void CMainForm::OnTaskComplete(int rc) {
         MessageBoxW(m_hWnd, box.c_str(),
                     m_backupMode ? Tr(L"备份失败") : Tr(L"暂存失败"), MB_OK | MB_ICONERROR);
     } else if (m_backupMode) {
-        m_imageOk = true;  // 产物就是刚写的有效镜像 → 切到还原页主按钮即可用
-        SetStatus(Tr(L"备份完成（用时 ") + ElapsedText() + Tr(L"）"));
-        if (!IsSilent())
-            MessageBoxW(m_hWnd,
-                        (Tr(L"系统备份已完成。\n用时 ") + ElapsedText() + Tr(L"。"))
-                            .c_str(),
-                        Tr(L"备份成功"), MB_OK | MB_ICONINFORMATION);
+        m_imageOk = true;  // 备份完成即写盘有效；切到还原页后按钮可以点亮
+        if (!m_skippedFiles.empty()) {
+            const int n = static_cast<int>(m_skippedFiles.size());
+            wchar_t head[256];
+            swprintf(head, 256,
+                     Tr(L"备份已完成，但有 %d 个文件未能读取，未写入镜像：\n\n"),
+                     n);
+            std::wstring msg = head;
+            const int shown = n < 20 ? n : 20;
+            for (int i = 0; i < shown; ++i) {
+                msg += m_skippedFiles[static_cast<size_t>(i)];
+                msg += L"\n";
+            }
+            if (n > shown) {
+                wchar_t more[256];
+                swprintf(more, 256,
+                         Tr(L"\n… 另有 %d 个文件，完整清单见日志：\n"),
+                         n - shown);
+                msg += more;
+            } else {
+                msg += Tr(L"\n完整清单见日志：\n");
+            }
+            msg += LogBaseDir() + L"\\logs";
+            wchar_t status[256];
+            swprintf(status, 256, Tr(L"备份完成，但有 %d 个文件未备份"),
+                     n);
+            SetStatus(status);
+            MessageBoxW(m_hWnd, msg.c_str(), Tr(L"备份不完整"),
+                        MB_OK | MB_ICONWARNING);
+        } else {
+            SetStatus(Tr(L"备份完成，用时 ") + ElapsedText() + Tr(L"。"));
+            if (!IsSilent())
+                MessageBoxW(m_hWnd,
+                            (Tr(L"系统备份已完成。\n用时 ") + ElapsedText() +
+                             Tr(L"秒"))
+                                .c_str(),
+                            Tr(L"备份成功"), MB_OK | MB_ICONINFORMATION);
+        }
     } else if (m_needReboot) {
         // 需要重启（还原运行中的系统盘）：静默或用户已选「退出并重启」→ 直接重启
         SetStatus(Tr(L"暂存完成（用时 ") + ElapsedText() + Tr(L"），正在重启..."));
@@ -2077,6 +2108,7 @@ void CMainForm::StartBackup() {
         CDuiString txt = pNote->GetText();
         if (!txt.IsEmpty()) name = txt.GetData();
     }
+    m_skippedFiles.clear();
     m_busy = true;
     UpdateMainAction();
     SetStatus(Tr(L"正在备份..."));
@@ -2136,7 +2168,9 @@ void CMainForm::StartBackupAsync() {
         return false;
     };
     std::string err;
-    int rc = RunBackup(req, progressFn, err, &last_adv_);
+    std::vector<std::wstring> skipped;
+    int rc = RunBackup(req, progressFn, err, &last_adv_, &skipped);
+    m_skippedFiles = skipped;
     last_err_ = err;
     PostMessage(WM_TASK_COMPLETE, (WPARAM)rc, 0);
 }

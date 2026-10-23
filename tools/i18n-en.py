@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：569/575 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：584/584 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n建议：以管理员身份运行（本程序要读写分区与引导）。': '\n\nAdvice: run as administrator (this program reads and writes partitions and boot data).',
@@ -15,8 +15,11 @@ EN = {
     '\n\n（任务已被用户取消，没有改动目标分区。）': '\n\n(The task was cancelled by the user; the target partition was not modified.)',
     '\n  - NVMe 关键警告位图 = ': '\n  - NVMe critical warning bitmap = ',
     '\n  - 驱动器自报：即将故障（SMART 阈值已超）': '\n  - drive reports imminent failure (SMART threshold exceeded)',
+    '\n… 另有 %d 个文件\n': '\n... and %d more file(s)\n',
+    '\n… 另有 %d 个文件，完整清单见日志：\n': '\n... and %d more file(s); full list:\n',
     '\n可进入 PE 用 `SysRecover.exe repair-boot` 重试修复引导。': '\nEnter PE and run `SysRecover.exe repair-boot` to retry the boot repair.',
     '\n如果你没有对应的密码 / 恢复密钥，这些卷的数据在还原后，\n将无法恢复。是否继续还原？': '\nIf you do not have the matching password / recovery key, the data on these volumes\nwill be unrecoverable after the restore.\nContinue restoring?',
+    '\n完整清单见日志：\n': '\nFull list:\n',
     '\n建议：先更换/检修硬盘，或用镜像恢复到另一块好盘。仍要继续会覆盖目标分区。': '\nAdvice: replace or repair the drive first, or restore the image onto another healthy drive. Continuing will overwrite the target partition.',
     '\n提示：本程序以管理员运行；若共享是按当前登录用户授权的，UAC 提权可能使用了另一个账号，请确认提权后的账号也能访问该共享。': '\nNote: this program runs as administrator; if the share is granted to the currently logged-on user, the elevated UAC account may be different. Make sure the elevated account can also access this share.',
     '\n提示：目标文件夹不存在。': '\nHint: the target folder does not exist.',
@@ -31,7 +34,7 @@ EN = {
     ' 备份': ' backup',
     ' 或 ': ' or ',
     '%d - %ls（%.1f GB）': '%d - %ls (%.1f GB)',
-    '%s（用时 %s）\n': '%s (took %s)\n',
+    '%s，用时 %s。\n': '%s, took %s.\n',
     '--engine 仅支持 swap（默认，A 引擎）或 block（B 引擎兜底），收到未知值已中止，未动目标分区。': '--engine accepts only swap (default, A-engine) or block (B-engine fallback); unknown value rejected, target partition untouched.',
     ': 盘': ': drive',
     ': 盘）': ': drive)',
@@ -190,6 +193,8 @@ EN = {
     '处理（任选其一，在管理员窗口操作）：\r\n': 'do one of the following (from an administrator window):\r\n',
     '备份': 'Backup',
     '备份ESP': 'Backing up ESP',
+    '备份不完整': 'Backup incomplete',
+    '备份不完整：以下 %d 个文件未能读取（未写入镜像）：\n': 'Backup incomplete: these %d files could not be read (not included):\n',
     '备份保存至：': 'Backup destination: ',
     '备份写出失败：无法提交镜像文件(err=': 'Backup write failed: cannot commit the image file (err=',
     '备份前检查失败：': 'Pre-backup check failed: ',
@@ -197,8 +202,10 @@ EN = {
     '备份失败': 'Backup Failed',
     '备份失败(rc=%d): ': 'Backup failed (rc=%d): ',
     '备份完成': 'Backup Complete',
-    '备份完成（用时 ': 'Backup finished (took ',
+    '备份完成，但有 %d 个文件未备份': 'Backup completed, but %d file(s) were not backed up',
+    '备份完成，用时 ': 'Backup completed, took ',
     '备份已写出但校验失败(rc=%d): ': 'Backup was written but verification failed (rc=%d): ',
+    '备份已完成，但有 %d 个文件未能读取，未写入镜像：\n\n': 'Backup completed, but %d file(s) could not be read and were not included:\n\n',
     '备份并校验完成': 'Backup and Verification Complete',
     '备份成功': 'Backup Succeeded',
     '备份时把ESP分区一并写入镜像（子镜像名ESP）；恢复系统时将自动把ESP一并恢复到ESP分区。': 'The backup also captures the ESP partition into the same image (sub-image named ESP); when restoring the system, the ESP is restored automatically.',
@@ -220,6 +227,7 @@ EN = {
     '安装菜单': 'Add Menu',
     '完成': 'Done',
     '完整性检查': 'Integrity check',
+    '完整清单见日志：%s\n': 'Full list: %s\n',
     '家庭中文版': 'Home (China)',
     '家庭单语言版': 'Home Single Language',
     '家庭普通版': 'Home Basic',
@@ -408,8 +416,8 @@ EN = {
     '注意：将清除该磁盘上的全部分区与数据！': 'Warning: all partitions and data on this disk will be erased!',
     '浏览保存位置': 'Save location',
     '浏览系统镜像': 'Browse Image',
-    '清除菜单': 'Clear Menu',
     '清除引导项未完全成功': 'Clearing the Boot Entry Was Not Fully Successful',
+    '清除菜单': 'Clear Menu',
     '点击此处为新硬盘创建分区…': 'Click here to create partitions on the new disk...',
     '用法: SysRecover.exe extract --file <镜像> [--index N] --path <镜像内路径> [--path ...] --dest <输出目录>\n     或: SysRecover.exe extract --file <镜像> [--index N] --all --dest <输出目录>\n  --path 用 Windows 风格、以 \\ 开头，支持通配符，例如：\n    --path "\\Windows\\win.ini"\n    --path "\\Users\\*\\Desktop\\*.txt"\n  --all：提取整个子镜像（Windows 原生元数据全保真；与 --path 互斥）\n': 'Usage: SysRecover.exe extract --file <image> [--index N] --path <path-in-image> [--path ...] --dest <output dir>\n     or: SysRecover.exe extract --file <image> [--index N] --all --dest <output dir>\n  --path uses Windows style starting with \\; wildcards are supported, e.g.:\n    --path "\\Windows\\win.ini"\n    --path "\\Users\\*\\Desktop\\*.txt"\n  --all: extract the entire sub-image (native Windows metadata, fully faithful; mutually exclusive with --path)\n',
     '盘符•系统类型': 'Drive•OS',
@@ -438,6 +446,7 @@ EN = {
     '磁盘健康警告': 'Disk Health Warning',
     '磁盘容量不足以容纳系统盘与数据盘，请调小系统盘容量': 'The disk is too small for both a system and a data partition; reduce the system partition size.',
     '磁盘容量读取失败，无法创建分区': 'Failed to read disk capacity; cannot create partitions',
+    '秒': 's',
     '程序与救援层版本不匹配': 'Program and rescue-layer versions do not match',
     '程序即将退出。': 'the program will exit now.',
     '程序已在运行': 'Program Already Running',

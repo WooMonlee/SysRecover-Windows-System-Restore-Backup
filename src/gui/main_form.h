@@ -207,7 +207,8 @@ private:
     std::string       m_workerCompress; // StartBackupAsync 用：压缩方式
     std::wstring      m_workerName;     // StartBackupAsync 用：子镜像名
     int               m_workerCpuCap = 0;  // StartBackupAsync 用：CPU 上限（起线程前定格）
-    bool              m_workerEsp = false; // StartBackupAsync 用：是否把 ESP 并入主镜像
+    bool              m_workerEsp = false;
+    std::vector<std::wstring> m_skippedFiles; // StartBackupAsync 用：是否把 ESP 并入主镜像
     std::string       last_err_;        // worker 错误回传
     sysrecover::ErrAdvice last_adv_ = sysrecover::ADV_NONE;  // worker 建议码回传
     // P3（PIT-148）「一键重试」worker 错误回传（PostMessage 前已落成员，

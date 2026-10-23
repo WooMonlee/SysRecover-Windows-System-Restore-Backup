@@ -36,14 +36,16 @@ public:
     int Capture(const std::wstring& source, const std::wstring& imagePath,
                 const std::string& compress, const std::wstring& name,
                 bool snapshot, const std::wstring& configFile,
-                ProgressFn progress);
+                ProgressFn progress,
+                std::vector<std::wstring>* skipped = nullptr);
     // desc 非空时给新子镜像写 <DESCRIPTION>（ESP 并入用 name="ESP" + 注释）。
     // 原子性：追加在**目标文件内**进行（wimlib_overwrite），调用方如需"ESP 失败
     // 不损坏主镜像"要自己走中转文件（见 ops.cpp::RunBackup 的 .stage 流程）。
     int Append(const std::wstring& source, const std::wstring& imagePath,
                const std::string& compress, const std::wstring& name,
                bool snapshot, const std::wstring& configFile,
-               ProgressFn progress, const std::wstring& desc = L"");
+               ProgressFn progress, const std::wstring& desc = L"",
+               std::vector<std::wstring>* skipped = nullptr);
     int Apply(const std::wstring& imagePath, int index,
               const std::wstring& target, ProgressFn progress);
     // progress：校验进度（wimlib VERIFY_STREAMS 有真实字节数；不给回调也行）。

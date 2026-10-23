@@ -180,7 +180,8 @@ int CmdBackup(const std::vector<std::string>& a) {
     sysrecover::ErrAdvice adv = sysrecover::ADV_NONE;
     g_phase = "backup";  // ConsoleProgress 按 g_phase 写 progress.json（否则是 idle）
     g_start = std::chrono::steady_clock::now();
-    int rc = sysrecover::RunBackup(req, ConsoleProgress, err, &adv);
+    std::vector<std::wstring> skipped;
+    int rc = sysrecover::RunBackup(req, ConsoleProgress, err, &adv, &skipped);
     std::printf("\n");
     if (rc != 0) {
         std::printf("%s\n", err.c_str());
@@ -193,7 +194,19 @@ int CmdBackup(const std::vector<std::string>& a) {
         }
         return rc == 5 ? 5 : 1;
     }
-    std::printf(Tr("%s（用时 %s）\n"),
+    if (!skipped.empty()) {
+        std::printf(Tr("备份不完整：以下 %d 个文件未能读取（未写入镜像）：\n"),
+                    static_cast<int>(skipped.size()));
+        const size_t shown = skipped.size() < 50 ? skipped.size() : 50;
+        for (size_t i = 0; i < shown; ++i)
+            std::printf("  %s\n", W2U8(skipped[i]).c_str());
+        if (skipped.size() > shown)
+            std::printf(Tr("\n… 另有 %d 个文件\n"),
+                        static_cast<int>(skipped.size() - shown));
+        std::printf(Tr("完整清单见日志：%s\n"),
+                    W2U8(sysrecover::LogBaseDir() + L"\\logs").c_str());
+    }
+    std::printf(Tr("%s，用时 %s。\n"),
                 req.verify ? Tr("备份并校验完成") : Tr("备份完成"),
                 FmtElapsed().c_str());
     return 0;

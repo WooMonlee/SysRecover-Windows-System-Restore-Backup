@@ -1,4 +1,4 @@
-> ⚠️ **当前版本 0.9.12**。公开前准备、发布闸门与 1.0 观察期见 [`docs/26`](docs/26-公开前准备与1.0观察期.md)；PIT 是历史坑位记录，不是发布阻塞清单。
+> ⚠️ **当前版本 0.9.13**。公开前准备、发布闸门与 1.0 观察期见 [`docs/26`](docs/26-公开前准备与1.0观察期.md)；PIT 是历史坑位记录，不是发布阻塞清单。
 
 # AGENTS.md - SysRecover（一键还原，C++ 重写）开发指南
 
@@ -1146,7 +1146,14 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **正解**：wimlib 的 `HANDLE_ERROR` 进度消息允许应用设置 `info->handle_error.will_ignore = true` 后继续。`ProgressThunk` 对 `WIMLIB_ERR_OPEN/OPENDIR/READ/READLINK/STAT` 设置忽略，并写日志 `backup: skipped unreadable file: <path> (wimlib error=N)`。
   · **边界**：`ProgCtx.skipFileErrors` 只在 `Capture`/`Append` 置 true；`Apply`/`Verify` 保持 false —— **还原/校验遇到写/读错误仍然 fail-closed**，不会静默丢文件。
   · **验证**：`make check` 57 用例/455 断言 + 门禁；`make package` 0.9.12；客户复测时即使还有其它不可读文件，也应继续备份并在 `SysRecover-*.log` 里列出跳过路径，而不是整盘失败。
-  · **后续**：若要“跳过即警告用户/汇总 skipped 清单”，可在 `RunBackup` 收尾读取日志中的 skipped 行；当前先保证不因单文件中止。
+  · **清单/确认（0.9.12 同批）**：`RunBackup` 把 Capture/Append 的 skipped 路径聚合成 vector（回调内互斥、去重）；GUI 备份完成时弹「备份不完整」清单（最多 20 条 + 完整日志路径，静默模式也弹，属 fail-safe 确认）；CLI 打印清单；日志收尾写 `backup: incomplete, skipped N`，history detail 记 `ok-skipped`。
+
+- PIT-169 **0.9.13：跳过文件必须让用户知道——备份完成弹「备份不完整」清单 + CLI 清单 + 日志汇总**（2026-10-23）：
+  · **背景**：0.9.12 的通用跳过解决了“单个文件令整盘失败”，但用户不知道哪些内容没备份；备份工具不能静默丢数据。
+  · **实现**：`RunBackup` 新增 `std::vector<std::wstring>* skipped` 出参；`WimEngine::Capture/Append` 的回调把跳过路径写入 `ProgCtx.skipped`（互斥、去重）；主镜像/ESP/EA 三处 Append 共用同一清单。GUI 备份成功且清单非空时弹「备份不完整」（最多 20 条 + 完整日志路径，静默模式也弹）；CLI 打印清单；日志写 `backup: incomplete, skipped N`；history detail `ok-skipped`。
+  · **i18n**：新增 8 个词条（清单标题/更多/日志路径/状态），`check-i18n` **584/584**。
+  · **验证**：`make check` 57 用例/455 断言 + 门禁；`make package` **0.9.13**；调研与结论见 [`docs/28`](docs/28-备份打开文件处理调研.md)。
+  · **边界**：`HANDLE_ERROR` 主要覆盖扫描阶段；数据读取阶段错误仍可能失败；跳过=备份不完整，UI/CLI 只告知，不自动修复源文件。
 
 ## 14. License 合规（SBOM，随版本更新）
 

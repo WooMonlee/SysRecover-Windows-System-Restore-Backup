@@ -994,8 +994,11 @@ static bool ProbeBackupDest(const std::wstring& dest, std::string& err) {
 }
 
 int RunBackup(const BackupRequest& req, ProgressFn progress,
-              std::string& err, ErrAdvice* adv) {
+              std::string& err, ErrAdvice* adv,
+              std::vector<std::wstring>* skipped) {
     if (adv) *adv = ADV_NONE;
+    if (skipped) skipped->clear();
+    std::vector<std::wstring> skippedList;
     if (req.dest.empty()) {
         err = Tr("缺少目标镜像路径");
         return 1;
@@ -1115,10 +1118,10 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
     int rc;
     if (req.append)
         rc = engine.Append(source, req.dest, req.compress, req.name,
-                           snapshot, cfg, progress);
+                           snapshot, cfg, progress, L"", &skippedList);
     else
         rc = engine.Capture(source, mainDest, req.compress, req.name,
-                            snapshot, cfg, progress);
+                            snapshot, cfg, progress, &skippedList);
     if (rc != 0) {
         ReleaseOpLock();
         ProgressDone("backup", "failed");
@@ -1155,7 +1158,7 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
             // 也没必要再开一次 VSS 快照。
             erc = espEng.Append(espSrc, mainDest, req.compress, L"ESP", false,
                                 EnsureEspExclusionConfig(), progress,
-                                kEspImageDesc);
+                                kEspImageDesc, &skippedList);
             UnmountEsp(espRoot, blog);
             LogInfo("esp append rc=" + std::to_string(erc) + " dest=" +
                     W2U(mainDest) + " (" + blog + ")");
@@ -1251,7 +1254,7 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
                     std::wstring eaSrc = eaTmp + L"\\";
                     int earc = eaEng.Append(eaSrc, mainDest, req.compress,
                                             L"ZJEA", false, L"", progress,
-                                            kEaImageDesc);
+                                            kEaImageDesc, &skippedList);
                     if (earc != 0) {
                         LogWarn("EA pack append failed rc=" +
                                 std::to_string(earc) +
@@ -1370,10 +1373,17 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
     }
     // 源文件"异常属性"审计 + EA 修复并入：已在上面的 `ea-scan` 块完成
     // （PIT-122 起审计与 eapack/ZJEA 子镜像一体化，不再单独扫第二遍）。
+    if (skipped) *skipped = skippedList;
+    if (!skippedList.empty()) {
+        LogWarn("backup: incomplete, skipped " +
+                std::to_string(skippedList.size()) +
+                " unreadable file(s); see skipped unreadable file lines");
+    }
     ReleaseOpLock();
     ProgressDone("backup", "done");
     LogInfo("backup done");
-    AppendHistory("backup", req.dest, source, GetTickCount64() - t0, "ok");
+    AppendHistory("backup", req.dest, source, GetTickCount64() - t0,
+                  skippedList.empty() ? "ok" : "ok-skipped");
     return 0;
 }
 

@@ -11,8 +11,10 @@
 #include <fcntl.h>
 #include <io.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cwchar>
+#include <mutex>
 #include <thread>
 
 #include "wimlib.h"
@@ -71,6 +73,9 @@ struct ProgCtx {
     uint64_t lastTick = 0;
     double   mbps = 0.0;  // 平均写入速度（MB/s）
     bool skipFileErrors = false;
+    std::vector<std::wstring>* skipped = nullptr;
+    std::mutex skippedMutex;
+    explicit ProgCtx(ProgressFn* f) : fn(f) {}
 };
 
 std::string WideToUtf8(const wchar_t* w) {
@@ -111,6 +116,14 @@ enum wimlib_progress_status ProgressThunk(enum wimlib_progress_msg msg,
                         WideToUtf8(e.path ? e.path : L"<unknown>") +
                         " (wimlib error=" +
                         std::to_string(e.error_code) + ")");
+                if (c->skipped) {
+                    std::lock_guard<std::mutex> lk(c->skippedMutex);
+                    const std::wstring p = e.path ? e.path : L"";
+                    if (!p.empty() &&
+                        std::find(c->skipped->begin(), c->skipped->end(), p) ==
+                            c->skipped->end())
+                        c->skipped->push_back(p);
+                }
                 return WIMLIB_PROGRESS_STATUS_CONTINUE;
             default:
                 break;
@@ -234,7 +247,8 @@ int WimEngine::Capture(const std::wstring& source,
                        const std::wstring& imagePath,
                        const std::string& compress, const std::wstring& name,
                        bool snapshot, const std::wstring& configFile,
-                       ProgressFn progress) {
+                       ProgressFn progress,
+                       std::vector<std::wstring>* skipped) {
     if (!inited_)
         return -1;
     int writeFlags = 0;
@@ -247,6 +261,7 @@ int WimEngine::Capture(const std::wstring& source,
     h.w = raw;
     ProgCtx ctx{&progress};
     ctx.skipFileErrors = true;
+    ctx.skipped = skipped;
     wimlib_register_progress_function(h.w, ProgressThunk, &ctx);
     // 注意：WIMLIB_ADD_FLAG_NTFS 是"裸卷捕获模式"（源须为未挂载 NTFS 卷），
     // 目录捕获（含 C:/ 热备，配合 SNAPSHOT 做 VSS）必须 flags=0（见 PIT-008）。
@@ -303,7 +318,8 @@ int WimEngine::Append(const std::wstring& source,
                       const std::wstring& imagePath,
                       const std::string& compress, const std::wstring& name,
                       bool snapshot, const std::wstring& configFile,
-                      ProgressFn progress, const std::wstring& desc) {
+                      ProgressFn progress, const std::wstring& desc,
+                      std::vector<std::wstring>* skipped) {
     if (!inited_)
         return -1;
     WimHandle h;
@@ -314,6 +330,7 @@ int WimEngine::Append(const std::wstring& source,
     h.w = raw;
     ProgCtx ctx{&progress};
     ctx.skipFileErrors = true;
+    ctx.skipped = skipped;
     wimlib_register_progress_function(h.w, ProgressThunk, &ctx);
     int flags = 0;  // 同 Capture：目录源不用 NTFS 标志（PIT-008）
     if (snapshot)
