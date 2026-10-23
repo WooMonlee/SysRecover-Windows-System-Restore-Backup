@@ -53,15 +53,29 @@ jobs:
         with:
           python-version: "3.13"
 
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW32
-          install: mingw-w64-i686-gcc
-
       - name: Install make
         shell: pwsh
         run: |
           choco install mingw --no-progress -y
+
+      - name: Install i686 UCRT toolchain
+        shell: pwsh
+        run: |
+          # 产品 x86 构建使用 mingw-builds i686 UCRT（与 x64 同源、同 libc）；
+          # MSYS2 MINGW32 默认是 MSVCRT，与 third_party/ucrt 和本地工具链不一致。
+          $zip = Join-Path $env:RUNNER_TEMP "mingw32.7z"
+          $url = "https://github.com/niXman/mingw-builds-binaries/releases/download/14.2.0-rt_v12-rev0/i686-14.2.0-release-posix-dwarf-ucrt-rt_v12-rev0.7z"
+          Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+          $seven = (Get-Command 7z.exe -ErrorAction SilentlyContinue).Source
+          if (-not $seven) { $seven = "C:\Program Files\7-Zip\7z.exe" }
+          New-Item -ItemType Directory -Path "C:\mingw32" -Force | Out-Null
+          & $seven x $zip -oC:\mingw32 -y | Out-Null
+          $g = Get-ChildItem "C:\mingw32" -Recurse -Filter i686-w64-mingw32-g++.exe |
+               Select-Object -First 1
+          if (-not $g) { throw "i686 UCRT compiler not found after extraction" }
+          $mingw = $g.Directory.Parent.FullName
+          "MINGW32=$mingw" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "$mingw\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
 
       - name: Build x86
         shell: pwsh
@@ -69,8 +83,6 @@ jobs:
           $env:PYTHON = (Get-Command python).Source
           $env:PYTHONUTF8 = "1"
           $env:PYTHONIOENCODING = "utf-8"
-          $env:MINGW32 = "C:\msys64\mingw32"
-          $env:PATH = "C:\msys64\mingw32\bin;" + $env:PATH
           mingw32-make -f Makefile SHELL=cmd.exe ARCH=x86 all
 
       - name: Upload x86 artifact
@@ -113,7 +125,21 @@ jobs:
           $sc = Get-ChildItem "C:\ProgramData\chocolatey" -Recurse -Filter shellcheck.exe |
                 Select-Object -First 1
           if (-not $sc) { throw "shellcheck.exe not found" }
-          & $sc.Source -S error bootfiles/zjrestore-lite.sh `
-            bootfiles/zjswap.sh bootfiles/zjswap-undo.sh `
-            bootfiles/setup-swap.sh bootfiles/zjlog.sh bootfiles/alpine/init
+          # Windows checkout may still materialize CRLF despite .gitattributes;
+          # ShellCheck treats literal \r as an error (SC1017). Normalize each
+          # script to LF before analysis so the gate checks content, not EOL.
+          $bad = $false
+          $files = @(
+            "bootfiles/zjrestore-lite.sh", "bootfiles/zjswap.sh",
+            "bootfiles/zjswap-undo.sh", "bootfiles/setup-swap.sh",
+            "bootfiles/zjlog.sh", "bootfiles/alpine/init"
+          )
+          foreach ($f in $files) {
+            $text = [IO.File]::ReadAllText((Join-Path $PWD $f)).Replace("`r`n", "`n")
+            $tmp = Join-Path $env:RUNNER_TEMP ((Split-Path $f -Leaf) + ".sh")
+            [IO.File]::WriteAllText($tmp, $text, [Text.UTF8Encoding]::new($false))
+            & $sc.Source -S error $tmp
+            if ($LASTEXITCODE -ne 0) { $bad = $true }
+          }
+          if ($bad) { exit 1 }
 
