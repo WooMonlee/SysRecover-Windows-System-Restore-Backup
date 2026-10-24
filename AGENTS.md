@@ -1,4 +1,4 @@
-> ⚠️ **当前版本 0.9.17**。公开前准备、发布闸门与 1.0 观察期见 [`docs/26`](docs/26-公开前准备与1.0观察期.md)；PIT 是历史坑位记录，不是发布阻塞清单。
+> ⚠️ **当前版本 0.9.18**。公开前准备、发布闸门与 1.0 观察期见 [`docs/26`](docs/26-公开前准备与1.0观察期.md)；PIT 是历史坑位记录，不是发布阻塞清单。
 
 # AGENTS.md - SysRecover（一键还原，C++ 重写）开发指南
 
@@ -1155,15 +1155,16 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **验证**：`make check` 57 用例/455 断言 + 门禁；`make package` **0.9.13**；调研与结论见 [`docs/28`](docs/28-备份打开文件处理调研.md)。
   · **边界**：`HANDLE_ERROR` 主要覆盖扫描阶段；数据读取阶段错误仍可能失败；跳过=备份不完整，UI/CLI 只告知，不自动修复源文件。
 
-- PIT-170 **日常还原临时菜单与「安装菜单」分离：不同名称/GUID + 首启“恢复引导菜单”清理器**（2026-10-23，`0.9.17`）：
+- PIT-170 **日常还原临时菜单与「安装菜单」分离：不同名称/GUID + 首启“恢复引导菜单”清理器**（2026-10-23，`0.9.18`）：
   · **规格（用户）**：只有用户显式「安装菜单」才保留常驻启动菜单；日常还原不应留下菜单，二者必须使用不同名字。
   · **实现**：
     - UEFI：常驻 `SysRecover`（`Boot####`）vs 临时 `SysRecover Temporary Restore`；BIOS：常驻 `RecoveryGuid`/`SysRecover Recovery Environment` vs 临时 `TemporaryGuid`/`SysRecover Temporary Restore`（`src/boot/bootnames.h`、`bcd.h`）。
     - 日常暂存/回旧系统走临时条目；`InstallUefiBootEntry`/`InstallBootLayer`/`SetUefiBootNext` 增加 `temporary` 参数；`RemoveBootLayer` 两者都清，首启清理只清临时项。
     - 显式安装菜单写 `restore-menu.flag`；检测到常驻菜单时普通还原/回旧系统**拒绝**并提示先「清除菜单」，避免覆盖用户菜单。
     - `src/tools/restore_boot_main.cpp` → `bootfiles/zj-restore-boot.exe`（x86、requireAdministrator）：A 引擎注入 `~new` 的 RunOnce（值名「恢复引导菜单」）；首启删除临时 UEFI/BCD 条目，无常驻菜单时再清 ESP `\EFI\ZJRESTORE` 和系统盘根 boot 文件；回旧系统注入 `~old`。
-  · **边界**：B 引擎（`--engine block`）没有离线 `~new` 可写 RunOnce，当前只记 WARN（临时 UEFI 条目可能残留，需手动清除）；首启会弹一次 UAC（与既有无 `ZJSysRecoverFirstBoot` 同款）；Win7 目标需自备 x86 UCRT（helper 未随包放 UCRT 到 ProgramData）。
-  · **验证**：`make check` 58 用例/459 断言 + i18n **587/587** + check-docs/widths/shell PASS；`make package` 双架构 **0.9.17**（helper 366,080B、manifest requireAdministrator）；🚧 待真机/VM 回归（UEFI 临时项首启消失、常驻菜单保留、BIOS/回旧系统）。
+  · **B 引擎补充（0.9.18）**：`--engine block` 没有离线 `~new` 可写 RunOnce，改由 Linux 救援层把 helper 投放到目标 `ProgramData\SysRecover`，并在**所有用户**启动文件夹放 `SysRecover-RestoreBoot.cmd`；首次登录运行（会请求一次 UAC），成功后清理临时条目。若用户不登录则不会执行；A 引擎仍走 RunOnce。
+  · **边界/注意**：首启程序需要一次 UAC（与既有无 `ZJSysRecoverFirstBoot` 同款）；Win7 目标需自备 x86 UCRT（helper 未随包放 UCRT 到 ProgramData）；B 引擎登录后清理，不是登录前。
+  · **验证**：`make check` 58 用例/459 断言 + i18n **587/587** + check-docs/widths/shell PASS；`make package` 双架构 **0.9.18**（helper 366,080B、manifest requireAdministrator）；QEMU B 引擎 drill 已断言 `boot cleanup: deployed`；🚧 待真机/VM 回归（UEFI 临时项首启消失、常驻菜单保留、BIOS/回旧系统）。
 
 ## 14. License 合规（SBOM，随版本更新）
 

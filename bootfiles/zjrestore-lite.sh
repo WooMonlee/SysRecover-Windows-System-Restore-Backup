@@ -1420,6 +1420,39 @@ say "apply done"
 STAGE=1
 fi # end engine != swap (B-engine prepare+apply)
 
+# ── B 引擎首启清理（PIT-170 边界）：Linux 侧不能写离线 RunOnce，
+#    改为把 zj-restore-boot.exe 放进目标 ProgramData，并在“所有用户”启动
+#    文件夹放一个 cmd；首次登录时自动删除临时引导项（会请求一次 UAC）。
+#    A 引擎已在 Windows 侧注入 RunOnce，不走这里。
+if [ "$ENGINE" = "block" ] && [ -f /zj-restore-boot.exe ]; then
+    STEP=boot-cleanup
+    BCM=/tmp/zj_boot_clean
+    mkdir -p "$BCM"
+    if timeout 60 mount -t ntfs3 "$TARGET_DEV" "$BCM" 2>/tmp/zjbc.err \
+       || ntfs-3g -o force "$TARGET_DEV" "$BCM" 2>>/tmp/zjbc.err \
+       || mnt_dev "$TARGET_DEV" "$BCM"; then
+        mkdir -p "$BCM/ProgramData/SysRecover" \
+                 "$BCM/ProgramData/Microsoft/Windows/Start Menu/Programs/Startup"
+        cp /zj-restore-boot.exe "$BCM/ProgramData/SysRecover/zj-restore-boot.exe" \
+           2>/tmp/zjbc.err
+        cat > "$BCM/ProgramData/Microsoft/Windows/Start Menu/Programs/Startup/SysRecover-RestoreBoot.cmd" <<'ZJCM'
+@echo off
+"%ProgramData%\SysRecover\zj-restore-boot.exe"
+if not exist "%ProgramData%\SysRecover\zj-restore-boot.exe" del "%~f0"
+ZJCM
+        sync
+        if [ -s "$BCM/ProgramData/SysRecover/zj-restore-boot.exe" ] && \
+           [ -s "$BCM/ProgramData/Microsoft/Windows/Start Menu/Programs/Startup/SysRecover-RestoreBoot.cmd" ]; then
+            say "boot cleanup: deployed (A-engine-style helper via startup folder)"
+        else
+            say "WARN: boot cleanup deploy INCOMPLETE: $(cat /tmp/zjbc.err | tr '\n' ' ')"
+        fi
+        umount "$BCM" 2>>/tmp/zjbc.err
+    else
+        say "WARN: boot cleanup target mount failed: $(cat /tmp/zjbc.err | tr '\n' ' ')"
+    fi
+fi
+
 # ── 引导补全：把 \bootmgr + \Boot\* 拷进目标分区（万能镜像常缺 \Boot\BCD）──
 # 文件由 Windows 暂存阶段生成（bcdedit /export 得到可移植 BCD），/init 已拷到
 # /tmp/bootfix。这里**用 cp 而不是 wimlib apply**：wimlib 的 NTFS 卷模式遇到

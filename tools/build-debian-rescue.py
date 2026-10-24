@@ -339,7 +339,10 @@ def main():
                        ('zjswap.sh', 0o755), ('zjswap-undo.sh', 0o755),
                        ('setup-swap.sh', 0o755), ('zjlog.sh', 0o755),
                        ('ntfs-boot-code.bin', 0o644),
-                       ('ntfs-boot-cont.bin', 0o644)):
+                       ('ntfs-boot-cont.bin', 0o644),
+                       # B 引擎首启清理器：rescue 层投放到目标 Windows 的
+                       # ProgramData + Startup，登录时自动清临时引导项。
+                       ('zj-restore-boot.exe', 0o644)):
         s = os.path.join(zj.BOOT, name if name != 'init'
                          else os.path.join('alpine', 'init'))
         if os.path.exists(s):

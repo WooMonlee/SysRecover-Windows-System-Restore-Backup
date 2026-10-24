@@ -79,6 +79,7 @@ if ($efs -eq "reject") {
     $checks["ESP subimage restored"] = "esp restored (rc=0)"
     $checks["EA subimage picked"] = "ea subimage: index=3"
     $checks["EA deployed + hook"] = "ea: deployed (payload + GPO hook"
+    $checks["B boot cleanup deployed"] = "boot cleanup: deployed (A-engine-style helper via startup folder)"
     $checks["blackbox to ESP"] = "blackbox: log -> /dev/sda1 (ESP)"
     $checks["RESTORE DONE"] = "RESTORE DONE: /dev/sda2"
     if ($rep -eq "cert") {
