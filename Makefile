@@ -162,16 +162,15 @@ $(EA_APPLY_OUT): $(EA_APPLY_SRC) src/common/version.h
 	$(EA_APPLY_X86) $(CXXFLAGS) $(INCLUDES) $(EA_APPLY_SRC) -o $(EA_APPLY_OUT) -static -mconsole -municode -s -lntdll -ladvapi32
 
 # ---- “恢复引导菜单”首启清理器（日常还原临时项；PIT-170）----
+# 注意：**故意不嵌 requireAdministrator 清单**。启动文件夹先以普通权限启动它，
+# 它先弹提示框，再由自己 ShellExecute(runas) 请求 UAC；若清单要求提权，
+# UAC 会抢在提示框之前。
 BOOT_CLEANUP_SRC = src/tools/restore_boot_main.cpp
-BOOT_CLEANUP_RC = src/cli/SysRecover.rc
-BOOT_CLEANUP_RC_OBJ = $(OBJDIR)/boot-cleanup-rc.o
 BOOT_CLEANUP_X86 = $(MINGW32)/bin/i686-w64-mingw32-g++
 BOOT_CLEANUP_OUT = bootfiles/zj-restore-boot.exe
 boot-cleanup: $(BOOT_CLEANUP_OUT)
-$(BOOT_CLEANUP_RC_OBJ): $(BOOT_CLEANUP_RC) src/cli/SysRecover.manifest | $(OBJDIR)
-	$(MINGW32)/bin/windres.exe -I src/cli $(BOOT_CLEANUP_RC) -o $(BOOT_CLEANUP_RC_OBJ)
-$(BOOT_CLEANUP_OUT): $(BOOT_CLEANUP_SRC) $(BOOT_CLEANUP_RC_OBJ) src/boot/bcd.h src/boot/bootnames.h | $(OBJDIR)
-	$(BOOT_CLEANUP_X86) $(CXXFLAGS) $(INCLUDES) $(BOOT_CLEANUP_SRC) $(BOOT_CLEANUP_RC_OBJ) -o $(BOOT_CLEANUP_OUT) -static -mconsole -municode -s -ladvapi32
+$(BOOT_CLEANUP_OUT): $(BOOT_CLEANUP_SRC) src/boot/bcd.h src/boot/bootnames.h | $(OBJDIR)
+	$(BOOT_CLEANUP_X86) $(CXXFLAGS) $(INCLUDES) $(BOOT_CLEANUP_SRC) -o $(BOOT_CLEANUP_OUT) -static -mconsole -municode -s -ladvapi32 -lshell32
 # ---- 单元测试（0.7 线重做：2026-10-11 自 graveyard/tests 迁回；旧 45 用例对 0.7
 #      源码复验全绿后原样恢复，另补 0.7 新纯逻辑 DecideSwapLeftover 决策表用例）----
 TEST_SRC   = tests/tiny_test.cpp tests/unit_tests.cpp tests/main.cpp

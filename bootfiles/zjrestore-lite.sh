@@ -1437,8 +1437,11 @@ if [ "$ENGINE" = "block" ] && [ -f /zj-restore-boot.exe ]; then
            2>/tmp/zjbc.err
         cat > "$BCM/ProgramData/Microsoft/Windows/Start Menu/Programs/Startup/SysRecover-RestoreBoot.cmd" <<'ZJCM'
 @echo off
+if exist "%ProgramData%\SysRecover\boot-cleanup.done" goto done
 "%ProgramData%\SysRecover\zj-restore-boot.exe"
-if not exist "%ProgramData%\SysRecover\zj-restore-boot.exe" del "%~f0"
+goto :eof
+:done
+del "%~f0"
 ZJCM
         sync
         if [ -s "$BCM/ProgramData/SysRecover/zj-restore-boot.exe" ] && \

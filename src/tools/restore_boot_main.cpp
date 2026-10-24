@@ -1,7 +1,8 @@
 // zj-restore-boot.exe —— “恢复引导菜单”首启清理器
 //
-// 日常还原（非「安装菜单」）在 Windows 阶段把本程序注入新系统 RunOnce；
-// 新系统第一次登录时自动运行，删除**临时**引导项：
+// 日常还原（非「安装菜单」）把本程序投放到新系统 ProgramData，并由公共
+// 启动文件夹的 cmd 在第一次登录时启动；启动时先弹说明框，再自行请求 UAC
+// （非提权进程 → MessageBox → ShellExecute runas），删除**临时**引导项：
 //   - UEFI：描述为 "SysRecover Temporary Restore" 的 Boot#### + BootNext；
 //   - BIOS：临时 GUID 的 BCD 条目 + bootsequence；
 //   - 若无常驻菜单，还清 ESP\EFI\ZJRESTORE 和系统盘根 boot 文件。
@@ -11,6 +12,7 @@
 // 走 Sysnative（32 位进程在 64 位系统上必须避开 SysWOW64，PIT-082）。
 #define _WIN32_WINNT 0x0601
 #include <windows.h>
+#include <shellapi.h>
 
 #include <cstdio>
 #include <cstdlib>
@@ -308,14 +310,85 @@ void RemoveSelfAndRunOnce() {
     }
 }
 
+bool IsElevated() {
+    HANDLE tok = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok))
+        return false;
+    TOKEN_ELEVATION te{};
+    DWORD n = 0;
+    BOOL ok = GetTokenInformation(tok, TokenElevation, &te, sizeof(te), &n);
+    CloseHandle(tok);
+    return ok && te.TokenIsElevated;
+}
+
+bool SelfElevate(const std::wstring& logDir) {
+    wchar_t exe[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    SHELLEXECUTEINFOW sei{};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpVerb = L"runas";
+    sei.lpFile = exe;
+    sei.lpParameters = L"--elevated";
+    sei.lpDirectory = logDir.c_str();
+    sei.nShow = SW_HIDE;
+    SetLastError(0);
+    if (!ShellExecuteExW(&sei)) {
+        DWORD e = GetLastError();
+        Log("elevation request failed err=" + std::to_string(e) +
+            (e == ERROR_CANCELLED ? " (user cancelled UAC)" : ""));
+        return false;
+    }
+    if (sei.hProcess) CloseHandle(sei.hProcess);
+    return true;
+}
+
+void WriteDoneMarker() {
+    const std::wstring p = ProgramData() + L"\\SysRecover\\boot-cleanup.done";
+    HANDLE h = CreateFileW(p.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        Log("done marker write failed");
+        return;
+    }
+    const char k[] = "done\r\n";
+    DWORD wr = 0;
+    WriteFile(h, k, (DWORD)sizeof(k) - 1, &wr, nullptr);
+    CloseHandle(h);
+}
+
 }  // namespace
 
-int wmain(int, wchar_t**) {
+int wmain(int argc, wchar_t** argv) {
+    const bool elevatedArg =
+        argc > 1 && wcscmp(argv[1], L"--elevated") == 0;
     const std::wstring pd = ProgramData() + L"\\SysRecover";
     CreateDirectoryW((ProgramData()).c_str(), nullptr);
     CreateDirectoryW(pd.c_str(), nullptr);
     gLog = pd + L"\\boot-cleanup.log";
-    Log("restore-boot cleanup start");
+
+    // 先告知，再请求 UAC：本进程是普通权限（manifest=asInvoker），
+    // 对话框结束后才 ShellExecute(runas)，所以 UAC 不会抢在提示之前。
+    if (!elevatedArg && !IsElevated()) {
+        Log("non-elevated start: show notice before UAC");
+        const wchar_t* msg =
+            L"本次还原使用了一次性启动菜单。\n"
+            L"接下来会清理临时引导项，需要管理员权限。\n\n"
+            L"点“确定”后，请在 Windows 的 UAC 提示中选择“是”。\n"
+            L"如果取消，系统会在下次登录时再次提示。";
+        int r = MessageBoxW(nullptr, msg, L"恢复引导菜单",
+                            MB_OKCANCEL | MB_ICONINFORMATION | MB_SETFOREGROUND |
+                                MB_TOPMOST);
+        if (r != IDOK) {
+            Log("user cancelled notice (no UAC requested)");
+            return 0;
+        }
+        if (!SelfElevate(pd)) return 1;
+        return 0;
+    }
+
+    Log("restore-boot cleanup start (elevated=" +
+        std::string(elevatedArg ? "arg" : "token") + ")");
     EnableEnvPrivilege();
 
     const int temp = FindUefiEntry(kTempEntryDesc);
@@ -340,6 +413,7 @@ int wmain(int, wchar_t**) {
         }
         Log("temporary boot files removed");
     }
+    WriteDoneMarker();
     RemoveSelfAndRunOnce();
     Log("restore-boot cleanup done (menu=" + std::string(menu ? "1" : "0") + ")");
     return 0;

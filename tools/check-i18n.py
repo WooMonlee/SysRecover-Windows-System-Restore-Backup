@@ -23,6 +23,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 HAN = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
 
+# 救援层首启小工具（无 i18n 运行库、无语言目录）：它的提示框属于救援脚本
+# 同级的“屏幕文案”，不是 GUI 可翻译文案。只对该文件豁免 C1，避免把
+# “提示框/标题”漏翻误报成产品 UI 漏翻。
+SKIP_FILES = {
+    "src/tools/restore_boot_main.cpp",
+}
+
 
 def _load(name, path):
     spec = importlib.util.spec_from_file_location(name, str(path))
@@ -71,6 +78,8 @@ def source_keys_and_violations():
     keys, bad = set(), []
     for p in src_files():
         rel = str(p.relative_to(ROOT)).replace("\\", "/")
+        if rel in SKIP_FILES:
+            continue
         _, text, _ = wrap.read_text(p)
         toks = wrap.lex(text)
         starts = wrap.line_starts(text)

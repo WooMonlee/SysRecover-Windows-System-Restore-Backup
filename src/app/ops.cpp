@@ -611,8 +611,9 @@ bool InjectOfflineRunOnce(const std::wstring& newDir, const wchar_t* hiveName,
 
 // 把首启清理器写进新系统，并挂 RunOnce：
 //   - 只用于**日常还原的临时菜单**（menuEntry=false）；
-//   - 程序名/值名与「安装菜单」区分（“恢复引导菜单”）；
-//   - A 引擎有 ~new；B 引擎没有离线 hive，当前只能告警（后续可走救援层 GPO）。
+//   - A 引擎把 helper + 公共启动文件夹 cmd 写进 ~new（不写 RunOnce）；
+//   - B 引擎由救援层写同样两份文件（target 已没有离线 ~new）；
+//   - cmd 先启动非提权 helper → 弹提示 → helper 自己再请求 UAC。
 bool InstallFirstBootCleanup(const std::wstring& newDir,
                              const std::wstring& exeDir, std::string& log) {
     const std::wstring src = exeDir + L"\\bootfiles\\zj-restore-boot.exe";
@@ -621,8 +622,11 @@ bool InstallFirstBootCleanup(const std::wstring& newDir,
         return false;
     }
     const std::wstring dir = newDir + L"\\ProgramData\\SysRecover";
+    const std::wstring startup =
+        newDir + L"\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Startup";
     CreateDirectoryW((newDir + L"\\ProgramData").c_str(), nullptr);
     CreateDirectoryW(dir.c_str(), nullptr);
+    CreateDirectoryW(startup.c_str(), nullptr);
     const std::wstring dst = dir + L"\\zj-restore-boot.exe";
     SetFileAttributesW(dst.c_str(), FILE_ATTRIBUTE_NORMAL);
     if (!CopyFileW(src.c_str(), dst.c_str(), FALSE)) {
@@ -630,13 +634,29 @@ bool InstallFirstBootCleanup(const std::wstring& newDir,
                std::to_string(GetLastError()) + "\n";
         return false;
     }
-    // RunOnce 的**值名**是用户可见的启动项别名；命令仍是 ASCII 路径。
-    const bool ok = InjectOfflineRunOnce(
-        newDir, L"ZJRESTOREMENU", Tr(L"恢复引导菜单"),
-        L"%ProgramData%\\SysRecover\\zj-restore-boot.exe", REG_EXPAND_SZ,
-        "restore boot cleanup");
-    log += ok ? "first-boot cleanup injected\n" : "first-boot cleanup inject failed\n";
-    return ok;
+    // 启动文件夹：首次登录由资源管理器以普通权限启动 helper；helper 先弹说明，
+    // 再自行 ShellExecute(runas) 请求 UAC。UAC 被取消时 cmd 保留，下次登录重试；
+    // 成功后 helper 写 boot-cleanup.done，下一次登录 cmd 自删。
+    const char kCmd[] =
+        "@echo off\r\n"
+        "if exist \"%ProgramData%\\SysRecover\\boot-cleanup.done\" goto done\r\n"
+        "\"%ProgramData%\\SysRecover\\zj-restore-boot.exe\"\r\n"
+        "goto :eof\r\n"
+        ":done\r\n"
+        "del \"%~f0\"\r\n";
+    const std::wstring cmdPath = startup + L"\\SysRecover-RestoreBoot.cmd";
+    HANDLE h = CreateFileW(cmdPath.c_str(), GENERIC_WRITE, 0, nullptr,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        log += "write startup cmd failed err=" +
+               std::to_string(GetLastError()) + "\n";
+        return false;
+    }
+    DWORD wr = 0;
+    WriteFile(h, kCmd, (DWORD)(sizeof(kCmd) - 1), &wr, nullptr);
+    CloseHandle(h);
+    log += "first-boot cleanup deployed (helper + startup cmd)\n";
+    return true;
 }
 
 }  // namespace

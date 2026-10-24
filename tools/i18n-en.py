@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：587/587 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：584/584 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n建议：以管理员身份运行（本程序要读写分区与引导）。': '\n\nAdvice: run as administrator (this program reads and writes partitions and boot data).',
@@ -306,7 +306,6 @@ EN = {
     '影子副本提供程序(swprv)': 'Shadow Copy Provider (swprv)',
     '待定扇区（读失败待重映射）': 'Pending sectors (read failures awaiting remap)',
     '快捷启动键': 'boot menu key',
-    '恢复引导菜单': 'Restore Boot Menu',
     '或重启后再删（还原前必须清干净）。': 'or reboot then delete again (must be clean before restore).',
     '所有文件': 'All files',
     '打开日志': 'Open Logs',
@@ -338,7 +337,6 @@ EN = {
     '搜集还原日志与诊断信息并打包到桌面（含 explorer 转储、事件日志）': 'Collect restore logs and diagnostics and package them to the Desktop (includes explorer dumps and event logs)',
     '救援环境缺少必需组件': 'Rescue environment is missing required components',
     '教育版': 'Education',
-    '文件→系统': 'Restore',
     '文件对话框创建失败': 'Failed to create the file dialog',
     '文件属性检查': 'File attribute audit',
     '新硬盘分区已创建，请选择镜像后开始还原': 'New disk partitions created; select an image to start restoring',
@@ -461,7 +459,6 @@ EN = {
     '第二步': 'Step 2',
     '简易版': 'Starter',
     '类型': 'Type',
-    '系统→文件': 'Backup',
     '系统保留': 'System Reserved',
     '系统备份已完成。\n用时 ': 'System backup is complete.\nTime taken: ',
     '系统安装位置': 'Target Disk',
