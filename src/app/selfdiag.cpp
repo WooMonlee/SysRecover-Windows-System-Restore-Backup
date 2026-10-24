@@ -231,7 +231,7 @@ int CollectOneDrive(wchar_t letter, const std::wstring& dstBase,
             ++n;
     }
 
-    // 3) 兜底日志窝：软件目录找不到时救援层把日志写到 <盘根>\ZJRESTORE-logs\
+    // 3) 兜底日志窝：软件目录找不到时救援层把日志写到 <盘根>\ZJRESTORE-logs
     //    （用户 2026-10-04 规格 3/4：先保证有地方放；收集后再从该分区清掉）。
     std::wstring fbr = root + L"ZJRESTORE-logs";
     if (GetFileAttributesW(fbr.c_str()) != INVALID_FILE_ATTRIBUTES) {

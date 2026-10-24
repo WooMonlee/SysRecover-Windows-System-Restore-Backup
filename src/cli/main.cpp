@@ -1,10 +1,11 @@
-﻿// SysRecover CLI（Phase 0）：version / diag。完整命令见 AGENTS.md §9。
+// SysRecover CLI（Phase 0）：version / diag。完整命令见 AGENTS.md §9。
 // 退出码：0 成功，1 通用失败，2 参数错误（与 AGENTS.md §9 一致）。
 #include "../common/i18n.h"
 #include <windows.h>
 #include <shellapi.h>  // CommandLineToArgvW（P11：从宽命令行取参数）
 #include <shlobj.h>
 #include <chrono>
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -118,6 +119,97 @@ bool Has(const std::vector<std::string>& a, const char* key) {
     return false;
 }
 
+// 逐命令的选项白名单：未知参数/缺值必须在进入业务逻辑前报错（退出码 2），
+// 不能靠“忽略未知项”掩盖用户拼写错误（例如 --yse、--destt）。
+bool OneOf(const std::string& s, const std::vector<const char*>& names) {
+    for (const char* n : names)
+        if (s == n)
+            return true;
+    return false;
+}
+
+// 读取整数选项；缺省 true（用 def），但“写了非法值”必须 false ——
+// 否则 atoi("abc")=0 会把 --disk abc 静默当成磁盘 0（危险）。
+bool OptInt(const std::vector<std::string>& a, const char* key, int def,
+            int& out) {
+    std::string s = Opt(a, key);
+    if (s.empty()) {
+        out = def;
+        return true;
+    }
+    char* end = nullptr;
+    long v = std::strtol(s.c_str(), &end, 10);
+    if (end == s.c_str() || !end || *end != '\0' || v < INT_MIN ||
+        v > INT_MAX) {
+        std::printf(Tr("参数 %s 不是有效数字：%s\n"), key, s.c_str());
+        return false;
+    }
+    out = (int)v;
+    return true;
+}
+
+bool ValidateCommandArgs(const std::vector<std::string>& a) {
+    if (a.empty())
+        return true;
+    const std::string& cmd = a[0];
+    std::vector<const char*> flags;
+    std::vector<const char*> values;
+    if (cmd == "backup") {
+        flags = {"--append", "--verify", "--snapshot", "--no-snapshot", "--esp",
+                 "--yes", "-y"};
+        values = {"--dest", "--source", "--compress", "--name"};
+    } else if (cmd == "restore") {
+        flags = {"--no-repair-boot", "--universal", "--yes", "-y"};
+        values = {"--image", "--disk", "--part", "--index", "--engine",
+                  "--drivers"};
+    } else if (cmd == "verify") {
+        values = {"--image"};
+    } else if (cmd == "repair-boot") {
+        values = {"--disk", "--part"};
+    } else if (cmd == "returnold") {
+        flags = {"--yes", "-y"};
+        values = {"--disk", "--part"};
+    } else if (cmd == "images") {
+        values = {"--file"};
+    } else if (cmd == "extract") {
+        values = {"--file", "--path", "--dest", "--index"};
+    } else if (cmd == "diag") {
+        flags = {"--zip"};
+        values = {"--out"};
+    } else if (cmd == "support" || cmd == "scan-ea") {
+        values = {"--out", "--root"};
+    } else if (cmd == "shortcut") {
+        values = {"--target", "--args", "--name"};
+    } else if (cmd == "list") {
+        // 保留旧脚本可能传入的 --json（当前实现输出人类可读列表；不静默改变语义）
+        flags = {"--json"};
+    } else if (cmd == "version" || cmd == "history") {
+        if (a.size() > 1) {
+            std::printf(Tr("未知参数：%s\n"), a[1].c_str());
+            return false;
+        }
+        return true;
+    } else {
+        return true;  // 未知命令由 dispatch/Usage 处理
+    }
+
+    for (size_t i = 1; i < a.size(); ++i) {
+        if (OneOf(a[i], values)) {
+            if (i + 1 >= a.size()) {
+                std::printf(Tr("参数 %s 缺少值\n"), a[i].c_str());
+                return false;
+            }
+            ++i;
+        } else if (OneOf(a[i], flags)) {
+            continue;
+        } else {
+            std::printf(Tr("未知参数：%s\n"), a[i].c_str());
+            return false;
+        }
+    }
+    return true;
+}
+
 // 单行进度（\r 刷新）+ 进度文件，供外部工具读取。返回 true 暂不支持取消。
 std::string g_phase = "idle";
 std::chrono::steady_clock::time_point g_start =
@@ -164,6 +256,11 @@ int CmdBackup(const std::vector<std::string>& a) {
     req.source = ToWide(Opt(a, "--source", "C:/"));
     req.dest = ToWide(dest);
     req.compress = Opt(a, "--compress", "fast");
+    if (req.compress != "fast" && req.compress != "maximum" &&
+        req.compress != "recovery") {
+        std::printf(Tr("--compress 只支持 fast/maximum/recovery\n"));
+        return 2;
+    }
     req.name = ToWide(Opt(a, "--name", "Backup"));
     req.append = Has(a, "--append");
     req.verify = Has(a, "--verify");
@@ -224,61 +321,14 @@ int CmdRestore(const std::vector<std::string>& a) {
         std::printf(Tr("还原将覆盖目标分区，需加 --yes 确认\n"));
         return 2;
     }
-    int disk = std::atoi(diskS.c_str());
-    int part = std::atoi(partS.c_str());
-    int index = std::atoi(Opt(a, "--index", "1").c_str());
-    if (index < 1)
-        index = 1;
-    bool repairBoot = !Has(a, "--no-repair-boot");
-    if (Has(a, "--apply")) {
-        // 直接应用模式（Phase 2 遗留，用于非系统分区验证）
-        sysrecover::PartitionInfo target;
-        bool found = false;
-        for (const auto& d : sysrecover::EnumerateDisks()) {
-            if ((int)d.index != disk)
-                continue;
-            for (const auto& p : d.parts) {
-                if ((int)p.partNumber != part)
-                    continue;
-                target = p;
-                found = true;
-            }
-        }
-        if (!found) {
-            std::printf(Tr("找不到目标分区 磁盘%d 分区%d\n"), disk, part);
-            return 1;
-        }
-        if (!sysrecover::AcquireOpLock()) {
-            std::printf(Tr("已有备份/还原实例在运行，本次退出\n"));
-            return 1;
-        }
-        g_phase = "restore";
-        sysrecover::ProgressUpdate(g_phase, 0, "start");
-        g_start = std::chrono::steady_clock::now();
-        if (target.letter.empty()) {
-            std::printf(Tr("目标分区无盘符，无法直接应用\n"));
-            return 1;
-        }
-        if (target.isSystem)
-            std::wprintf(Tr(L"警告：目标是系统分区，还原后需重启\n"));
-        sysrecover::WimEngine engine;
-        if (!engine.ok()) {
-            std::printf(Tr("wimlib 初始化失败\n"));
-            return 1;
-        }
-        int rc = engine.Apply(ToWide(image), index, target.letter + L":/",
-                              ConsoleProgress);
-        std::printf("\n");
-        if (rc != 0) {
-            std::wprintf(Tr(L"还原失败(rc=%d)：%ls\n"), rc,
-                         sysrecover::WimEngine::ErrorString(rc));
-            sysrecover::ProgressDone("restore", "failed");
-            return 1;
-        }
-        std::printf(Tr("还原完成\n"));
-        sysrecover::ProgressDone("restore", "done");
-        return 0;
+    int disk = 0, part = 0, index = 1;
+    if (!OptInt(a, "--disk", 0, disk) || disk < 0 ||
+        !OptInt(a, "--part", 0, part) || part < 1 ||
+        !OptInt(a, "--index", 1, index) || index < 1) {
+        std::printf(Tr("--disk/--part/--index 必须是有效正整数\n"));
+        return 2;
     }
+    bool repairBoot = !Has(a, "--no-repair-boot");
     // 默认：暂存模式（重启进 Linux 执行；ops 层：安检→_zjresy 日志→
     // 任务文件→引导层→BCD bootsequence，契约对齐旧 C# StageRestoreAsync）
     sysrecover::RestoreRequest req;
@@ -354,8 +404,11 @@ int CmdRestore(const std::vector<std::string>& a) {
 // repair-boot（docs/15 · P5）：修"引导坏了、起不来"的机器 —— 不用重装。
 // 全流程 = 找系统盘 → 找 ESP（含回退）→ 模板/空间预检 → bcdboot → 产物断言。
 int CmdRepairBoot(const std::vector<std::string>& a) {
-    int disk = std::atoi(Opt(a, "--disk", "-1").c_str());
-    int part = std::atoi(Opt(a, "--part", "-1").c_str());
+    int disk = -1, part = -1;
+    if (!OptInt(a, "--disk", -1, disk) || !OptInt(a, "--part", -1, part)) {
+        std::printf(Tr("--disk/--part 必须是有效数字\n"));
+        return 2;
+    }
     std::printf("%s\n", Tr("正在修复引导（bcdboot + 产物校验）……"));
     std::string msg;
     int rc = sysrecover::RepairBoot(disk, part, msg);
@@ -405,8 +458,11 @@ void CmdRebootNow() {
 // Windows 侧只暂存契约(action=returnold) + 部署引导 + 单次启动；目录反向交换
 // 一律在 Linux 救援层完成（在 Windows 里改名正在运行的系统树不可回滚）。
 int CmdReturnOld(const std::vector<std::string>& a) {
-    int disk = std::atoi(Opt(a, "--disk", "-1").c_str());
-    int part = std::atoi(Opt(a, "--part", "-1").c_str());
+    int disk = -1, part = -1;
+    if (!OptInt(a, "--disk", -1, disk) || !OptInt(a, "--part", -1, part)) {
+        std::printf(Tr("--disk/--part 必须是有效数字\n"));
+        return 2;
+    }
     const bool yesFlag = Has(a, "--yes") || Has(a, "-y");
     bool hasConsole = false;
     {
@@ -512,7 +568,11 @@ int CmdExtract(const std::vector<std::string>& a) {
     if (file.empty())
         file = Opt(a, "--image");  // images 用 --file、restore 用 --image，这里两个都收
     std::string dest = Opt(a, "--dest");
-    int index = std::atoi(Opt(a, "--index", "1").c_str());
+    int index = 1;
+    if (!OptInt(a, "--index", 1, index) || index < 1) {
+        std::printf(Tr("--index 必须是有效正整数\n"));
+        return 2;
+    }
     // --path 可重复（Opt 只取第一个匹配，所以自己扫一遍）
     std::vector<std::wstring> paths;
     for (size_t i = 0; i + 1 < a.size(); ++i)
@@ -882,6 +942,9 @@ int main() {
         PrintCmdUsage(args[0].c_str());
         return 0;
     }
+    // 未知选项/缺值在写日志、枚举磁盘之前就拒绝（退出码 2）。
+    if (!ValidateCommandArgs(args))
+        return 2;
     std::wstring logsDir = sysrecover::LogBaseDir() + L"\\logs";
     sysrecover::LogInit(logsDir);
     sysrecover::ProgressInit(logsDir);

@@ -41,6 +41,14 @@ def main() -> int:
         ("version --help", ["version", "--help"], 0),
         ("no args", [], 2),
         ("unknown command", ["definitely-not-a-command"], 2),
+        ("unknown option", ["version", "--bogus"], 2),
+        ("extra arg", ["version", "extra"], 2),
+        ("missing value", ["repair-boot", "--disk"], 2),
+        ("bad disk", ["restore", "--image", "x", "--disk", "abc", "--part", "1", "--yes"], 2),
+        ("bad part", ["restore", "--image", "x", "--disk", "1", "--part", "abc", "--yes"], 2),
+        ("bad compress", ["backup", "--dest", "x", "--compress", "bogus"], 2),
+        ("bad repair disk", ["repair-boot", "--disk", "abc"], 2),
+        ("removed apply", ["restore", "--apply", "--image", "x", "--disk", "1", "--part", "1", "--yes"], 2),
     ]
     bad = 0
     for name, args, want in cases:

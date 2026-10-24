@@ -98,16 +98,14 @@ bool ProbeEmpty(uint32_t idx, EmptyDiskInfo& out) {
         out.style = PartitionStyle::Unknown;
         return true;  // RAW
     }
-    bool any = false, protective = false;
+    bool any = false;
     for (int i = 0; i < 4; ++i) {
         const unsigned char* e = buf.data() + 446 + i * 16;
         const unsigned char type = e[4];
         DWORD sectors = (DWORD)e[12] | ((DWORD)e[13] << 8) |
                         ((DWORD)e[14] << 16) | ((DWORD)e[15] << 24);
-        if (type != 0 && sectors != 0) {
+        if (type != 0 && sectors != 0)
             any = true;
-            if (type == 0xEE) protective = true;
-        }
     }
     if (any) return false;  // 有分区（或保护性 GPT）→ 不自动提供
     out.initialized = true;

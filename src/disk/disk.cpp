@@ -312,7 +312,12 @@ bool IsUefiFirmware() {    // Win8+: GetFirmwareType（Win7 的 headers 没有�
     typedef BOOL(WINAPI * GetFirmwareTypeFn)(int*);
     HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
     if (k32) {
-        auto fn = (GetFirmwareTypeFn)GetProcAddress(k32, "GetFirmwareType");
+        // 不用 C 风格函数指针强转（-Wcast-function-type）；GetProcAddress
+        // 返回 FARPROC，按字节复制到同签名指针即可。
+        FARPROC raw = GetProcAddress(k32, "GetFirmwareType");
+        GetFirmwareTypeFn fn = nullptr;
+        static_assert(sizeof(fn) == sizeof(raw), "FARPROC size mismatch");
+        memcpy(&fn, &raw, sizeof(fn));
         if (fn) {
             int t = FW_UNKNOWN;
             if (fn(&t))
