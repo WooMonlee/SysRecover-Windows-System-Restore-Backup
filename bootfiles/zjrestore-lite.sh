@@ -1439,6 +1439,7 @@ if [ "$ENGINE" = "block" ] && [ -f /zj-restore-boot.exe ]; then
 @echo off
 if exist "%ProgramData%\SysRecover\boot-cleanup.done" goto done
 "%ProgramData%\SysRecover\zj-restore-boot.exe"
+if exist "%ProgramData%\SysRecover\boot-cleanup.done" del "%~f0"
 goto :eof
 :done
 del "%~f0"

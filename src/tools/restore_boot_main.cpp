@@ -339,8 +339,29 @@ bool SelfElevate(const std::wstring& logDir) {
             (e == ERROR_CANCELLED ? " (user cancelled UAC)" : ""));
         return false;
     }
-    if (sei.hProcess) CloseHandle(sei.hProcess);
+    if (sei.hProcess) {
+        // 等提权实例真正清理完，启动 cmd 才能看到 boot-cleanup.done 并立即自删；
+        // 否则普通权限实例先退出，cmd 会在清理完成前误判失败/继续保留。
+        DWORD w = WaitForSingleObject(sei.hProcess, 300000);
+        DWORD ec = 0;
+        GetExitCodeProcess(sei.hProcess, &ec);
+        CloseHandle(sei.hProcess);
+        Log("elevated cleanup wait=" + std::to_string(w) +
+            " exit=" + std::to_string(ec));
+    }
     return true;
+}
+
+void RemoveStartupCmd() {
+    const std::wstring p =
+        ProgramData() +
+        L"\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\SysRecover-RestoreBoot.cmd";
+    SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_NORMAL);
+    if (DeleteFileW(p.c_str()))
+        Log("startup cmd removed");
+    else if (GetLastError() != ERROR_FILE_NOT_FOUND)
+        Log("startup cmd delete failed err=" +
+            std::to_string(GetLastError()));
 }
 
 void WriteDoneMarker() {
@@ -414,6 +435,7 @@ int wmain(int argc, wchar_t** argv) {
         Log("temporary boot files removed");
     }
     WriteDoneMarker();
+    RemoveStartupCmd();
     RemoveSelfAndRunOnce();
     Log("restore-boot cleanup done (menu=" + std::string(menu ? "1" : "0") + ")");
     return 0;

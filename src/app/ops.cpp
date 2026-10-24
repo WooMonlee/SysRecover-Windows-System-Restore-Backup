@@ -635,12 +635,13 @@ bool InstallFirstBootCleanup(const std::wstring& newDir,
         return false;
     }
     // 启动文件夹：首次登录由资源管理器以普通权限启动 helper；helper 先弹说明，
-    // 再自行 ShellExecute(runas) 请求 UAC。UAC 被取消时 cmd 保留，下次登录重试；
-    // 成功后 helper 写 boot-cleanup.done，下一次登录 cmd 自删。
+    // 再自行 ShellExecute(runas) 请求 UAC。非提权实例会等待提权实例完成；
+    // 成功后 cmd 立刻自删；UAC 取消/失败则 cmd 保留，下次登录重试。
     const char kCmd[] =
         "@echo off\r\n"
         "if exist \"%ProgramData%\\SysRecover\\boot-cleanup.done\" goto done\r\n"
         "\"%ProgramData%\\SysRecover\\zj-restore-boot.exe\"\r\n"
+        "if exist \"%ProgramData%\\SysRecover\\boot-cleanup.done\" del \"%~f0\"\r\n"
         "goto :eof\r\n"
         ":done\r\n"
         "del \"%~f0\"\r\n";
