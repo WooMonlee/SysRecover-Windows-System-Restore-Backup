@@ -1,4 +1,4 @@
-> ⚠️ **当前版本 0.9.25**。公开前准备、发布闸门与 1.0 观察期见 [`docs/26`](docs/26-公开前准备与1.0观察期.md)；PIT 是历史坑位记录，不是发布阻塞清单。
+> ⚠️ **当前版本 0.9.26**。公开前准备、发布闸门与 1.0 观察期见 [`docs/26`](docs/26-公开前准备与1.0观察期.md)；PIT 是历史坑位记录，不是发布阻塞清单。
 
 # AGENTS.md - SysRecover（一键还原，C++ 重写）开发指南
 
@@ -1167,11 +1167,11 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **边界/注意**：首启程序需要用户确认提示框 + 一次 UAC；Win7 目标需自备 x86 UCRT（helper 未随包放 UCRT 到 ProgramData）；B 引擎登录后清理，不是登录前。
   · **验证**：`make check` 58 用例/459 断言 + i18n **584/584** + check-docs/widths/shell PASS；`make package` 双架构 **0.9.21**（helper 373,248B、asInvoker）；QEMU B 引擎 drill 已断言 `boot cleanup: deployed`；🚧 待真机/VM 回归（提示框在 UAC 之前、UEFI 临时项首启消失、常驻菜单保留、BIOS/回旧系统）。
 
-- PIT-171 **CLI 参数穷举校验：未知选项/缺值/非法数字/非法压缩级别不再静默；顺手清理三处编译器警告**（2026-10-24，`0.9.25`）：
+- PIT-171 **CLI 参数穷举校验：未知选项/缺值/非法数字/非法压缩级别不再静默；顺手清理三处编译器警告**（2026-10-24，`0.9.26`）：
   · **风险**：旧 `Opt()` 对缺值返回默认、未知选项直接忽略；`atoi("abc")=0` 会让 `restore --disk abc` 静默针对磁盘 0；`Has("--yes")` 只看 token，拼写错误可能绕过确认。
   · **修复**：`ValidateCommandArgs()` 按命令白名单校验（backup/restore/verify/repair-boot/returnold/images/extract/diag/support/scan-ea/shortcut/list/version/history），未知选项/多余参数/缺值 → rc=2；`OptInt()` 用 `strtol` + 全串/范围校验，`--disk/--part/--index` 非法不再变 0；`--compress` 仅接受 `fast/maximum/recovery`。保留 `list --json` 的旧兼容（当前忽略该开关，不改变输出语义）。
   · **顺手修警告**：`partinit.cpp` 删除只写不读的 `protective`；`selfdiag.cpp` 注释行尾反斜杠；`disk.cpp` 的 `GetFirmwareType` 函数指针改 `memcpy`（消除 `-Wcast-function-type`）。
-  · **验证**：`make check` 58/459 + i18n **585**；`smoke-cli` 新增未知选项/多余参数/缺值/坏 disk/坏 part/坏 compress/坏 repair 参数，rc 全 2；全量 `-B` x64 编译 **src 零 warning**；`dist-check` PASS；QEMU B/swap/undo/auto-recover 全 PASS。🚧 待推 CI。
+  · **验证**：`make check` 58/459 + i18n **586**；`smoke-cli` 新增未知选项/多余参数/缺值/坏 disk/坏 part/坏 compress/坏 repair 参数，rc 全 2；全量 `-B` x64 编译 **src 零 warning**；`dist-check` PASS；QEMU B/swap/undo/auto-recover 全 PASS。🚧 待推 CI。
 
 ## 14. License 合规（SBOM，随版本更新）
 

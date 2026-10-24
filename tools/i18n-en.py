@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：585/585 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：583/586 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n建议：以管理员身份运行（本程序要读写分区与引导）。': '\n\nAdvice: run as administrator (this program reads and writes partitions and boot data).',
@@ -40,6 +40,7 @@ EN = {
     '--disk/--part/--index 必须是有效正整数\n': '--disk/--part/--index must be valid positive integers\n',
     '--engine 仅支持 swap（默认，A 引擎）或 block（B 引擎兜底），收到未知值已中止，未动目标分区。': '--engine accepts only swap (default, A-engine) or block (B-engine fallback); unknown value rejected, target partition untouched.',
     '--index 必须是有效正整数\n': '--index must be a valid positive integer\n',
+    '--last 必须是有效正整数\n': '--last must be a valid positive integer\n',
     ': 盘': ': drive',
     ': 盘）': ': drive)',
     ':\\）': ':\\)',
@@ -85,14 +86,14 @@ EN = {
     'bcdedit 读取 ESP 上的 BCD 失败（rc=': 'bcdedit failed to read the BCD on the ESP (rc=',
     'diag [--zip [--out <zip>]]\n  自检（管理员/固件/Secure Boot/启动项/wimlib）。\n  --zip 导出诊断包（diag 文本 + logs/ + 契约文件），排错时直接发回。': 'diag [--zip [--out <zip>]]\n  Self-check (admin/firmware/Secure Boot/boot entries/wimlib).\n  --zip exports a diagnostics bundle (diag text + logs/ + contract files) to send back when debugging.',
     'esd(慢)': 'esd(slow)',
-    'extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]\n  从镜像里取单个/一组文件（--path 支持通配符、可重复）。': 'extract --file <image> --path <path> [--path ...] --dest <dir> [--index N]\n  Extract one or more files from an image (--path accepts wildcards and may repeat).',
-    'history\n  列出操作历史（logs/history.jsonl）。': 'history\n  List operation history (logs/history.jsonl).',
+    'extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]\n        [--all] [--image <镜像>]\n  从镜像里取单个/一组文件（--path 支持通配符、可重复）；--all 取整个子镜像。':'extract --file <image> --path <path> [--path ...] --dest <dir> [--index N]\n        [--all] [--image <image>]\n  Extract one or more files from the image (--path supports wildcards and repeats); --all extracts the whole subimage.',
+    'history [--last N]\n  列出操作历史（logs/history.jsonl），默认最近 20 条。':'history [--last N]\n  List operation history (logs/history.jsonl); default: latest 20.',
     'images --file <镜像>\n  列出镜像里的子镜像：<index> - <名称>（<大小>）。': 'images --file <image>\n  List the images inside an image file: <index> - <name> (<size>).',
     'list\n  列出磁盘/分区/文件系统/盘符/ESP 与系统标记。': 'list\n  List disks/partitions/filesystems/letters/ESP and system flags.',
     'repair-boot [--disk N --part M]\n  修复引导（ESP 上的 BCD/bootmgfw）：给**引导坏了的机器**用，不必重装。\n  不给 --disk/--part 时自动找系统盘；流程 = bcdboot + 产物校验（docs/15）。': 'repair-boot [--disk N --part M]\n  Repair boot (BCD/bootmgfw on the ESP): for a machine that will not boot, without reinstalling.\n  Without --disk/--part the system disk is found automatically; the flow is bcdboot + artifact verification (docs/15).',
     'restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--engine block|swap] [--universal [--drivers <目录>]] [--yes]\n  目标是正在运行的系统盘 → 暂存并重启进救援层；否则就地还原（不重启）。\n  用 `list` 先确认磁盘号/分区号；镜像必须在**本地分区**。\n  --universal 异机还原（仅 Win10/11；仅 A 引擎/PE 就地）：启用内置启动存储驱动，\n  --drivers 额外注入用户驱动文件夹（DISM，离线，不随包内置厂商驱动）。': 'restore --image <file> --disk N --part M [--index N] [--no-repair-boot] [--engine block|swap] [--universal [--drivers <dir>]] [--yes]\n  Target is the running system disk -> stage and reboot into the rescue layer; otherwise restore in place (no reboot).\n  Use `list` to confirm disk/partition; the image must be on a **local partition**.\n  --universal dissimilar-hardware restore (Win10/11 only; A engine / PE in-place): enable built-in boot storage drivers;\n  --drivers additionally inject a user driver folder (DISM, offline; no vendor packs bundled).',
     'returnold [--disk N --part M] [--yes]\n  返回旧系统：把 ~old 的旧系统搬回根目录，当前新系统被丢弃。\n  暂存后重启进 Linux 救援层执行反向交换（在 Windows 里改名正在运行\n  的系统树不可回滚）；不给 --disk/--part 时自动找带 ~old\\Windows 的盘。\n  非交互式（批处理/管道）必须加 --yes；交互式会先问一次，取消=退出码 6。': 'returnold [--disk N --part M] [--yes]\n  Return to the old system: move the old system in ~old back to the root directory;\n  the current new system is discarded.\n  The task is staged, then the machine reboots into the Linux rescue layer to run the\n  reverse swap (renaming a running system tree inside Windows cannot be rolled back);\n  without --disk/--part it auto-detects the drive that has ~old\\Windows.\n  Non-interactive runs (batch/pipes) must pass --yes; interactive runs ask once,\n  cancel returns exit code 6.',
-    'shortcut --target <exe> [--args <...>] [--name <名>]\n  在桌面建快捷方式。': 'shortcut --target <exe> [--args <...>] [--name <name>]\n  Create a shortcut on the desktop.',
+    'shortcut --target <exe> [--args <...>] [--name <名>] [--startmenu]\n  在桌面建快捷方式；--startmenu 改放开始菜单。':'shortcut --target <exe> [--args <...>] [--name <name>] [--startmenu]\n  Create a desktop shortcut; --startmenu puts it in the Start Menu instead.',
     'support [--out <zip>]\n  一键收集诊断资料：各盘日志 + explorer 转储 + 事件日志 → 打包成一个 zip\n  （不给 --out 时输出到桌面 SysRecover-logs-<时间>.zip）。': 'support [--out <zip>]\n  Collect diagnostics in one go: logs from all drives + explorer dumps + event logs -> one zip\n  (without --out it writes SysRecover-logs-<time>.zip on the Desktop).',
     'verify --image <文件>\n  校验镜像完整性（成功 0，失败 5）。': 'verify --image <file>\n  Verify image integrity (0 on success, 5 on failure).',
     'version\n  显示版本号。': 'version\n  Show the version number.',

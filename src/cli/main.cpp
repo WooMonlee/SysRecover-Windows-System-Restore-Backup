@@ -172,18 +172,22 @@ bool ValidateCommandArgs(const std::vector<std::string>& a) {
     } else if (cmd == "images") {
         values = {"--file"};
     } else if (cmd == "extract") {
-        values = {"--file", "--path", "--dest", "--index"};
+        flags = {"--all"};
+        values = {"--file", "--image", "--path", "--dest", "--index"};
     } else if (cmd == "diag") {
         flags = {"--zip"};
         values = {"--out"};
     } else if (cmd == "support" || cmd == "scan-ea") {
         values = {"--out", "--root"};
     } else if (cmd == "shortcut") {
+        flags = {"--startmenu"};
         values = {"--target", "--args", "--name"};
     } else if (cmd == "list") {
         // 保留旧脚本可能传入的 --json（当前实现输出人类可读列表；不静默改变语义）
         flags = {"--json"};
-    } else if (cmd == "version" || cmd == "history") {
+    } else if (cmd == "history") {
+        values = {"--last"};
+    } else if (cmd == "version") {
         if (a.size() > 1) {
             std::printf(Tr("未知参数：%s\n"), a[1].c_str());
             return false;
@@ -699,9 +703,11 @@ int CmdDiagZip(const std::vector<std::string>& a) {
 
 // 历史记录（P7）：打印 logs\history.jsonl 的最后 N 行
 int CmdHistory(const std::vector<std::string>& a) {
-    int n = std::atoi(Opt(a, "--last", "20").c_str());
-    if (n <= 0)
-        n = 20;
+    int n = 20;
+    if (!OptInt(a, "--last", 20, n) || n <= 0) {
+        std::printf(Tr("--last 必须是有效正整数\n"));
+        return 2;
+    }
     std::wstring path = sysrecover::LogBaseDir() + L"\\logs\\history.jsonl";
     HANDLE h = CreateFileW(path.c_str(), GENERIC_READ,
                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
@@ -855,9 +861,12 @@ const CmdHelp* CmdHelpTable(size_t* n) {
         "  的系统树不可回滚）；不给 --disk/--part 时自动找带 ~old\\Windows 的盘。\n"
         "  非交互式（批处理/管道）必须加 --yes；交互式会先问一次，取消=退出码 6。")},
     {"extract",
-     Tr("extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]\n" "  从镜像里取单个/一组文件（--path 支持通配符、可重复）。")},
-    {"history", Tr("history\n  列出操作历史（logs/history.jsonl）。")},
-    {"shortcut", Tr("shortcut --target <exe> [--args <...>] [--name <名>]\n  在桌面建快捷方式。")},
+     Tr("extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]\n"
+        "        [--all] [--image <镜像>]\n"
+        "  从镜像里取单个/一组文件（--path 支持通配符、可重复）；--all 取整个子镜像。")},
+    {"history", Tr("history [--last N]\n  列出操作历史（logs/history.jsonl），默认最近 20 条。")},
+    {"shortcut", Tr("shortcut --target <exe> [--args <...>] [--name <名>] [--startmenu]\n"
+                    "  在桌面建快捷方式；--startmenu 改放开始菜单。")},
     {"version", Tr("version\n  显示版本号。")},
     };
     *n = sizeof(k) / sizeof(k[0]);

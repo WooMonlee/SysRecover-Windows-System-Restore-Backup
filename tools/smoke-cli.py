@@ -50,6 +50,9 @@ def main() -> int:
         ("bad repair disk", ["repair-boot", "--disk", "abc"], 2),
         ("removed apply", ["restore", "--apply", "--image", "x", "--disk", "1", "--part", "1", "--yes"], 2),
         ("option as value", ["backup", "--name", "--yes"], 2),
+        ("history --last 5", ["history", "--last", "5"], 0),
+        ("history bad last", ["history", "--last", "abc"], 2),
+        ("shortcut startmenu", ["shortcut", "--startmenu"], 2),
     ]
     bad = 0
     for name, args, want in cases:
