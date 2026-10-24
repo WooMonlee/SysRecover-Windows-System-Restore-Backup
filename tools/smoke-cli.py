@@ -53,6 +53,7 @@ def main() -> int:
         ("history --last 5", ["history", "--last", "5"], 0),
         ("history bad last", ["history", "--last", "abc"], 2),
         ("shortcut startmenu", ["shortcut", "--startmenu"], 2),
+        ("list --json", ["list", "--json"], 0),
     ]
     bad = 0
     for name, args, want in cases:
@@ -67,6 +68,8 @@ def main() -> int:
             ok = bool(re.search(r"SysRecover\s+\d+\.\d+\.\d+", out))
         if name == "--lang en version" and ok:
             ok = "SysRecover" in out
+        if name == "list --json" and ok:
+            ok = '"disks"' in out
         print("%s %-18s rc=%d want=%d" % ("ok  " if ok else "FAIL", name, rc, want))
         if not ok:
             bad += 1

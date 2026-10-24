@@ -208,8 +208,9 @@ void LogInit(const std::wstring& logDir) {
     PruneBySize(logDir);
 }
 
-void LogInfo(const std::string& msg) { Write("INFO", msg, stdout); }
-void LogWarn(const std::string& msg) { Write("WARN", msg, stdout); }
+// 日志一律走 stderr：stdout 留给命令结果（`list --json` 等机器可读输出）。
+void LogInfo(const std::string& msg) { Write("INFO", msg, stderr); }
+void LogWarn(const std::string& msg) { Write("WARN", msg, stderr); }
 void LogError(const std::string& msg) { Write("ERROR", msg, stderr); }
 void LogFileInfo(const std::string& msg) { WriteFileOnly("INFO", msg); }
 

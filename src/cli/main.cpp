@@ -88,6 +88,30 @@ std::string W2U8(const std::wstring& w) {
     return s;
 }
 
+std::string JsonEsc(const std::wstring& w) {
+    std::string s = W2U8(w);
+    std::string o;
+    o.reserve(s.size() + 8);
+    for (unsigned char c : s) {
+        switch (c) {
+            case '"': o += "\\\""; break;
+            case '\\': o += "\\\\"; break;
+            case '\n': o += "\\n"; break;
+            case '\r': o += "\\r"; break;
+            case '\t': o += "\\t"; break;
+            default:
+                if (c < 0x20) {
+                    char b[8];
+                    snprintf(b, sizeof(b), "\\u%04x", c);
+                    o += b;
+                } else {
+                    o += (char)c;
+                }
+        }
+    }
+    return o;
+}
+
 // 取命令行参数（**UTF-8**）—— P11。
 // 为什么不用 argv：C 运行时给的 argv 是 **ANSI**（当前代码页），而下游的 ToWide()
 // 是按 UTF-8 解的 → 中文路径被弄乱（实测 `images --file 中文.esd` 报
@@ -759,7 +783,44 @@ static int CmdScanEa(const std::vector<std::string>& args) {
     return 0;
 }
 
-int CmdList() {    const auto disks = sysrecover::EnumerateDisks();
+int CmdList(const std::vector<std::string>& a) {
+    const auto disks = sysrecover::EnumerateDisks();
+    if (Has(a, "--json")) {
+        std::printf("{\n  \"disks\": [");
+        for (size_t di = 0; di < disks.size(); ++di) {
+            const auto& d = disks[di];
+            std::printf("%s\n    {\"index\":%u,\"model\":\"%s\",\"serial\":\"%s\","
+                        "\"sizeBytes\":%llu,\"style\":\"%s\",\"removable\":%s,"
+                        "\"partitions\":[",
+                        di ? "," : "", d.index, JsonEsc(d.model).c_str(),
+                        JsonEsc(d.serial).c_str(),
+                        (unsigned long long)d.sizeBytes,
+                        sysrecover::StyleName(d.style),
+                        d.isRemovable ? "true" : "false");
+            for (size_t pi = 0; pi < d.parts.size(); ++pi) {
+                const auto& p = d.parts[pi];
+                std::printf("%s{\"number\":%u,\"letter\":\"%s\",\"label\":\"%s\","
+                            "\"fs\":\"%s\",\"guid\":\"%s\",\"offsetBytes\":%llu,"
+                            "\"sizeBytes\":%llu,\"freeBytes\":%llu,"
+                            "\"system\":%s,\"esp\":%s,\"msr\":%s,"
+                            "\"recovery\":%s}",
+                            pi ? "," : "", p.partNumber,
+                            JsonEsc(p.letter).c_str(),
+                            JsonEsc(p.label).c_str(), JsonEsc(p.fs).c_str(),
+                            JsonEsc(p.guid).c_str(),
+                            (unsigned long long)p.offsetBytes,
+                            (unsigned long long)p.sizeBytes,
+                            (unsigned long long)p.freeBytes,
+                            p.isSystem ? "true" : "false",
+                            p.isEsp ? "true" : "false",
+                            p.isMsr ? "true" : "false",
+                            p.isRecovery ? "true" : "false");
+            }
+            std::printf("]}");
+        }
+        std::printf("\n  ]\n}\n");
+        return 0;
+    }
     const double gb = 1024.0 * 1024 * 1024;
     for (const auto& d : disks) {
         std::wprintf(L"Disk %u  %ls  %.0fGB  %hs%s\n", d.index,
@@ -1137,7 +1198,7 @@ int main() {
     if (args[0] == "support")
         return CmdSupport(args);
     if (args[0] == "list")
-        return CmdList();
+        return CmdList(args);
     if (args[0] == "scan-ea")
         return CmdScanEa(args);
     if (args[0] == "backup")
