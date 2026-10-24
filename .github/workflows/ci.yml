@@ -37,6 +37,7 @@ jobs:
           $env:PYTHONIOENCODING = "utf-8"
           mingw32-make -f Makefile SHELL=cmd.exe check
           mingw32-make -f Makefile SHELL=cmd.exe all
+          python tools/smoke-cli.py dist/x64/SysRecover.exe
 
       - name: Upload x64 artifact
         uses: actions/upload-artifact@v4

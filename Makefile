@@ -198,6 +198,9 @@ check: $(TEST_BIN)
 	$(PYTHON) tools/check-i18n.py
 	$(PYTHON) tools/check-widths.py
 	$(PYTHON) tools/check-shell.py
+	$(PYTHON) tools/check-config.py
+	$(PYTHON) tools/check-layers.py
+	$(PYTHON) tools/check-secrets.py
 
 # ---- ★ 发布包：根目录 = x86 整套（入口）；x64/ = x64 整套；与位数无关的资源放根目录 ----
 # 需要**两套工具链**：x64 走 PATH 上的 g++（请先把 mingw64\bin 加到 PATH），x86 走绝对路径。
@@ -255,10 +258,17 @@ package: ea-apply boot-cleanup
 sha256:
 	$(PYTHON) tools/write-sha256.py dist
 
+# ---- 制品/CLI 冒烟（需先 package/all；不碰磁盘）----
+dist-check:
+	@if exist dist\logs rmdir /S /Q dist\logs
+	$(PYTHON) tools/check-dist.py dist
+smoke-cli:
+	$(PYTHON) tools/smoke-cli.py $(subst /,\,$(DISTDIR))\SysRecover.exe
+
 # ---- B 引擎端到端演练（docs/24 P2-4；QEMU + 断言，数分钟；演练盘不入库）----
 # 先重建演练盘（陈旧 drill.raw 会报 Cannot find GRLDR），再跑 run-drill 断言。
 drill:
 	$(PYTHON) tools/vmtest/mk-drill.py
 	powershell -ExecutionPolicy Bypass -File tools/vmtest/run-drill.ps1 -Secs 240
 
-.PHONY: all cli gui clean package check crash-test smoke drill sha256
+.PHONY: all cli gui clean package check crash-test smoke drill sha256 dist-check smoke-cli
