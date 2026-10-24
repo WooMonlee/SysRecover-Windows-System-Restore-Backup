@@ -49,6 +49,7 @@ def main() -> int:
         ("bad compress", ["backup", "--dest", "x", "--compress", "bogus"], 2),
         ("bad repair disk", ["repair-boot", "--disk", "abc"], 2),
         ("removed apply", ["restore", "--apply", "--image", "x", "--disk", "1", "--part", "1", "--yes"], 2),
+        ("option as value", ["backup", "--name", "--yes"], 2),
     ]
     bad = 0
     for name, args, want in cases:

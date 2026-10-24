@@ -195,7 +195,11 @@ bool ValidateCommandArgs(const std::vector<std::string>& a) {
 
     for (size_t i = 1; i < a.size(); ++i) {
         if (OneOf(a[i], values)) {
-            if (i + 1 >= a.size()) {
+            const bool nextMissing =
+                i + 1 >= a.size() ||
+                (a[i] != "--args" &&
+                 (OneOf(a[i + 1], values) || OneOf(a[i + 1], flags)));
+            if (nextMissing) {
                 std::printf(Tr("参数 %s 缺少值\n"), a[i].c_str());
                 return false;
             }
