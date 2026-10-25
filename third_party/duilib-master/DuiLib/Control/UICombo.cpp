@@ -620,32 +620,41 @@ void CComboUI::DoEvent(TEventUI& event)
     {
         if (IsKeyboardEnabled() && IsEnabled()) {
             switch( event.chKey ) {
+            // 每个分支必须 break：原版漏 break 会让 VK_UP 继续贯穿到
+            // VK_DOWN/PRIOR/NEXT/HOME/END，最终总是选到最下方一项。
             case VK_F4:
                 Activate();
+                break;
             case VK_UP:
                 SetSelectCloseFlag(false);
                 SelectItem(FindSelectable(m_iCurSel - 1, false));
                 SetSelectCloseFlag(true);
+                break;
             case VK_DOWN:
                 SetSelectCloseFlag(false);
                 SelectItem(FindSelectable(m_iCurSel + 1, true));
                 SetSelectCloseFlag(true);
+                break;
             case VK_PRIOR:
                 SetSelectCloseFlag(false);
                 SelectItem(FindSelectable(m_iCurSel - 1, false));
                 SetSelectCloseFlag(true);
+                break;
             case VK_NEXT:
                 SetSelectCloseFlag(false);
                 SelectItem(FindSelectable(m_iCurSel + 1, true));
                 SetSelectCloseFlag(true);
+                break;
             case VK_HOME:
                 SetSelectCloseFlag(false);
                 SelectItem(FindSelectable(0, false));
                 SetSelectCloseFlag(true);
+                break;
             case VK_END:
                 SetSelectCloseFlag(false);
                 SelectItem(FindSelectable(GetCount() - 1, true));
                 SetSelectCloseFlag(true);
+                break;
             }
             return;
         }

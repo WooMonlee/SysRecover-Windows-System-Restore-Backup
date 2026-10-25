@@ -1,4 +1,4 @@
-> ⚠️ **当前版本 0.9.30**。公开前准备、发布闸门与 1.0 观察期见 [`docs/26`](docs/26-公开前准备与1.0观察期.md)；PIT 是历史坑位记录，不是发布阻塞清单。
+> ⚠️ **当前版本 0.9.31**。公开前准备、发布闸门与 1.0 观察期见 [`docs/26`](docs/26-公开前准备与1.0观察期.md)；PIT 是历史坑位记录，不是发布阻塞清单。
 
 # AGENTS.md - SysRecover（一键还原，C++ 重写）开发指南
 
@@ -1172,6 +1172,12 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **修复**：`ValidateCommandArgs()` 按命令白名单校验（backup/restore/verify/repair-boot/returnold/images/extract/diag/support/scan-ea/shortcut/list/version/history），未知选项/多余参数/缺值 → rc=2；`OptInt()` 用 `strtol` + 全串/范围校验，`--disk/--part/--index` 非法不再变 0；`--compress` 仅接受 `fast/maximum/recovery`。补齐既有别名 `extract --all/--image`、`history --last`、`shortcut --startmenu`；实现 `list --json`（机器可读 JSON），日志统一改走 stderr，保证 stdout 只含命令结果；隐藏的 `--apply` 直写路径已移除（绕过安全检查）。
   · **顺手修警告**：`partinit.cpp` 删除只写不读的 `protective`；`selfdiag.cpp` 注释行尾反斜杠；`disk.cpp` 的 `GetFirmwareType` 函数指针改 `memcpy`（消除 `-Wcast-function-type`）。
   · **验证**：`make check` 58/459 + i18n **586**；`smoke-cli` 新增未知选项/多余参数/缺值/坏 disk/坏 part/坏 compress/坏 repair 参数，rc 全 2；全量 `-B` x64 编译 **src 零 warning**；`dist-check` PASS；QEMU B/swap/undo/auto-recover 全 PASS。🚧 待推 CI。
+
+- PIT-172 **所有下拉框用上下键只能选到最下方一项：Duilib `CComboUI::DoEvent` 的快捷键 switch 漏 `break`，一路贯穿到 `VK_END`**（2026-10-25，`0.9.31`）：
+  · **现象**：`FormatBox`、`CpuCapBox`、`ImageIndexBox`、`PartitionBox` 鼠标选择正常；打开下拉后按 ↑/↓ 总是变成最后一项，无法逐项遍历。快捷键打开后同理。
+  · **根因**：`third_party/duilib-master/DuiLib/Control/UICombo.cpp::CComboUI::DoEvent` 的 `switch(event.chKey)` 每个 `case` 都**没有 `break`**：`VK_UP` 执行后会继续贯穿 `VK_DOWN`/`VK_PRIOR`/`VK_NEXT`/`VK_HOME`/`VK_END`，最终由 `VK_END` 选中 `GetCount()-1`；`VK_F4` 也会贯穿改选项。
+  · **修复**：每个 `case` 后补 `break;`（`VK_F4` 打开后不再改选择），保留 `CComboWnd` 的 ESC/Enter 处理；`CPartitionComboUI` 继承同一基类，自动受益。这是第三方补丁，注释已写在源码中，升级 Duilib 时必须复核。
+  · **验证**：`make check` / `make package` / `dist-check` 绿；GUI 人工/自动化 keyboard 冒烟待执行（鼠标路径不受影响）。
 
 ## 14. License 合规（SBOM，随版本更新）
 
