@@ -1,360 +1,162 @@
-# SysRecover（九转还原 · 单机版）
+# 九转还原（SysRecover）
 
+> Windows 系统一键备份 / 还原工具  
 > **中文** | [English](README.en.md)
 
 [![ci](https://github.com/WooMonlee/SysRecover-Windows-System-Restore-Backup/actions/workflows/ci.yml/badge.svg)](https://github.com/WooMonlee/SysRecover-Windows-System-Restore-Backup/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/WooMonlee/SysRecover-Windows-System-Restore-Backup)](https://github.com/WooMonlee/SysRecover-Windows-System-Restore-Backup/releases/latest)
 
-> **状态：0.9.14 准备版**。1.0 前仍以真机回归结果为准；请先在小范围机器上验证，不要把它当成唯一的备份手段。
+**不到 50MB · 启动比 WinPE 快 · 支持 CA2023 · 可备份 ESP · 可返回安装前的系统 · 可安装启动菜单兜底 · 中英双语 · 完整命令行**
 
-> 版本 `0.9.14`｜**x64 + x86 双架构**（Windows 侧跟随系统位数，Linux 救援层固定 x64）｜Windows 7 / 10 / 11 / WinPE｜发布包 ≈41 MB（其中 ≈27 MB 是救援内核与 initramfs）
-> 许可：自有代码 **MIT**（见 [`LICENSE`](LICENSE)）；第三方组件「单独分发」，清单、全文与源码出处见 [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt)
+![还原模式](docs/img/gui-restore.png)
 
-一句话：**把 Windows 系统备份成一个镜像文件，需要的时候一键还原回去。**
-
-备份/还原这类工具街上不少，所以我们把话说在前面：**这个项目是怎么做的、做到了哪一步、
-哪儿还不行**，下面全写清楚，不夸张。
-
-> ⚠️ 本仓库是**独立产品（单机版）**。早期的 `WooMonlee/OnekeyRestore`（C# + VHDX 多点秒还原）
-> 是**另一个产品**，两边设计与实现分开推进、文档不混用。
->
-> 👋 **第一次进来先看 [`docs/11-接手指南（读我优先）`](docs/11-接手指南（读我优先）.md)** ——
-> 现状（已验证/待验证）、下一步优先级、文档地图；想先了解产品再看 [`docs/00-项目简介`](docs/00-项目简介（给协作者）.md)。
-
-![SysRecover 还原模式（文件→系统）](docs/img/gui-restore.png)
-
-![SysRecover 备份模式（系统→文件）](docs/img/gui-backup.png)
-
-<sub>还原模式（文件→系统）：**第一步**选镜像 → **第二步**选目标分区（脏盘会标出"当前系统"）→ **第三步**开始恢复；右上角显示程序版本号，底部是执行进度。</sub>
-
-<sub>备份模式（系统→文件）：选保存位置、源分区、格式与 CPU 限速，点“开始备份”；VSS 热备可在系统运行中完成。</sub>
+![备份模式](docs/img/gui-backup.png)
 
 ---
 
-## 一、它是什么，以及它**不是**什么
+## 优点
 
-**是**：系统备份（热备 VSS）→ 系统还原（选镜像 + 选目标分区 → 一键回滚）。
+- 体积不到 **50MB**，启动比多数 WinPE 快
+- 支持 **Secure Boot CA2011 / CA2023**，不用关安全启动，也不用注册密钥
+- 可把 **ESP 分区**并入同一镜像，还原系统时自动恢复
+- 可选保留旧系统，之后**返回安装前的系统**
+- 可安装启动菜单，Windows 进不去时用来**兜底启动**
+- 中 / 英双语，支持 **完整命令行**
+- 支持 **ESD、WIM**，兼顾体积与兼容性
 
-还支持把还原入口装进**开机菜单**（GUI「安装菜单」）：装好后不用再开本软件，开机选一次「SysRecover」就能进恢复环境自动还原（用法见 §七 第 4 步）。
+## 缺点
 
-**不是**（先把边界划清楚，免得各位拿它去干别的活）：
-
-| 不做 | 说明 |
-|---|---|
-| 分区管理 / 调整分区 / 克隆磁盘 | 我们不做磁盘工具，只处理"把系统写回去"这件事 |
-| 数据恢复 | 不做 |
-| **多点还原 / 差分秒还原** | 这条产品线**没有**，也不打算加（那是另一个产品线的事） |
-| **32 位系统** | ✅ **支持**：Windows 侧**跟随系统位数**（32 位系统跑 x86、64 位系统跑 x64），发布包根目录的启动器自动选；**Linux 救援层固定 x64** |
-| **Windows 2003 / XP / Vista 及更早** | ✗ **不支持**（UCRT 最低 Vista SP2 / Win7 SP1+；见「已知限制」）|
-
----
-
-## 二、为什么还要再写一个
-
-因为实际干活时会碰上这几件事，而很多工具在这几件事上会翻车：
-
-1. **阵列卡 / 服务器机器上，救援环境认不到硬盘** —— 很多 PE 的驱动覆盖不到 RAID 卡。
-   → 我们的救援层是完整 Linux 内核 + **494 个存储/文件系统模块**（`megaraid_sas`/`mpt3sas`/`isci`/`vmd`/`hpsa`/
-   `aacraid`/`arcmsr`/`pm80xx`/`mvsas`/`lpfc`/`qla2xxx`/`virtio_scsi`… 都在），阵列卡机器上照样能干活。
-2. **还得准备 U 盘 / PE 启动盘** —— 多一道工序，也多一个出错的地方。
-   → 救援层**内置在软件里**，部署一次，之后一条链走到底。
-3. **Secure Boot 机器上要进 BIOS 关安全启动**（部分同类工具就是这样要求的）。
-   → 我们走**微软签名链**（下面 §4 详述），用户**不用关、也不用注册任何密钥**。
-4. **还原"成功"了但开不了机** —— 万能镜像缺引导文件、NTFS 引导区不全、BCD 里还写着旧盘符……
-   → 这些**我们替用户做完了**（§5）。
-5. **拿到一个上次没写完的半截镜像，还原到一半黑屏。**
-   → 我们**先校验再动手**，镜像不完整**直接拒绝**，不给你"赌一把"的机会。
+- 只支持 **64 位 CPU**，不再支持 32 位 CPU
+- 只支持 **Windows 7 x64 及以后**，不再支持 Windows Vista、2003、XP 及更早版本
+- 目前只支持 **ESD / WIM** 格式
 
 ---
 
-## 三、怎么工作的
+## 一、已实现
 
-```
-┌─────────── Windows 侧（SysRecover.exe / SysRecoverUI.exe）──────────┐
-│  list / diag   看现场（只读）                                        │
-│  backup        VSS 热备 → 写 WIM/ESD（先写 <目标>.tmp，成功才改名）  │
-│  restore       安全四检查 → 镜像可用性校验 → 二选一：                │
-│                   ├─ 就地还原：格式化 + apply + bcdboot → 不重启      │
-│                   └─ 重启还原：解压到 <目标>:\~new + 配引导 → 重启     │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               ↓ 重启（仅"还原系统盘"这条路）
-┌──────────── 内置 Linux 救援层（vmlinuz + initramfs + restore 脚本）─┐
-│  加载模块 → 找目标分区 → 交换 ~new ↔ 旧树 → 修引导 → 重启（不格式化） │
-└─────────────────────────────────────────────────────────────────────┘
+1. **核心使用 wimlib**：Windows 下做热备份和还原，Linux 侧主要做目录交换和修引导；支持 ESD、WIM，以尽可能小的体积实现完整功能。
+2. **启动速度比多数 PE 快**：读写盘速度与 PE 相当，支持 **CA2011 / CA2023 双启动链**。
+3. **支持全系列命令行参数**，适合批处理、机房和自动化场景。
+4. **体积控制到 50MB 以内**，同时保持足够兼容性。
+5. **中英双语**。
+6. **支持备份 ESP 分区**。
+7. **支持安装启动菜单**：
+   - BIOS：开机进入 Windows 前连续按上/下键调出选单；
+   - UEFI：开机按启动设备快捷键（界面有提示）选择 `SysRecover` 进入还原。
+8. **未分区硬盘向导**：新硬盘可以向导式创建 ESP / MSR / 系统分区 / 数据分区。
+9. **支持异机还原**：
+   - 自带最常用硬件的驱动（约 165MB，位于 `Drivers`）；
+   - 无法覆盖所有机型。用户可在自己的电脑上导出驱动，放进 `Drivers` 文件夹，软件会离线注入。
+
+## 二、失去的功能
+
+1. 只支持 **64 位 CPU**，不再支持 32 位 CPU。
+2. 只支持 **Windows 7 x64 及以后**；Windows Vista、2003、XP 及更早版本不再支持。早期系统可以寻找网上其他作者的作品。
+
+## 三、为什么还要再写一个
+
+1. 阵列卡 / 服务器机器上，很多 PE 的驱动认不到 RAID 卡。我们的救援层是完整 Linux 内核 + **494 个存储 / 文件系统模块**。
+2. 还得准备 U 盘 / PE 启动盘，多一道工序，也多一个出错的地方。我们的救援层内置在软件里，部署一次，之后一条链走到底。
+3. Secure Boot 机器上部分同类工具要进 BIOS 关安全启动。我们走微软签名链，用户不用关，也不用注册任何密钥。
+4. 很多工具只能手动做还原，真正不能启动时无法为故障兜底。
+5. 一部分工具不能通过命令行全自动还原到不同系统。
+6. 绝大多数工具在还原后无法返回安装前的系统。
+
+## 四、命令行用法
+
+全部命令：
+
+```bat
+SysRecover.exe help
 ```
 
-- CLI 与 GUI **共用同一套 `app` 层代码**，行为一致（不是两套实现）。
-- 救援层的日志会写到**软件目录的 `logs/`**（成功也保留），出问题让用户把那个文件夹发回来即可。
+看现场：
 
----
-
-## 四、三条引导链（细节见 [`AGENTS.md` §7](AGENTS.md)）
-
-| 固件/模式 | 链路 |
-|---|---|
-| **BIOS / MBR** | `MBR → bootmgr → BCD（实模式启动扇区 → \grldr.mbr）→ \grldr → \menu.lst → 内核 + initramfs` |
-| **UEFI（Secure Boot 关）** | 直接写**固件启动项**（NVRAM `Boot####`），由固件加载内核，命令行走 `OptionalData` |
-| **UEFI + Secure Boot 开** | `固件 → shimx64.efi（**微软双签 CA2011+CA2023**）→ grubx64.efi（**Debian 签名**的 GRUB）→ Debian 签名内核 + 我们的 initramfs` |
-
-关于最后一条：它**没有绕过任何机制** —— 链上每个可执行文件都有合法签名，和 Debian 正常开机走的是同一条路。
-所以**不需要用户注册 MOK、也不需要关闭 Secure Boot**。shim 为 **CA2011+CA2023 双签**，覆盖 2026 新固件。
-
----
-
-## 五、可靠性设计（为什么它不容易把事办砸）
-
-| 机制 | 做法 |
-|---|---|
-| **写镜像不怕中断** | 先写 `<目标>.tmp`，成功才改名；中断只会留下临时文件，**原镜像不受影响** |
-| **不接受坏镜像** | 动手前检查镜像不是"写入未完成"的半截文件（`WRITE_IN_PROGRESS` 标志），半截直接拒绝；需要更严可用 `--verify` 做全量校验 |
-| **不会抹错盘** | 四元素校验（GUID/磁盘序列号/偏移/大小）；**还原四检查**：目标是 ESP、BitLocker、恢复分区、或镜像文件就在目标分区内 → **任一命中直接拒绝**（退出码 4） |
-| **不碰 MBR** | 从不动磁盘 MBR；只改**目标分区**（A 引擎原地改名交换、**不格式化**，`--engine block` 回退时才快格）；救援文件放目标分区；**数据盘根目录零新增** |
-| **还原后能开机** | 写回完整 NTFS 引导区（扇区 0 的 426B + 扇区 1..8）；补 `\bootmgr` + `C:\Boot\BCD`；BCD 用 `device boot`（与盘符/磁盘号无关） |
-| **任务能中止** | 备份/还原中点关闭 → 可选「终止并退出」，1 秒内收手，并删掉未写完的临时文件 |
-| **失败必留证**（0.6.22+） | 救援层"黑匣子"：每个可挂载分区根 + ESP 都写 `ZJRESTORE-status.txt`（结果+步骤）、完整日志、**逐设备探测表**（mount 结果/错误原文/PCI 控制器/DMI）；软件目录找不到时也认领兜底日志窝 |
-| **开机即报**（0.6.29+） | 下次启动自动读回执并提示"上次还原失败在第 X 步"；"暂存了但救援从未执行"（引导失败断电）也会提示 |
-| **不会被旧契约带偏**（0.6.27+） | 暂存前清掉各盘根的旧 `_zjresy`/`restore-task*`；救援层只认 offset 与目标分区实际起始一致的那份 |
-| **部署后校验**（0.6.27+） | 引导/救援文件落盘后逐文件 CRC32 比对，不一致即暂存失败；盘上留 `rescue-build.txt` 版本戳 |
-
----
-
-## 六、支持矩阵（**实测过的**和**没测的**分开写）
-
-| 场景 | 状态 |
-|---|---|
-| BIOS / MBR 全链还原 | ✅ 2026-09-19 实测（用户真机/VM） |
-| UEFI / GPT 全链还原（Secure Boot 关） | ✅ 2026-09-19 实测 |
-| UEFI / GPT + **Secure Boot 开**（零注册零交互，Debian 双签链） | ✅ 2026-09-19/09-23 实测 |
-| 热备份（VSS）→ 还原后正常进系统 | ✅ 2026-09-19 实测 |
-| **Win7 宿主**（装 VC++ 运行库后）运行工具 | ✅ 2026-09-20 实测 |
-| **Win7 宿主还原 Win10 镜像**（跨系统版本） | ✅ 2026-09-20 实测，还原后正常启动 |
-| 阵列卡/RAID 驱动入包（Debian 内核，关键 HBA 全覆盖）| ✅ QEMU 实测加载成功（**真机待验**）|
-| QEMU 自动回归（UEFI 起救援、屏显、PBR 探针、BIOS/GRUB4DOS、全流程演练…）| ✅ 见 [`docs/07`](docs/07-测试矩阵与回归记录.md) |
-| **救援层模块裁剪**（779→494，dist 54→39MB）后的完整回归 | ✅ 2026-09-24 实测（含端到端还原演练，PIT-079/080） |
-| **三盘客户机全真复刻**（MBR+扩展分区+GPT；成功/失败/假契约/挂盘失败）| ✅ 2026-10-04 实测（PIT-112/113/114）|
-| **真实镜像压测**（Win10 7.57G / Win11 43.35G + ESP）| ✅ 8G 全程通过；512MB 正常、192MB OOM 但完整留证（PIT-113）|
-| **PE / 非系统盘「就地还原」（不重启）** | 🚧 **待实测**（代码已就绪，验收清单见 [`docs/09`](docs/09-PE直装验收清单.md)） |
-| **忙时关闭「终止并退出」** | 🚧 **待实测** |
-| **Win7 零安装** | 🚧 真机待验（UCRT 已随包 x64/x86）|
-| 服务器 RAID **真机**、只信 CA2023 的 2026 新固件 | 🚧 待验（机制已就绪）|
-| 32 位系统（Win7/Win10 x86）| ✅ **已支持**：随包双架构，根目录启动器自动选；32 位程序在 64 位系统上会自举成 `x64\` 那份（见 [`docs/08`](docs/08-32位支持（评估与实现）.md)） |
-
-> 表里写 🚧 的，就**别当它已经能用** —— 这是我们自己定的规矩：没真跑通不写 ✅。
-
----
-
-## 七、上手：普通用户（GUI）
-
-1. 解压发布包，**双击 `SysRecoverUI.exe`**（会弹一次 UAC，因为要读写分区/引导）。
-2. **备份**：切到「系统→文件」→ 选保存位置 → 点「开始备份系统」。
-3. **还原**：切到「文件→系统」→ 选镜像（也可以**直接把 .esd/.wim 拖进窗口**）→ 选目标分区 →
-   点「开始恢复系统」→ 选「退出并重启」→ 之后全自动，最后自动回到新系统。
-   - 想批量/无人值守就勾上 **`静默模式`**：全程无对话框，直接干完。
-4. **常驻还原菜单（可选，推荐）**：选好镜像与目标分区后，点「**安装菜单**」——之后不用再开本软件，
-   开机选一次「SysRecover」就能进恢复环境自动还原：
-   - **BIOS 机器**：重启时在进入 Windows 之前**连续按 ↑ 或 ↓ 方向键**，启动选单出现后选「**SysRecover**」，即可进入还原；
-   - **UEFI 机器**：开机时按**固件启动菜单键**（多数机器为 **F12**，也有 F11 / Esc 的机型），在启动列表里选「**SysRecover**」。
-   - 想换镜像：先点「删除菜单」，再重新选镜像/分区并安装；不要了就点「删除菜单」。
-
----
-
-## 八、命令行用法
-
-> CLI 与 GUI 共用同一套 `app` 层代码，行为一致。
-> CLI 也编入了 `requireAdministrator` 清单：在**管理员命令行 / 计划任务（最高权限）/ PsExec `-s` / SCCM**
-> 这类上下文里本就处于高完整性，**全程静默不弹 UAC**（机房批量部署走的就是这条路）。
->
-> 全部命令随时可查：`SysRecover.exe help`；单项帮助 `SysRecover.exe help backup`。
-> 另有 `repair-boot`（引导坏了不用重装）、`history`（操作历史）等命令。
-
-**还原三通道（怎么选）**：
-
-| 场景 | 通道 | 走法 | 要求 |
-|---|---|---|---|
-| 正常 Windows 里还原系统盘（默认） | **A 引擎**（改名交换） | 暂存时解压到 `<目标>:\~new` → 重启 → 救援层改名交换（不格式化；可勾选「备返」保留旧系统为 `~old`） | 目标可用空间 ≥ 内容+页文件+余量 |
-| A 引擎空间不足 / 目标分区文件系统损坏 | **B 引擎兜底**（`--engine block`） | 暂存 → 重启 → 救援层 `mkntfs` 格式化 + apply（**旧系统不保留**） | 目标总容量 ≥ 镜像体积；内存建议 ≥ 1 GB |
-| PE / U 盘启动（**系统进不去时的首选**） | 就地还原 | Windows 侧直接格式化 + apply + 修引导，**不重启、不进 Linux** | WinPE |
-| 系统进不去、又**从未暂存过任务** | 上一行的 PE 通道 | 开机菜单的 SysRecover 项需要已暂存的任务，无任务进不去还原流程 | 需 PE 介质 |
-
-> 取舍细节与专家组评审见 [`docs/24-双引擎并存方案复审（专家组）`](docs/24-双引擎并存方案复审（专家组）.md)。
-
-**路径写法（`\` 与 `/` 的分工）**：
-
-- Windows 文件/目录参数（`--dest`、`--image`、`--file`、输出目录）用**反斜杠** `\`：`D:\backup\win10.esd`
-- `--source` 盘符根：`C:`、`C:\`、`C:/` **三种写法均可**（程序自动归一化成 `C:/`）
-- `--path` 镜像内路径：Windows 风格、**以 `\` 开头**，支持通配符
-
-先看现场（只读，随时能用）：
-
-```cmd
+```bat
 SysRecover.exe list
-SysRecover.exe diag
+SysRecover.exe diag --zip
 ```
 
-- `list`：磁盘 / 分区 / 文件系统 / 盘符 / ESP / 系统标记
-- `diag`：固件类型、Secure Boot 状态、启动项是否已装、wimlib 自检；加 `--zip` 导出诊断包（diag 文本 + `logs/` + 契约文件），方便反馈问题
+- `list`：列磁盘 / 分区 / 盘符 / ESP
+- `diag --zip`：查固件 / Secure Boot / 启动项，并导出诊断包
 
-### 案例 1 · 把当前系统热备成镜像
+### 备份当前系统
 
-```cmd
-SysRecover.exe backup --dest D:\backup\win10-20260920.esd --source C: --compress recovery --verify --name "Win10 出厂态" --esp
+```bat
+SysRecover.exe backup --dest D:\backup\win10.esd --source C: --compress recovery --verify --esp
 ```
 
-- `--source C:`：盘符根 → 自动走 VSS 热备（VSS 快照 + 排除清单）；`C:` 或 `C:/` 均可
-- `--compress`：`recovery`（.esd 最省）/ `maximum` / `fast`
-- `--verify` 写完立即校验；`--name` 指定子镜像名
-- `--esp`：把 ESP 分区并入**同一镜像**（第二个子镜像，名为 ESP），还原系统时**自动恢复回 ESP**；本机没有 ESP 时自动跳过
-- 目标已存在需 `--yes` 覆盖，或用 `--append` 追加为同一 WIM 里的新子镜像
-- 辅助命令：`images --file <镜像>` 列子镜像（含大小与描述）；`verify --image <镜像>` 单独校验
-- **从镜像里取单个文件**（不用整盘还原，先看看里面有什么 / 只捞一个文档出来）：
+- `--source`：盘符根，`C:` 或 `C:/` 均可
+- `--compress`：`recovery`（最小）/ `maximum` / `fast`
+- `--verify`：写完立即校验
+- `--esp`：把 ESP 分区并入同一镜像，还原时自动恢复回 ESP
+- 目标已存在：加 `--yes` 覆盖（与 `--append` 互斥）
+- `--append`：追加子镜像（与 `--yes` 互斥）
 
-  ```cmd
-  SysRecover.exe extract --file D:\backup\win10.esd --index 1 --path "\Users\*\Desktop\*.docx" --dest D:\out
-  ```
+### 从镜像取单个文件
 
-  `--path` 可重复，支持通配符；文件按镜像里的目录层级落到 `--dest` 下。
+```bat
+SysRecover.exe extract --file D:\backup\win10.esd --index 1 --path "\Users\*\Desktop\*.docx" --dest D:\out
+```
 
-### 案例 2 · 还原一个万能镜像到 C 盘
+- `--path` 可重复，支持通配符，以 `\` 开头
 
-先确认磁盘号 / 分区号：
+### 还原镜像
 
-```cmd
+```bat
 SysRecover.exe list
+SysRecover.exe restore --image D:\backup\win10.esd --disk 0 --part 3 --index 1 --yes
 ```
 
-执行还原（`--yes` **必填** = 确认覆盖目标分区）：
+- `--yes` 必填，确认覆盖目标分区
+- `--index N`：指定子镜像，默认 1
+- `--no-repair-boot`：不自动修引导
+- 自动二选一：
+  - 目标是正在运行的系统盘 → 暂存，重启进救援层自动完成替换和修引导；
+  - 目标未被占用（PE 里 / 非系统盘）→ 就地还原，不重启。
+- 镜像带 ESP 子镜像（备份时 `--esp`）会自动一并恢复
+- 镜像必须放在本地分区，救援层访问不到网络
 
-```cmd
-SysRecover.exe restore --image D:\backup\wannei-win10.esd --disk 0 --part 3 --index 1 --yes
+退出码：
+
+```text
+0 成功 / 1 失败 / 2 参数错 / 3 需管理员 / 4 危险目标被拒 / 5 校验失败 / 6 取消
 ```
 
-执行方式**自动二选一**：
+正常情况下随系统自适应双语。如须指定英文版，运行时加 `--lang en`，或先设置环境变量：
 
-| 情形 | 行为 |
-|---|---|
-| 目标是**正在运行的系统盘** | 暂存（**Windows 侧先把系统解压到 `<目标>:\~new`**）→ **重启**进内置救援层 → **改名交换**（不格式化、不 apply）→ 修引导 → 自动重启回新系统 |
-| 目标**未被占用**（在 **PE** 里、或还原到**非系统盘**） | **就地还原**：格式化 + 应用 + `bcdboot` → **完成，不重启** |
-
-- `--index N` 指定子镜像；`--no-repair-boot` 不自动修引导
-- 镜像里若带 **ESP 子镜像**（备份时加了 `--esp`），还原系统时**自动**把 ESP 一并恢复，无需额外参数
-- 镜像必须放在**本地分区**：解压（Windows 侧）与救援/回退（Linux 侧）都只在本机进行，网络 UNC / 映射盘用不了
-- 退出码：`0` 成功 / `1` 通用失败 / `2` 参数错 / `3` 需管理员 / `4` 危险目标被拒 / `5` 镜像校验失败 / `6` 取消
-
-### 案例 3 · 做"无人参与的静默还原"入口
-
-思路：把还原任务**暂存**下来（并装好常驻引导模块），之后由**开机菜单**或**单次启动**触发，全自动完成。
-
-1. （推荐）先用 GUI 的「安装菜单」装一次常驻引导模块（UEFI：写固件启动项；BIOS：BCD 实模式启动扇区条目）。
-   用法：**BIOS** 开机时连续按 ↑/↓ 选「SysRecover」；**UEFI** 按固件启动菜单键（多为 F12）选「SysRecover」。
-2. 暂存一次静默还原：安检 → 镜像校验 → 解压到 `<目标>:\~new` → 写契约 → 刷新引导层 → 设单次启动：
-
-   ```cmd
-   SysRecover.exe restore --image D:\backup\wannei-win10.esd --disk 0 --part 3 --index 1 --yes
-   ```
-
-3. 重启，此后无需任何操作：
-
-   ```cmd
-   shutdown /r /t 0
-   ```
-
-- **单次语义**：那条"单次启动"用完即消，平时开机照常进 Windows。
-- **常驻语义（UEFI）**：固件启动项挂在 `BootOrder` 末尾，开机启动菜单里随时能选；
-  任务契约放在**数据盘**（不被格式化），所以之后再选它还会再还原一次 —— 就是"菜单里常驻的一键还原"。
-- ⚠️ **BIOS 下不常驻**：还原后目标根只剩镜像内容（引导文件随之退出），那条菜单项**只对当次有效**；要常驻请用 UEFI。
----
-
-## 九、构建（给想自己编的人）
-
-```powershell
-$env:MINGW64 = "C:\mingw64"          # MinGW-w64 GCC 14.2 (x86_64, UCRT)
-$env:MINGW32 = "C:\mingw32"          # winlibs i686 UCRT GCC 14.2
-$env:PYTHON  = "C:\Python313\python.exe"
-
-mingw32-make -f Makefile package        # ★ 发布包 → dist/（根=x86 整套 + x64/ + 共享资源）
-mingw32-make -f Makefile all            # 仅 x64 构建 → dist/x64
-mingw32-make -f Makefile ARCH=x86 all   # 仅 x86 构建 → dist（根目录）
-mingw32-make -f Makefile check          # 单元测试（纯逻辑，零依赖）
-mingw32-make -f Makefile clean
+```bat
+set SYSRECOVER_LANG=en
 ```
 
-- 工具链：**x64 = MinGW-w64 GCC 14.2**、**x86 = winlibs i686 UCRT GCC 14.2**；
-  `package` 需要两套，通过 `MINGW64` / `MINGW32` 指定；Python 通过 `PYTHON` 指定（避免 Windows Store 占位符）。
-- `make check` 需要 `tools/` 下的 Python 脚本；`make package` 还会调用 `tools/build-debian-rescue.py`。
-- 救援层组装：`tools/build-debian-rescue.py`（**Debian 签名内核 + 签名模块** + Alpine 用户态）
-- 回归测试：`tools/vmtest/*.ps1`（UEFI/SB、BIOS/GRUB4DOS、屏显、固件直启…）+ `mk-drill.py`/`run-drill.ps1`（端到端还原演练）；清单见 [`docs/07`](docs/07-测试矩阵与回归记录.md)
-- 换机器/换环境：见 [`docs/10-新环境交接说明`](docs/10-新环境交接说明.md)
+## 五、下载
 
-### 发布包内容（`dist/`，约 41 MB）
+- **GitHub Releases（直接下载）**：  
+  https://github.com/WooMonlee/SysRecover-Windows-System-Restore-Backup/releases/latest
+- **123 云盘**：  
+  https://1812167946.share.123pan.cn/123pan/p00rVv-Jb7jH?pwd=8666#  
+  提取码：`8666`
+- **百度网盘**：  
+  https://pan.baidu.com/s/1Ni0TZgKYkBJd8iCEW0qGUQ?pwd=8666  
+  提取码：`8666`
 
-```
-SysRecover.exe / SysRecoverUI.exe   # x86 整套（入口）：真程序 + libwim-15.dll + x86 UCRT
-x64/{SysRecover.exe, SysRecoverUI.exe, libwim-15.dll, UCRT(16)}
-bootfiles/{grldr, grldr.mbr, vmlinuz-zjrestore, initramfs-zjrestore.cpio.gz, zjrestore-lite.sh, zj-ea-apply.exe}
-bootfiles/sb/{shimx64.efi, grubx64.efi, grub.cfg}         # Secure Boot 链（x64，与宿主位数无关）
-skin/ resources/ version.json THIRD_PARTY_LICENSES.txt
-```
+> 如果嫌体积大，可以直接删除 `Drivers` 目录（约 165MB）。这是为异机还原准备的注入驱动；不使用该功能完全可以删除。
 
-> **位数策略**：Windows 侧**跟随系统位数**（32 位系统跑 x86、64 位系统跑 x64，主要为备份压缩速度）——
-> 根目录是 x86 整套，32 位程序在 64 位系统上会**自动把自己换成 `x64\` 那份**（`src/common/selfarch.cpp`），
-> 所以**不需要独立启动器**。**Linux 救援层固定 x86_64**（与宿主位数无关）。详见 [`docs/08`](docs/08-32位支持（评估与实现）.md) §0。
+## 六、测试与反馈
+
+已在自用台式机、笔记本和 VM 的 **Windows 7 / 10 / 11、BIOS、UEFI、x86、x64** 中测试，但仍需要大家反馈不同电脑、服务器的还原效果。
+
+准备相对成熟时会开源。还需要什么功能、遇到了什么问题，欢迎跟帖回复。
+
+- 不便发到论坛的信息，可发送到邮箱：`ms_w@qq.com`
+- 更多沟通，请加 QQ 群：**1128237828**
+
+感谢以下坛友反馈使用信息：**公交石头、godworld、tigerhuang、2010ath26810**。
 
 ---
 
-## 十、已知限制与待验证
+## 开发与构建
 
-- **32 位 Windows**：已支持（Windows 侧跟随系统位数；发布包启动器自动选）。**Win7 x86 真机实测待做**；
-  代价：32 位系统上备份压缩比 64 位慢（`fast`≈0~10%、`recovery`≈20~35%），**还原 0%**。见 [`docs/08`](docs/08-32位支持（评估与实现）.md) §0。
-- **2026 新硬件 Secure Boot**：已换 **Debian 双签 shim（CA2011+CA2023）**，覆盖"只信新证书（CA2023）的
-  2026 新固件"（Ubuntu 单签做不到）。机制见 [`PLAN.md` §11.1](PLAN.md)。用户 VMware（SB 开）实测还原成功 ✓，
-  "只信 CA2023 的新固件"仍**待真机验证**。
-- **Windows 7 零安装**：exe 与 `libwim-15.dll` 依赖 **UCRT**（Win7 无内置）→ 发布包**已随带 x64/x86 两套 UCRT**
-  （`third_party/ucrt/{x64,x86}`，`make package` 自动分发），Win7 无需另装 VC++ 运行库。
-- **Windows 2003 / XP / Vista 及更早版本不支持**（含 Server 2003）：exe 依赖 **UCRT**（微软 UCRT 可再发行仅覆盖
-  Vista SP2 / Win7 SP1+ / Server 2008 R2 SP1+，**不含 2003/XP**），且官方 `libwim-15.dll` 也依赖 UCRT。
-  实测 Win2003 报 `找不到 api-ms-win-core-errorhandling-l1-1-0.dll`。产品支持矩阵为 **Win7 / Win10 / Win11 / WinPE**。
-- **ReFS 卷不支持**（与上一条同级别的硬限制，只写文档、不加运行时拦截）：
-  **镜像文件不要放在 ReFS 分区上** —— 重启还原跑在 Linux 救援层，而救援层**没有 ReFS 驱动**
-  （initramfs 里无 `refs`/`refs3` 模块，`parse-initramfs.py list` 实测为空），执行 apply 时读不到镜像、
-  还原失败，**此时目标分区可能已被快格**（代价很大）。**目标分区也不支持 ReFS**（ReFS 本就做不了
-  Windows 启动卷，且 `_zjresy*.log` 契约写在目标根、救援层同样读不到 → 任务发现阶段即停）。
-  **做法**：镜像统一放 **NTFS**（FAT32/exFAT 数据分区也可作镜像盘）。就地还原路径由 Windows 自己读写，
-  不受此限；产品支持矩阵照旧 **NTFS 系统卷**。
-- **Win7 作目标 + UEFI 固件不稳**：Win7 的 UEFI 支持本身很弱，且 UEFI 还原时我们**不重刷 ESP 上的引导文件版本**
-  （救援层在 Linux，跑不了 `bcdboot`）→ 实测在"按 Win10 配的 UEFI VM"里还原 Win7 会出现**引导循环**。
-  **建议 Win7 目标走 BIOS/MBR**（Win7 的主流形态）。已列入待办（见 `docs/14` §3：还原后首次启动刷 `bcdboot`）。
-- **PE 就地还原 / RAID 真机 / 忙时关闭**：代码已就绪，**待实测**（[`docs/11` §3](docs/11-接手指南（读我优先）.md) 有清单）。
-- **救援层内存下限**：默认 **A 引擎**（救援层只做改名交换）内存需求很低；走 **B 引擎（`--engine block`，在 Linux 里 apply）** 时实测 **512MB 可完整还原 43GB 镜像、192MB 会在 apply 尾段被 OOM 杀掉**（失败也完整留证，`<400MB` 提前 WARN），该场景建议 ≥1GB。
-- `ZJ_ENABLE_MOK_PATH`（备选线：我们自签的 UKI + MOK 注册）默认**不编译、不随包**
-  （`src/boot/uefi.cpp` 里改成 1 可启用）。
-
----
-
-## 十一、许可与第三方
-
-- **自有代码：MIT 许可**（见 [`LICENSE`](LICENSE)）—— 覆盖 `src/`、`skin/`、`tools/`、`tests/` 与为本项目编写的构建文件；
-  欢迎学习、修改、再分发（保留版权声明即可）。
-- 本产品自身代码**未静态链接任何 GPL 组件、未修改任何第三方源码**（`libwim-15.dll` 为 **LGPL 动态链接**，
-  其余为「单独分发」的聚合）→ 不受 copyleft 的衍生作品条款约束。
-- 第三方组件（Debian 内核与内核模块、GRUB、shim、GRUB4DOS、busybox、musl、ntfs-3g、util-linux、
-  wimlib、Duilib、UCRT…）各自遵循其原有许可。**全部为未修改的上游发行版二进制**，其源码获取方式
-  （Debian pool / Alpine CDN / wimlib 官网 / GRUB4DOS 官方发布页）见
-  [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt)「三、第三方源码获取方式」（该文件随包分发）。
-- 构建/测试期工具（MinGW-w64、osslsigncode、QEMU/OVMF、mtools）**不随产品分发**。
-
----
-
-## 十二、文档地图
-
-| 文档 | 内容 |
-|---|---|
-| [`docs/11-接手指南（读我优先）`](docs/11-接手指南（读我优先）.md) | **先读这个**：现状、下一步、文档地图 |
-| [`docs/00`](docs/00-项目简介（给协作者）.md)…[`docs/10`](docs/10-新环境交接说明.md) | 需求/架构/引导设计/跨层契约/磁盘与安全/构建合规/测试矩阵/32位评估/PE 验收/新环境 |
-| [`docs/12-相对优势与竞品对比`](docs/12-相对优势与竞品对比.md) | 和同类工具比，我们好在哪、差在哪（含对客户的话术、含 Image for Windows 专节） |
-| [`docs/13-开源同类调研（Clonezilla-Rescuezilla-FOG）`](docs/13-开源同类调研（Clonezilla-Rescuezilla-FOG）.md) | 开源同类（Clonezilla / Rescuezilla / FOG）调研 |
-| [`docs/14-成熟技术借鉴（可靠性机制调研）`](docs/14-成熟技术借鉴（可靠性机制调研）.md) | Windows `recoverysequence` / Android A/B / RAUC 等成熟可靠性机制，我们已在用哪些、建议学哪些 |
-| [`AGENTS.md`](AGENTS.md) | 操作手册：§0 五条红线、§7 引导 SOP、**§13 坑位册（PIT-001~117）**、§18 国际化纪律 |
-| [`PLAN.md`](PLAN.md) | 路线图、版本号规则、待决事项 |
-| [`docs/26-公开前准备与1.0观察期`](docs/26-公开前准备与1.0观察期.md) | 发布闸门、7 天观察期、1.0 回归矩阵 |
-| [`docs/27-质量检查报告（0.9.10）`](docs/27-质量检查报告（0.9.10）.md) | 静态分析、ShellCheck、剩余风险与下一步 |
-| [`SECURITY.md`](SECURITY.md) / [`CONTRIBUTING.md`](CONTRIBUTING.md) | 安全报告、构建与提交约定 |
-| [`LICENSE`](LICENSE) / [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt) | 自有代码 MIT；第三方组件清单、全文与源码出处 |
+- 开发/交接：[`docs/11-接手指南（读我优先）`](docs/11-接手指南（读我优先）.md)
+- 构建/发布：[`AGENTS.md`](AGENTS.md)
+- 许可证：自有代码 **MIT**，见 [`LICENSE`](LICENSE)；第三方组件许可见 [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt)
