@@ -337,7 +337,7 @@ bool CTabOptionUI::DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopContro
     // 选中项用「更深的蓝色圆角底」拉开对比（用户 2026-09-16 规格），白字白图标；
     // 未选中项透明底 + 浅蓝白字。
     if (sel) {
-        RECT pill = {rc.left - 6, rc.top + 3, rc.right + 6, rc.bottom - 3};
+        RECT pill = {rc.left - 3, rc.top + 3, rc.right + 3, rc.bottom - 3};
         FillRound(hDC, pill, 12, C_TAB_SEL);
     }
     DrawIcon(hDC, rc.left + 6, cy - 7, 16, col);
@@ -350,7 +350,7 @@ bool CTabOptionUI::DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopContro
 // 2026-10-11 二轮规格（GlyphCheck / SkinButton / TextItem 收起态三处共用）：
 // 规则 = 标签里存在快捷键字母（不分大小写）→ 线画在**词内首次出现**处、
 // 不追加尾随字母（「ESP」+P → E S P̲；「Clear」+C → C̲lear；「CPU 50%」+C → C̲PU 50%）；
-// 一个都没有 → 维持「文字 + 4px + 尾随字母」（中文标签都走这条，如「不限速 C」「类型 T」）。
+// 一个都没有 → 维持「文字 + 0px（紧贴） + 尾随字母」（中文标签都走这条，如「不限速 C」「类型 T」）。
 
 // 返回词内首次命中位置（let 须已 towupper），未命中返回 nullptr。
 static const wchar_t* ShortcutHit(const wchar_t* txt, wchar_t let) {
@@ -602,7 +602,7 @@ bool CTextItemUI::DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopControl
 
 // 收起态加速键画法（与 SkinButton/GlyphCheck 同规则，见 ShortcutHit）：
 // 词内有快捷键字母（如「CPU 50%」的 C、类型 T 若在词内）→ 整词居中 +
-// 词内首次出现处下划线；没有 → 「文字 + 4px + 尾随字母」整体居中
+// 词内首次出现处下划线；没有 → 「文字 + 0px（紧贴） + 尾随字母」整体居中
 // （如「不限速 C」「类型 T」）。没画（无字母/无文本）返回 false，调用方走原居中路径。
 static bool DrawShortcutGroup(HDC hDC, const RECT& rc, const wchar_t* text,
                               wchar_t let) {
@@ -848,7 +848,7 @@ bool CSkinButtonUI::DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopContr
     // 有 shortcut= 属性 → 视觉画法（触发在 Duilib 内置 WM_SYSCHAR 通路，
     // UIManager.cpp PreMessageHandler，这里只负责视觉）。画法规则见
     // ShortcutHit：词内命中 → 整词居中 + 词内首次出现处下划线（不加字母）；
-    // 未命中 → 「文字 + 4px + 尾随字母」整体居中，字母静音色与正文拉开
+    // 未命中 → 「文字 + 0px（紧贴） + 尾随字母」整体居中，字母静音色与正文拉开
     // （禁用态随文字变灰）。线：基线 +2 起画，宽 = 该字母宽。
     wchar_t let = (wchar_t)towupper(GetShortcut());
     if (let) {
