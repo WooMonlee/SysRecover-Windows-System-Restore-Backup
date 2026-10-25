@@ -1,353 +1,163 @@
-# SysRecover (九转还原 · standalone edition)
+# SysRecover (Nine-turn Restore)
 
+> One-click Windows system backup and restore  
 > **English** | [中文](README.md)
 
 [![ci](https://github.com/WooMonlee/SysRecover-Windows-System-Restore-Backup/actions/workflows/ci.yml/badge.svg)](https://github.com/WooMonlee/SysRecover-Windows-System-Restore-Backup/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/WooMonlee/SysRecover-Windows-System-Restore-Backup)](https://github.com/WooMonlee/SysRecover-Windows-System-Restore-Backup/releases/latest)
 
-> **Status: 0.9.14 pre-release.** Until 1.0, treat real-hardware regression results as authoritative; test on a small set of machines first and do not rely on it as your only backup.
+**Under 50MB · faster startup than most WinPE · CA2023 support · ESP backup · return to the pre-restore system · installable recovery boot menu · Chinese/English · full CLI**
 
-> Version `0.9.14` | **x64 + x86 dual architecture** (the Windows side follows the OS bitness; the Linux rescue layer is always x64) | Windows 7 / 10 / 11 / WinPE | Release package ≈41 MB (≈27 MB of it is the rescue kernel and initramfs)
-> License: own code **MIT** (see [`LICENSE`](LICENSE)); third-party components are *separately distributed* — full list, license texts and source-code provenance in [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt)
+![Restore mode](docs/img/gui-restore.png)
 
-In one sentence: **back up a Windows system into a single image file, and restore it in one click when you need it.**
-
-There is no shortage of backup/restore tools out there, so let us put our cards on the table first: **how this project is built, how far it actually gets, and where it still falls short** — all of it below, no exaggeration.
-
-> ⚠️ This repository is an **independent product (standalone edition)**. The earlier `WooMonlee/OnekeyRestore` (C# + VHDX multi-point instant restore) is **a different product**; the two are designed and implemented separately, and their docs are not mixed.
->
-> 👋 **First time here? Read [`docs/11-接手指南（读我优先）`](docs/11-接手指南（读我优先）.md) first** — current status (verified / unverified), next priorities, and the document map. For a product overview, see [`docs/00-项目简介`](docs/00-项目简介（给协作者）.md).
-
-![SysRecover restore mode (file → system)](docs/img/gui-restore.png)
-
-![SysRecover backup mode (system → file)](docs/img/gui-backup.png)
-
-<sub>Restore mode (file → system): **step 1** pick the image → **step 2** pick the target partition (a dirty disk is marked "current system") → **step 3** start the restore; the program version is shown at the top right, progress at the bottom.</sub>
-
-<sub>Backup mode (system → file): choose the save location, source partition, format, and CPU limit, then start; VSS hot backup works while Windows is running.</sub>
+![Backup mode](docs/img/gui-backup.png)
 
 ---
 
-## 1. What it is — and what it **is not**
+## Pros
 
-**Is**: system backup (hot backup via VSS) → system restore (pick an image + pick a target partition → one-click rollback).
+- Package under **50MB**; starts faster than most WinPE images
+- **Secure Boot CA2011 / CA2023** chain; no need to disable Secure Boot or enroll keys
+- Back up the **ESP** together with the system image and restore it automatically
+- Keep the old system and **return to the pre-restore system** later
+- Install a boot menu as a **recovery fallback** when Windows cannot boot
+- Chinese / English UI and **full command-line support**
+- **ESD / WIM** images
 
-**Is not** (drawing the boundary up front, so nobody uses it for the wrong job):
+## Cons
 
-| Not this | Notes |
-|---|---|
-| Partition management / resizing / disk cloning | We are not a disk tool; we only handle "write the system back" |
-| Data recovery | Not offered |
-| **Multi-point restore / differential instant restore** | This product line has **none** of that, and does not plan to (that belongs to another product line) |
-| **32-bit OS** | ✅ **Supported**: the Windows side **follows the OS bitness** (x86 on 32-bit, x64 on 64-bit), the launcher in the package root picks automatically; **the Linux rescue layer is always x64** |
-| **Windows 2003 / XP / Vista and earlier** | ✗ **Not supported** (UCRT goes down to Vista SP2 / Win7 SP1+; see "Known limitations") |
-
----
-
-## 2. Why write yet another one
-
-Because in real jobs you hit the following, and a lot of tools fall over on exactly these:
-
-1. **RAID/RAID-controller machines where the rescue environment cannot see the disk** — most WinPE builds do not ship drivers for those cards.
-   → Our rescue layer is a full Linux kernel plus **494 storage/filesystem modules** (`megaraid_sas`/`mpt3sas`/`isci`/`vmd`/`hpsa`/
-   `aacraid`/`arcmsr`/`pm80xx`/`mvsas`/`lpfc`/`qla2xxx`/`virtio_scsi`… all present), so it works on RAID machines too.
-2. **Having to prepare a USB stick / WinPE boot disk** — one more step, one more thing that can go wrong.
-   → The rescue layer is **built into the software**: deploy once, then ride the chain all the way through.
-3. **Needing to enter BIOS and disable Secure Boot** (what some competing tools ask for).
-   → We use the **Microsoft-signed chain** (details in §4 below): the user **neither disables Secure Boot nor enrols any key**.
-4. **"Successful" restore that still will not boot** — universal images missing boot files, an incomplete NTFS boot sector, a BCD still pointing at the old drive letter…
-   → We **do all of that for the user** (§5).
-5. **Getting a half-written image from a previous run and black-screening halfway through the restore.**
-   → We **verify first, act second**: an incomplete image is **refused outright**, no coin-flipping.
+- **64-bit CPUs only**; 32-bit CPUs are no longer supported
+- **Windows 7 x64 and later** only; Windows Vista, 2003, XP and earlier are not supported
+- Only **ESD / WIM** image formats are supported
 
 ---
 
-## 3. How it works
+## 1. What is implemented
 
-```
-┌─────────── Windows side (SysRecover.exe / SysRecoverUI.exe) ──────────┐
-│  list / diag   inspect the machine (read-only)                        │
-│  backup        hot VSS backup → write WIM/ESD (write <target>.tmp     │
-│                first, rename only on success)                         │
-│  restore       four safety checks → image usability check → pick one: │
-│                   ├─ in-place:  format + apply + bcdboot → no reboot  │
-│                   └─ staged:    extract to <target>:\~new + boot →     │
-│                                 reboot                                │
-└──────────────────────────────┬─────────────────────────────────────────┘
-                               ↓ reboot (only for the "restore the running system disk" path)
-┌──────────── built-in Linux rescue layer (vmlinuz + initramfs + restore)┐
-│  load modules → find target partition → swap ~new ↔ old tree →         │
-│  fix boot → reboot (no reformat)                                       │
-└────────────────────────────────────────────────────────────────────────┘
+1. **wimlib-based core**: hot backup and restore on the Windows side; the Linux rescue layer mainly performs directory exchange and boot repair. ESD/WIM support keeps the package small.
+2. **Fast startup**: faster than most PE images, comparable disk I/O, with **CA2011 / CA2023** Secure Boot chains.
+3. **Full CLI**: suitable for scripts, labs, and unattended deployment.
+4. **Under 50MB** while preserving broad hardware compatibility.
+5. **Chinese / English UI**.
+6. **ESP backup**.
+7. **Installable boot menu**:
+   - BIOS: press Up/Down repeatedly before Windows starts to open the menu;
+   - UEFI: use the firmware boot-device hotkey (shown in the UI) and select `SysRecover`.
+8. **New-disk wizard** for ESP / MSR / system / data partitions.
+9. **Universal restore**:
+   - Ships with common storage drivers (about 165MB in `Drivers`);
+   - Not every machine is covered. Export drivers from the target machine, put them in `Drivers`, and the software injects them offline.
+
+## 2. What is no longer supported
+
+1. **64-bit CPUs only**; 32-bit CPUs are not supported.
+2. **Windows 7 x64 and later** only; Vista / 2003 / XP and earlier are not supported.
+
+## 3. Why another tool
+
+1. On RAID / server machines, many PE images lack the right RAID drivers. Our rescue layer uses a full Linux kernel plus **494 storage / filesystem modules**.
+2. Preparing a USB drive or PE media adds another step and another failure point. The rescue layer is built in: deploy once, then use one chain end to end.
+3. Some tools require disabling Secure Boot on Secure Boot machines. We use a Microsoft-signed chain; no BIOS changes and no key enrollment.
+4. Many tools only support manual restore and cannot provide a recovery fallback when Windows will not boot.
+5. Some tools cannot perform fully automated restores to different systems from the command line.
+6. Most tools cannot return to the system that existed before the restore.
+
+## 4. Command-line usage
+
+Show all commands:
+
+```bat
+SysRecover.exe help
 ```
 
-- CLI and GUI **share the same `app` layer**, so they behave identically (not two implementations).
-- Rescue-layer logs go to **`logs/` in the program folder** (kept even on success) — if something breaks, ask the user to send that folder back.
+Inspect the machine:
 
----
-
-## 4. Three boot chains (details in [`AGENTS.md` §7](AGENTS.md))
-
-| Firmware / mode | Chain |
-|---|---|
-| **BIOS / MBR** | `MBR → bootmgr → BCD (real-mode boot sector → \grldr.mbr) → \grldr → \menu.lst → kernel + initramfs` |
-| **UEFI (Secure Boot off)** | We write a **firmware boot entry** (NVRAM `Boot####`) and let the firmware load the kernel, with the command line carried in `OptionalData` |
-| **UEFI + Secure Boot on** | `firmware → shimx64.efi (Microsoft dual-signed CA2011+CA2023) → grubx64.efi (Debian-signed GRUB) → Debian-signed kernel + our initramfs` |
-
-On that last one: **nothing is bypassed** — every executable in the chain carries a legitimate signature, and it is the same path Debian itself takes on boot.
-So **the user does not enrol MOK and does not turn Secure Boot off**. The shim is **dual-signed CA2011+CA2023**, which covers 2026-era firmware.
-
----
-
-## 5. Reliability design (why it is hard to mess up)
-
-| Mechanism | How |
-|---|---|
-| **Writing an image survives interruption** | Write `<target>.tmp` first, rename only on success; an interrupt leaves at worst a temp file, **the original image is untouched** |
-| **Bad images are refused** | Before touching anything we check the image is not a half-written file (`WRITE_IN_PROGRESS` set → refuse); run `--verify` if you want the full integrity check |
-| **It cannot wipe the wrong disk** | Four-element verification (GUID / disk serial / offset / size); **four restore checks**: target is ESP, BitLocker, a recovery partition, or the image file lives inside the target partition → **any hit is refused** (exit code 4) |
-| **The MBR is never touched** | The disk MBR is never touched; only the **target partition** changes (the A-engine swaps in place **without formatting**; only the `--engine block` fallback quick-formats it); rescue files go onto the target partition; **nothing new at the root of data disks** |
-| **It boots after the restore** | Writes back the complete NTFS boot region (426 B in sector 0 + sectors 1..8); adds `\bootmgr` and `C:\Boot\BCD`; BCD uses `device boot` (independent of drive letters / disk numbers) |
-| **A run can be cancelled** | Closing the window mid-backup/restore offers "abort and exit", stops within a second and deletes the incomplete temp file |
-| **Every failure leaves evidence** (0.6.22+) | Rescue-layer "black box": every mountable partition root + the ESP gets `ZJRESTORE-status.txt` (result + step), the full log, and a **per-device probe table** (mount result / raw error / PCI controllers / DMI); a fallback log home is claimed when the software folder is missing |
-| **Reported on next boot** (0.6.29+) | The next start reads the receipts and reports "the last restore failed at step X"; a task that was staged but never executed (boot failure / power loss) is reported too |
-| **Stale contracts cannot hijack the target** (0.6.27+) | Old `_zjresy` / `restore-task*` files are cleaned from all drive roots before staging; the rescue layer only trusts the receipt whose offset equals the partition's real start |
-| **Verified deployment** (0.6.27+) | Boot/rescue files are CRC32-compared after being written; a mismatch fails the staging; `rescue-build.txt` records the on-disk rescue version |
-
----
-
-## 6. Support matrix (verified vs. **untested**, listed separately)
-
-| Scenario | Status |
-|---|---|
-| BIOS / MBR full-chain restore | ✅ Verified 2026-09-19 (real hardware / VM) |
-| UEFI / GPT full-chain restore (Secure Boot off) | ✅ Verified 2026-09-19 |
-| UEFI / GPT + **Secure Boot on** (zero enrolment, zero interaction, Debian dual-signed chain) | ✅ Verified 2026-09-19 / 09-23 |
-| Hot backup (VSS) → boots into the OS afterwards | ✅ Verified 2026-09-19 |
-| Running the tool on a **Win7 host** (after installing the VC++ runtime) | ✅ Verified 2026-09-20 |
-| **Win7 host restoring a Win10 image** (cross-version) | ✅ Verified 2026-09-20, boots normally afterwards |
-| RAID/HBA drivers packaged (Debian kernel, all key HBAs covered) | ✅ Loaded successfully in QEMU (**real hardware pending**) |
-| QEMU automated regression (UEFI rescue boot, screen output, PBR probe, BIOS/GRUB4DOS, full drill…) | ✅ See [`docs/07`](docs/07-测试矩阵与回归记录.md) |
-| Full regression after **rescuing-layer module trimming** (779→494, dist 54→39 MB) | ✅ Verified 2026-09-24 (incl. end-to-end restore drill, PIT-079/080) |
-| **Three-disk customer replica** (MBR + extended + GPT; success / failure / fake contract / unmountable partition) | ✅ Verified 2026-10-04 (PIT-112/113/114) |
-| **Real-image stress** (Win10 7.57 GB / Win11 43.35 GB + ESP) | ✅ Full pass at 8 GB RAM; fine at 512 MB; OOM at 192 MB but fully recorded (PIT-113) |
-| **In-place restore from PE / to a non-system disk (no reboot)** | 🚧 **Not yet field-tested** (code ready; checklist in [`docs/09`](docs/09-PE直装验收清单.md)) |
-| **"Abort and exit" while busy** | 🚧 **Not yet field-tested** |
-| **Zero-install Win7** | 🚧 real-hardware test pending (UCRT x64/x86 already shipped) |
-| Server RAID on **real hardware**; 2026 firmware that only trusts CA2023 | 🚧 Pending (mechanism ready) |
-| 32-bit OS (Win7/Win10 x86) | ✅ **Supported**: dual-architecture package, root launcher picks automatically; a 32-bit process re-execs itself from `x64\` on a 64-bit OS (see [`docs/08`](docs/08-32位支持（评估与实现）.md)) |
-
-> Rows marked 🚧 are **not** to be treated as working — that is our own rule: nothing gets a ✅ until it actually ran end to end.
-
----
-
-## 7. Getting started: GUI
-
-1. Unzip the release package and **double-click `SysRecoverUI.exe`** (one UAC prompt appears, since it must read/write partitions and boot data).
-2. **Backup**: switch to "System → File" → choose where to save → click "Back up the system".
-3. **Restore**: switch to "File → System" → pick the image (you can also **drag and drop an .esd/.wim into the window**) → pick the target partition →
-   click "Restore the system" → choose "Exit and restart" → from there it is fully automatic, ending up in the new system.
-   - For batch/unattended runs, tick **`Silent mode`**: no dialogs at all, straight through.
-
----
-
-## 8. Command-line usage
-
-> CLI and GUI share the same `app` layer and behave identically.
-> The CLI also embeds a `requireAdministrator` manifest: in an **elevated command prompt / scheduled task (highest privileges) / PsExec `-s` / SCCM**
-> the process is already high-integrity, so it runs **fully silently with no UAC prompt** (that is the path used for lab-style batch deployment).
->
-> All commands: `SysRecover.exe help`; per-command help: `SysRecover.exe help backup`.
-> There are also `repair-boot` (fix boot without reinstalling) and `history` (operation log), among others.
-
-**Three restore channels (how to choose)**:
-
-| Scenario | Channel | How it runs | Requirements |
-|---|---|---|---|
-| Restoring the system disk from a running Windows (default) | **A-engine** (rename swap) | Stage extracts to `<target>:\~new` → reboot → rescue layer renames/swaps (no format; optional KeepOld keeps the old system as `~old`) | Target free space >= content + page file + margin |
-| A-engine space too small / target filesystem corrupted | **B-engine fallback** (`--engine block`) | Stage → reboot → rescue layer `mkntfs` + apply (**old system discarded**) | Total target capacity >= image size; >= 1 GB RAM recommended |
-| Booted from PE / USB (**first choice when Windows won't start**) | In-place restore | Windows side formats + applies + repairs boot directly, **no reboot, never enters Linux** | WinPE |
-| Windows won't start and **no task was ever staged** | The PE channel above | The SysRecover boot-menu item needs a staged task; without one it cannot enter the restore flow | PE media required |
-
-> Trade-off details and the expert-panel review: [`docs/24-双引擎并存方案复审（专家组）`](docs/24-双引擎并存方案复审（专家组）.md).
-
-**Path style (backslash vs forward slash)**:
-
-- Windows file/directory options (`--dest`, `--image`, `--file`, output dir) use **backslashes**: `D:\backup\win10.esd`
-- `--source` drive root: `C:`, `C:\` or `C:/` **all work** (normalized to `C:/` internally)
-- `--path` in-image path: Windows style, **starts with `\`**, wildcards supported
-
-First, inspect the machine (read-only, safe to run any time):
-
-```cmd
+```bat
 SysRecover.exe list
-SysRecover.exe diag
+SysRecover.exe diag --zip
 ```
 
-- `list`: disks / partitions / file systems / drive letters / ESP / system markers
-- `diag`: firmware type, Secure Boot state, whether the boot entry is installed, wimlib self-check; add `--zip` to export a diagnostics bundle (diag text + `logs/` + contract files) for bug reports
+- `list`: disks / partitions / drive letters / ESP
+- `diag --zip`: firmware / Secure Boot / boot entries and a diagnostics ZIP
 
-### Case 1 · Hot-back-up the current system into an image
+### Back up the current system
 
-```cmd
-SysRecover.exe backup --dest D:\backup\win10-20260920.esd --source C: --compress recovery --verify --name "Win10 factory image" --esp
+```bat
+SysRecover.exe backup --dest D:\backup\win10.esd --source C: --compress recovery --verify --esp
 ```
 
-- `--source C:`: drive root → automatic VSS hot backup (VSS snapshot + exclusion list); `C:` or `C:/` both fine
-- `--compress`: `recovery` (smallest .esd) / `maximum` / `fast`
-- `--verify` checks the file right after writing; `--name` sets the sub-image name
-- `--esp`: bakes the ESP partition into the **same image** (a second sub-image named ESP) and it is **restored automatically** when you restore the system; skipped automatically if the machine has no ESP
-- An existing destination needs `--yes` to overwrite, or use `--append` to add it as a new sub-image of the same WIM
-- Helpers: `images --file <image>` lists sub-images (size and description); `verify --image <image>` verifies one
-- **Extract single files from an image** (without a full restore — peek inside, or pull out one document):
+- `--source`: volume root; `C:` or `C:/`
+- `--compress`: `recovery` (smallest) / `maximum` / `fast`
+- `--verify`: verify immediately after writing
+- `--esp`: include the ESP as a second image in the same file
+- Existing destination: add `--yes` to overwrite (mutually exclusive with `--append`)
+- `--append`: append another image (mutually exclusive with `--yes`)
 
-  ```cmd
-  SysRecover.exe extract --file D:\backup\win10.esd --index 1 --path "\Users\*\Desktop\*.docx" --dest D:\out
-  ```
+### Extract files from an image
 
-  `--path` is repeatable and supports wildcards; files land under `--dest` using their in-image directory tree.
+```bat
+SysRecover.exe extract --file D:\backup\win10.esd --index 1 --path "\Users\*\Desktop\*.docx" --dest D:\out
+```
 
-### Case 2 · Restore a universal image to C:
+- `--path` may be repeated and supports wildcards; paths start with `\`
 
-Confirm the disk/partition numbers first:
+### Restore an image
 
-```cmd
+```bat
 SysRecover.exe list
+SysRecover.exe restore --image D:\backup\win10.esd --disk 0 --part 3 --index 1 --yes
 ```
 
-Then restore (`--yes` is **mandatory** = confirm overwriting the target partition):
+- `--yes` is required to confirm overwriting the target partition
+- `--index N`: sub-image index, default 1
+- `--no-repair-boot`: do not repair boot files automatically
+- Automatic mode selection:
+  - target is the running system disk: stage the restore, reboot into the rescue layer, then replace the system and repair boot;
+  - target is not in use (PE / non-system disk): restore in place without rebooting.
+- An image with an ESP sub-image (created with `--esp`) restores the ESP automatically.
+- Keep the image on a local partition; the rescue layer cannot access the network.
 
-```cmd
-SysRecover.exe restore --image D:\backup\wannei-win10.esd --disk 0 --part 3 --index 1 --yes
+Exit codes:
+
+```text
+0 success / 1 failure / 2 bad arguments / 3 administrator required /
+4 dangerous target rejected / 5 verification failed / 6 cancelled
 ```
 
-The execution mode is **chosen automatically**:
+The UI follows the system language. For English explicitly, use `--lang en` or:
 
-| Situation | Behaviour |
-|---|---|
-| Target is the **running system disk** | Stage it (**Windows first extracts the system into `<target>:\~new`**) → **reboot** into the built-in rescue layer → **rename-swap** (no reformat, no apply) → fix boot → auto-reboot into the new system |
-| Target is **not in use** (in **WinPE**, or restoring to a **non-system disk**) | **In-place restore**: format + apply + `bcdboot` → **done, no reboot** |
-
-- `--index N` picks a sub-image; `--no-repair-boot` skips boot repair
-- If the image carries an **ESP sub-image** (made with `--esp`), it is restored **automatically** along with the system — no extra flag needed
-- The image must live on a **local disk**: extraction (Windows side) and the rescue/fallback (Linux side) both run locally — UNC / mapped drives don't work
-- Exit codes: `0` success / `1` generic failure / `2` bad arguments / `3` needs admin / `4` dangerous target refused / `5` image verification failed / `6` cancelled
-
-### Case 3 · An unattended, silent restore entry point
-
-Idea: **stage** the restore task (with the always-present boot module installed), then trigger it from the **boot menu** or a **one-time boot entry**, fully automatically.
-
-1. (Recommended) Install the always-present boot module once via the GUI's "Install boot restore" (UEFI: writes a firmware boot entry; BIOS: a real-mode boot sector entry in the BCD).
-2. Stage a silent restore: safety checks → image check → extract to `<target>:\~new` → write contract → refresh boot layer → arm the one-time boot:
-
-   ```cmd
-   SysRecover.exe restore --image D:\backup\wannei-win10.esd --disk 0 --part 3 --index 1 --yes
-   ```
-
-3. Reboot — nothing to do from here on:
-
-   ```cmd
-   shutdown /r /t 0
-   ```
-
-- **One-time semantics**: that boot entry is consumed after one use; normal boots go to Windows as usual.
-- **Always-present semantics (UEFI)**: the firmware entry sits at the end of `BootOrder`, selectable from the boot menu at any time;
-  the task contract lives on a **data disk** (never formatted), so choosing it again runs the restore once more — an always-present one-click restore in the boot menu.
-- ⚠️ **Not always-present under BIOS**: after the restore the target root only contains the image contents (the boot files leave with the old tree), so that menu entry **only works for that one run**; use UEFI if you need it to persist.
----
-
-## 9. Building (for people who want to compile it)
-
-```powershell
-$env:MINGW64 = "C:\mingw64"          # MinGW-w64 GCC 14.2 (x86_64, UCRT)
-$env:MINGW32 = "C:\mingw32"          # winlibs i686 UCRT GCC 14.2
-$env:PYTHON  = "C:\Python313\python.exe"
-
-mingw32-make -f Makefile package        # → release package → dist/ (root = full x86 set + x64/ + shared assets)
-mingw32-make -f Makefile all            # x64 build only → dist/x64
-mingw32-make -f Makefile ARCH=x86 all   # x86 build only → dist (root)
-mingw32-make -f Makefile check          # unit tests (pure logic, zero dependencies)
-mingw32-make -f Makefile clean
+```bat
+set SYSRECOVER_LANG=en
 ```
 
-- Toolchains: **x64 = MinGW-w64 GCC 14.2**, **x86 = winlibs i686 UCRT GCC 14.2**;
-  set `MINGW64` / `MINGW32` for `package`; set `PYTHON` to avoid the Windows Store placeholder.
-- Rescue layer assembly: `tools/build-debian-rescue.py` (**Debian-signed kernel + signed modules** + Alpine userland)
-- Regression tests: `tools/vmtest/*.ps1` (UEFI/SB, BIOS/GRUB4DOS, screen output, direct firmware boot…) plus `mk-drill.py`/`run-drill.ps1` (end-to-end restore drill); see [`docs/07`](docs/07-测试矩阵与回归记录.md)
-- New machine / new environment: see [`docs/10-新环境交接说明`](docs/10-新环境交接说明.md)
+## 5. Download
 
-### What is in the release package (`dist/`, about 41 MB)
+- **GitHub Releases (direct download)**:  
+  https://github.com/WooMonlee/SysRecover-Windows-System-Restore-Backup/releases/latest
+- **123 Cloud Drive**:  
+  https://1812167946.share.123pan.cn/123pan/p00rVv-Jb7jH?pwd=8666#  
+  Password: `8666`
+- **Baidu Netdisk**:  
+  https://pan.baidu.com/s/1Ni0TZgKYkBJd8iCEW0qGUQ?pwd=8666  
+  Password: `8666`
 
-```
-SysRecover.exe / SysRecoverUI.exe   # full x86 set (entry point): the real programs + libwim-15.dll + x86 UCRT
-x64/{SysRecover.exe, SysRecoverUI.exe, libwim-15.dll, UCRT(16)}
-bootfiles/{grldr, grldr.mbr, vmlinuz-zjrestore, initramfs-zjrestore.cpio.gz, zjrestore-lite.sh, zj-ea-apply.exe}
-bootfiles/sb/{shimx64.efi, grubx64.efi, grub.cfg}         # Secure Boot chain (x64, independent of host bitness)
-skin/ resources/ version.json THIRD_PARTY_LICENSES.txt
-```
+> If package size matters, delete the `Drivers` folder (about 165MB). It is only used for universal restore.
 
-> **Bitness policy**: the Windows side **follows the OS bitness** (x86 on 32-bit, x64 on 64-bit — mostly for backup compression speed) —
-> the package root is the full x86 set, and a 32-bit process on a 64-bit OS **re-executes itself from `x64\`** (`src/common/selfarch.cpp`),
-> so **no separate launcher is needed**. **The Linux rescue layer is always x86_64** (independent of the host). Details in [`docs/08`](docs/08-32位支持（评估与实现）.md) §0.
+## 6. Testing and feedback
+
+Tested on self-owned desktops, laptops and VMs with **Windows 7 / 10 / 11, BIOS, UEFI, x86 and x64**. Feedback from more machines and servers is welcome.
+
+The source will be opened when the project is more mature. Bug reports and feature requests are welcome.
+
+- Email: `ms_w@qq.com`
+- QQ group: **1128237828**
+
+Thanks to **公交石头, godworld, tigerhuang, 2010ath26810** for testing feedback.
 
 ---
 
-## 10. Known limitations and items pending verification
+## Development and licensing
 
-- **32-bit Windows**: supported (the Windows side follows the OS bitness; the package launcher picks automatically). **Real-hardware Win7 x86 testing still pending**;
-  the cost: on 32-bit OSes backup compression is slower than 64-bit (`fast`≈0~10%, `recovery`≈20~35%), **restore is 0% slower**. See [`docs/08`](docs/08-32位支持（评估与实现）.md) §0.
-- **Secure Boot on 2026 hardware**: we now ship the **Debian dual-signed shim (CA2011+CA2023)**, covering firmware that only trusts the new certificate (CA2023) —
-  which Ubuntu's single-signature shim cannot do. Design in [`PLAN.md` §11.1](PLAN.md). Verified by a user on VMware (SB on) ✓;
-  "firmware that only trusts CA2023" is still **pending real-hardware verification**.
-- **Zero-install on Windows 7**: the exes and `libwim-15.dll` depend on the **UCRT** (not built into Win7) → the release package **ships both x64 and x86 UCRT**
-  (`third_party/ucrt/{x64,x86}`, distributed automatically by `make package`), so Win7 needs no extra VC++ runtime install.
-- **Windows 2003 / XP / Vista and earlier are unsupported** (including Server 2003): the exes depend on the **UCRT** (Microsoft's redistributable UCRT only covers
-  Vista SP2 / Win7 SP1+ / Server 2008 R2 SP1+, **not 2003/XP**), and the official `libwim-15.dll` also needs the UCRT.
-  In testing Win2003 fails with `api-ms-win-core-errorhandling-l1-1-0.dll not found`. The product support matrix is **Win7 / Win10 / Win11 / WinPE**.
-- **ReFS volumes are unsupported** (a hard limitation of the same class — documented rather than runtime-blocked):
-  **do not put the image file on a ReFS partition** — a staged restore runs in the Linux rescue layer, which has **no ReFS driver**
-  (no `refs`/`refs3` module in the initramfs; `parse-initramfs.py list` confirms empty), so the apply step cannot read the image and fails
-  **with the target partition possibly already quick-formatted** (an expensive failure). **The target partition cannot be ReFS either** (ReFS cannot be a
-  Windows boot volume anyway, and the `_zjresy*.log` contract is written to the target root, which the rescue layer also cannot read → task discovery stops).
-  **What to do**: keep images on **NTFS** (FAT32/exFAT data partitions are fine as image disks). The in-place path is read and written by Windows itself
-  and is not affected; the support matrix remains **NTFS system volumes**.
-- **Win7 as target on UEFI firmware is unstable**: Win7's own UEFI support is weak, and during a UEFI restore we **do not refresh the boot file versions on the ESP**
-  (the rescue layer runs Linux and cannot execute `bcdboot`) → in testing, restoring Win7 inside a "Win10-configured UEFI VM" produced a **boot loop**.
-  **Recommend restoring Win7 targets via BIOS/MBR** (the mainstream Win7 shape). On the todo list (see `docs/14` §3: run `bcdboot` on first boot after the restore).
-- **PE in-place restore / RAID on real hardware / closing while busy**: code ready, **pending field testing** ([`docs/11` §3](docs/11-接手指南（读我优先）.md) has the checklist).
-- **Rescue-layer memory floor**: the default **A-engine** (the rescue layer only does the rename-swap) needs very little memory; with the **B-engine fallback (`--engine block`, apply inside Linux)** testing showed **512 MB restores a 43 GB image end to end, while 192 MB gets the apply OOM-killed near the end** (the failure is still fully recorded, and below 400 MB a warning appears on screen and in the log) — give that path ≥1 GB.
-- `ZJ_ENABLE_MOK_PATH` (the alternative path: our self-signed UKI + MOK enrolment) is **not compiled and not shipped by default**
-  (change it to 1 in `src/boot/uefi.cpp` to enable).
-
----
-
-## 11. License and third-party components
-
-- **Own code: MIT** (see [`LICENSE`](LICENSE)) — covers `src/`, `skin/`, `tools/`, `tests/` and the build files written for this project;
-  feel free to learn from it, modify it and redistribute it (keep the copyright notice).
-- This product's own code **statically links no GPL component and modifies no third-party source** (`libwim-15.dll` is **LGPL, dynamically linked**,
-  the rest are *separately distributed* aggregates) → not subject to the copyleft derivative-work clauses.
-- Third-party components (Debian kernel and modules, GRUB, shim, GRUB4DOS, busybox, musl, ntfs-3g, util-linux,
-  wimlib, Duilib, UCRT…) each keep their own licenses. **All are unmodified upstream binaries**; how to obtain their sources
-  (Debian pool / Alpine CDN / wimlib site / official GRUB4DOS release page) is documented in
-  [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt), section "三、第三方源码获取方式" (that file ships with the package).
-- Build/test-only tools (MinGW-w64, osslsigncode, QEMU/OVMF, mtools) are **not distributed with the product**.
-
----
-
-## 12. Document map
-
-Most documents are written in Chinese.
-
-| Document | Contents |
-|---|---|
-| [`docs/11-接手指南（读我优先）`](docs/11-接手指南（读我优先）.md) | **Read this first**: status, next steps, document map |
-| [`docs/00`](docs/00-项目简介（给协作者）.md) … [`docs/10`](docs/10-新环境交接说明.md) | Requirements / architecture / boot design / cross-layer contract / disk & security / build & compliance / test matrix / 32-bit evaluation / PE acceptance / new environment |
-| [`docs/12-相对优势与竞品对比`](docs/12-相对优势与竞品对比.md) | Where we win and lose against similar tools (incl. talking points for customers, and a section on Image for Windows) |
-| [`docs/13-开源同类调研（Clonezilla-Rescuezilla-FOG）`](docs/13-开源同类调研（Clonezilla-Rescuezilla-FOG）.md) | Research on open-source peers (Clonezilla / Rescuezilla / FOG) |
-| [`docs/14-成熟技术借鉴（可靠性机制调研）`](docs/14-成熟技术借鉴（可靠性机制调研）.md) | Mature reliability mechanisms (Windows `recoverysequence`, Android A/B, RAUC…) — which ones we already use, which we should adopt |
-| [`AGENTS.md`](AGENTS.md) | Operator manual: §0 five red lines, §7 boot SOP, **§13 pitfall register (PIT-001~117)**, §18 i18n discipline |
-| [`PLAN.md`](PLAN.md) | Roadmap, version-number rules, open decisions |
-| [`docs/26-公开前准备与1.0观察期`](docs/26-公开前准备与1.0观察期.md) | Release gates, 7-day observation, 1.0 regression matrix |
-| [`docs/27-质量检查报告（0.9.10）`](docs/27-质量检查报告（0.9.10）.md) | Static analysis, ShellCheck, remaining risks, next steps |
-| [`SECURITY.md`](SECURITY.md) / [`CONTRIBUTING.md`](CONTRIBUTING.md) | Security reporting, build and contribution rules |
-| [`LICENSE`](LICENSE) / [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt) | MIT for our own code; third-party list, license texts and source provenance |
+- Onboarding / handover: [`docs/11-接手指南（读我优先）`](docs/11-接手指南（读我优先）.md)
+- Build and release: [`AGENTS.md`](AGENTS.md)
+- Own code: **MIT**, see [`LICENSE`](LICENSE). Third-party notices: [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt)
