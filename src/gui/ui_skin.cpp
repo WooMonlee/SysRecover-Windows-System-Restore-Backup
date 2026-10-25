@@ -412,7 +412,7 @@ bool CGlyphCheckBoxUI::DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopCo
         } else {
             int tw = TextW(hDC, txt, 13);
             wchar_t s[2] = {let, 0};
-            const int lx = tx + tw + 4;
+            const int lx = tx + tw;
             TextAt(hDC, s, lx, by, 13, lc);
             const int lw = TextW(hDC, s, 13);
             if (lw > 0)
@@ -623,9 +623,9 @@ static bool DrawShortcutGroup(HDC hDC, const RECT& rc, const wchar_t* text,
     const wchar_t one[2] = {let, 0};
     const int w1 = TextW(hDC, text, 13);
     const int w2 = TextW(hDC, one, 13);
-    const int x0 = rc.left + ((rc.right - rc.left) - (w1 + 4 + w2)) / 2;
+    const int x0 = rc.left + ((rc.right - rc.left) - (w1 + w2)) / 2;
     TextAt(hDC, text, x0, by, 13, C_TEXT);
-    const int lx = x0 + w1 + 4;
+    const int lx = x0 + w1;
     TextAt(hDC, one, lx, by, 13, C_SECOND);
     SolidRect(hDC, {lx, by + 2, lx + w2, by + 3}, C_SECOND);
     return true;
@@ -867,7 +867,7 @@ bool CSkinButtonUI::DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopContr
                 SolidRect(hDC, {px0, by + 2, px0 + w1, by + 3}, lc);
         } else {
             wchar_t s[2] = {let, 0};
-            const int gap = 4;
+            const int gap = 0;
             int tw = TextW(hDC, txt, m_px, m_bold);
             int lw = TextW(hDC, s, m_px, m_bold);
             int x = rc.left + ((rc.right - rc.left) - (tw + gap + lw)) / 2;

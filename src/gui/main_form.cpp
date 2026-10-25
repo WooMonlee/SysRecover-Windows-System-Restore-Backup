@@ -2314,10 +2314,10 @@ void CMainForm::ApplyModeUi() {
         //   菜单 596..684。
         Pos(_T("Silent"),        248, 302, 330, 326);
         Pos(_T("Universal"),     336, 302, 398, 326);
-        Pos(_T("FixBootBtn"),    455, 296, 525, 329);
+        Pos(_T("FixBootBtn"),    455, 300, 525, 333);
         Pos(_T("LogBtn"),        404, 296, 449, 329);
-        Pos(_T("RepairBootBtn"), 621, 296, 705, 329);
-        Pos(_T("BootMenuBtn"),   531, 296, 615, 329);
+        Pos(_T("RepairBootBtn"), 621, 300, 705, 333);
+        Pos(_T("BootMenuBtn"),   531, 300, 615, 333);
         Pos(_T("FormatLabel"),   350, 302, 388, 326);
         Pos(_T("FormatBox"),     388, 296, 510, 329);
     }
