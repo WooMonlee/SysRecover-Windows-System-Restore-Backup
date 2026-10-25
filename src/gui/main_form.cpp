@@ -2286,7 +2286,7 @@ void CMainForm::ApplyModeUi() {
         //   静默 248..340 / ESP 388..510 / CPU 下拉 530..612 / 菜单 618..706
         Pos(_T("Silent"),        248, 302, 330, 326);
         Pos(_T("FormatBox"),     639, 77, 710, 115);   // 第一步：类型下拉
-        Pos(_T("EspChk"),        388, 300, 510, 333);  // 第三步：ESP 勾选
+        Pos(_T("EspChk"),        388, 298, 510, 331);  // 第三步：ESP 勾选
         // 注：状态栏在空闲时显示**当前模式说明**（见本函数末尾），任务执行中
         // 显示进度文字；进度条只在跑进度时出现（ShowProgress）。
     } else {
@@ -2314,10 +2314,10 @@ void CMainForm::ApplyModeUi() {
         //   菜单 596..684。
         Pos(_T("Silent"),        248, 302, 330, 326);
         Pos(_T("Universal"),     336, 302, 398, 326);
-        Pos(_T("FixBootBtn"),    471, 300, 541, 333);
-        Pos(_T("LogBtn"),        404, 300, 449, 333);
-        Pos(_T("RepairBootBtn"), 637, 300, 721, 333);
-        Pos(_T("BootMenuBtn"),   547, 300, 631, 333);
+        Pos(_T("FixBootBtn"),    471, 298, 541, 331);
+        Pos(_T("LogBtn"),        404, 298, 449, 331);
+        Pos(_T("RepairBootBtn"), 637, 298, 721, 331);
+        Pos(_T("BootMenuBtn"),   547, 298, 631, 331);
         Pos(_T("FormatLabel"),   350, 302, 388, 326);
         Pos(_T("FormatBox"),     388, 296, 510, 329);
     }
