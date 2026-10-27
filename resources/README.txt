@@ -21,6 +21,10 @@
   · 热备份（备份正在使用的系统）会自动启动 Windows「卷影复制服务」，完成后自动关闭；
     若该服务被安全软件禁用，程序会给出处理提示，照提示改回「手动」再备份即可。
   · 支持：BIOS/MBR、UEFI/GPT、Secure Boot 开/关；Windows 7 / 10 / 11 / WinPE。
+  · 纯 x64 PE（例如 NewBee 20210523）没有 WOW64：请直接运行根目录
+    SysRecoverUI.exe（它是 x64 总入口，带图标，调用 x64\SysRecoverUI.exe）。
+    该 PE 也没有 dism.exe，无法做异机驱动注入；异机还原请用带 DISM 的完整 PE/Windows。
+  · 32 位 Windows 请运行 SysRecoverUI_x86.exe（或 CLI 的 SysRecover_x86.exe）。
   · 不支持 Windows 2003 / XP / Vista 及更早系统。
 
 四、出问题怎么办
@@ -29,8 +33,9 @@
   · 若还原没成功、开机又回到原系统，先看 logs\ 里最新的日志文件。
 
 五、目录说明
-  SysRecover.exe / SysRecoverUI.exe  入口（自动按系统位数选 x86/x64）
-  x64\                               64 位程序与依赖
+  SysRecover.exe / SysRecoverUI.exe  x64 总入口（带图标，调用 x64\ 下的程序）
+  SysRecover_x86.exe / SysRecoverUI_x86.exe  32 位 Windows 兼容入口
+  x64\                               64 位真程序与依赖
   bootfiles\                         内置救援层（还原时使用）
   skin\  resources\                  界面资源
   libwim-15.dll  api-ms-win-*.dll    运行库（请勿删除）

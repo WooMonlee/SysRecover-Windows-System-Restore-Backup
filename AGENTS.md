@@ -1,4 +1,4 @@
-> ⚠️ **当前版本 0.9.32**。公开前准备、发布闸门与 1.0 观察期见 [`docs/26`](docs/26-公开前准备与1.0观察期.md)；PIT 是历史坑位记录，不是发布阻塞清单。
+> ⚠️ **当前版本 0.9.39**。公开前准备、发布闸门与 1.0 观察期见 [`docs/26`](docs/26-公开前准备与1.0观察期.md)；PIT 是历史坑位记录，不是发布阻塞清单。
 
 # AGENTS.md - SysRecover（一键还原，C++ 重写）开发指南
 
@@ -1178,6 +1178,83 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **根因**：`third_party/duilib-master/DuiLib/Control/UICombo.cpp::CComboUI::DoEvent` 的 `switch(event.chKey)` 每个 `case` 都**没有 `break`**：`VK_UP` 执行后会继续贯穿 `VK_DOWN`/`VK_PRIOR`/`VK_NEXT`/`VK_HOME`/`VK_END`，最终由 `VK_END` 选中 `GetCount()-1`；`VK_F4` 也会贯穿改选项。
   · **修复**：每个 `case` 后补 `break;`（`VK_F4` 打开后不再改选择），保留 `CComboWnd` 的 ESC/Enter 处理；`CPartitionComboUI` 继承同一基类，自动受益。这是第三方补丁，注释已写在源码中，升级 Duilib 时必须复核。
   · **验证**：`make check` / `make package` / `dist-check` 绿；GUI 人工/自动化 keyboard 冒烟待执行（鼠标路径不受影响）。
+
+- PIT-173 **用户 2026-10-26 四项实测：①异机还原把 Win10 判成 6.2 ②新分区后 ESP 找不到 ③部分镜像“缺少 ntoskrnl.exe” ④分区向导无边框**（`0.9.33`）：
+  · **①/③ 版本探测（真根因）**：`ntoskrnl.exe` / `winload.exe` 的 `VS_FIXEDFILEINFO.dwFileVersionMS` 在 Win10 仍是兼容版本 **6.2**，真正的 `10.0.19041` 在 `StringFileInfo\...\FileVersion` 字符串里；旧 `ProbeImageOs` 读 fixed info → 所有 Win10 都被误判 6.2。**修复**：优先解析 `StringFileInfo` 的 `FileVersion`/`ProductVersion`（多语言翻译表），失败才回退 fixed info；同时取 `ntoskrnl` + `winload`，任一个可读即可判版本，单文件提取失败再分别补取（解决“镜像内缺少 ntoskrnl.exe”）。版本日志打印两边与最终选择。
+  · **① 附带**：`PeMachineIs64` 原来把整个文件读入内存且设 8MB 上限，`ntoskrnl` 10.8MB → 永远判 x86；改为只读 DOS/NT 文件头，Win10 镜像现在正确识别 `10.0 x64`。
+  · **② ESP**：新分区/刚格式化的 ESP 常无盘符，`FindFirstVolume` 的真实卷名与 `GUID` 可能暂时不同步；`PartitionInfo` 新增 `volumeName`，`AcquireEspRoot` 优先用它，并加 3 次重试（300/700ms）。`MountEspByGuid` 先走 Win32 `SetVolumeMountPointW`（精简 PE 可能没有 `mountvol.exe`），失败才回退 `mountvol`；`UnmountEsp` 同理用 `DeleteVolumeMountPointW`。失败时把 `blog` 写进主日志（此前只拼进用户提示）。
+  · **④ 边框**：分区向导是纯 Win32 窗口，在部分 PE/主题下标题边框不可见；`WM_PAINT` 在客户区边缘画 1px 灰色 `FrameRect`。
+  · **验证**：`make check` **58 用例 / 459 断言** + i18n **586/586** + docs/widths/shell/config/layers/secrets PASS；实际 Win10 ESD 日志 `ntoskrnl=10.0.19041 winload=10.0.19041 -> 10.0.19041 ... x64`；构造只含 `winload.exe` 的 WIM → `ntoskrnl=unknown winload=10.0.19041` 仍通过（不再报缺少 ntoskrnl）；GPT 新分区 + ESP 无盘符的就地还原实测成功；`make package` 双架构。🚧 待用户原 PE 复测 ESP 与分区向导外观。
+
+- PIT-174 **用户 2026-10-26 三项：①还原确认框矮 ②异机注入阶段 100% 后长时间无反馈 ③NewBee PE 无法启动**（`0.9.34`）：
+  · **① 确认框**：`CConfirmDlg` 新增 `extraHeight`（仅还原确认传 40px；内容/按钮文案不变，按钮整体下移）。`Ask2` 就地还原、`Ask3` 需重启两条路径都加高；其他确认框保持原尺寸。
+  · **② 异机注入进度**：`PrepareUniversal` 新增 `ProgressFn`，依次上报 `universal-start / universal-inbox / universal-inbox-done / universal-drivers / universal-done`；GUI 在主进度 100% 后显示独立小进度条 `PostProgress`（每 120ms 循环），状态栏显示“正在启用内置存储驱动 / 正在注入驱动包 / 驱动注入完成”，不再像死机。`ProgressUpdate("restore",…)` 同步写外部进度。
+   · **③ NewBee PE 真因**：`C:\PE20210523NewBee.iso` 的 `boot.wim` 是 **Win10 19042 x64、没有 SysWOW64/WOW64**；发布包根目录 `SysRecoverUI.exe` 是 32 位启动器，在这种纯 x64 PE 里**加载阶段就失败**，根本走不到自举 `x64\SysRecoverUI.exe`。应直接运行 **`x64\SysRecoverUI.exe`**（CLI 用 `x64\SysRecover.exe`；PIT-175 已改为根目录 x64 总入口，删除 `Start-x64.cmd`）。另该 PE 没有 `dism.exe`（异机注入不可用）、`mountvol.exe`（已由 Win32 `SetVolumeMountPointW` 兜底）、`bcdedit.exe`（`VerifyEspBcd` 缺工具时改为文件级校验，不再误判）。已在 `resources/README.txt` 写明 PE x64 入口与 DISM 限制。
+  · **验证**：`make check`（58/459 + i18n **592** + docs/widths/shell/config/layers/secrets PASS）；`make package` 双架构；确认框/小进度条外观与 NewBee 原 PE 待用户复测。
+
+- PIT-175 **发布入口重构：根目录 x64 带图标总入口 + `*_x86.exe` 兼容入口；删除 `Start-x64.cmd`**（2026-10-26，用户规格，`0.9.35`）：
+  · **背景**：纯 x64 PE（NewBee 等无 WOW64）无法加载 32 位根启动器，之前的 `Start-x64.cmd` 仍让用户自己选，体验差。
+  · **新布局**：根目录 `SysRecoverUI.exe` / `SysRecover.exe` = **x64 小启动器**（GUI 带品牌图标、提权清单），分别调用 `x64\SysRecoverUI.exe` / `x64\SysRecover.exe`；32 位 Windows 用同目录 `SysRecoverUI_x86.exe` / `SysRecover_x86.exe`。x64 真程序仍在 `x64\`，共享 `skin/lang/bootfiles/Drivers` 在根。
+  · **实现**：`src/launcher/launcher.cpp` + 两个 `.rc`；`Makefile` 的 `ARCH=x86` 产物改为 `*_x86.exe`，新增 `launchers` 目标并挂到 `package`；删除 `resources/Start-x64.cmd` 及打包拷贝。
+  · **验证**：根 `SysRecover.exe version` 成功调用 x64 CLI；根 `SysRecoverUI.exe` 启动后子进程为 `x64\SysRecoverUI.exe`；`make check` 58/459 + i18n 592；`make package` 双架构。🚧 待真机/PE 复测 x64 总入口与 x86 兼容入口。
+
+- PIT-176 **还原确认框按钮被裁：固定 +40px 只下移按钮、窗口高度没有同步；改为按文字行数自适应**（2026-10-26，`0.9.36`）：
+  · **现象**：NewBee/10586 PE 的三行确认框，第三行文字与按钮间空出约三行，按钮只露上边（`1111.png`）。
+  · **根因**：`m_extraHeight=40` 只加在按钮 `y` 上，`RunModal` 的窗口高度/`InitWindow` 没有同一套几何；窗口底部把按钮裁掉。
+  · **修复**：移除固定 40px；统一用 `MessageBottom(lines) / ButtonTop(lines) / WindowHeight(lines)`：三行 196、四行 218、五行 240、六行 262；窗口高度永远 = 按钮底部 + 18px。所有确认框（Ask2/Ask3/Ask4）共用同一几何。
+  · **验证**：`make check` / `make package`；三行确认框应有 18px 文字-按钮间距且按钮完整可见；🚧 待真实 PE 截图复测。
+
+- PIT-177 **PE 10586 新分区 GPT 仍报“找不到 ESP”：`PartitionInfo.letter` 为空，按卷标/大小找已有 ESP 盘符；support 补收程序目录 logs**（2026-10-26，`0.9.37`）：
+  · **日志证据**：0.9.36 的 `drive-map` 显示 `p1 letter=- label=[ESP]`，但用户在 Explorer 里看到 ESP 有 E:；`list` 同样无盘符。说明 PE 的卷 ↔ 分区 extent 映射丢失/延迟，`FindEspPartition` 找到了 ESP，但 `esp.letter` 为空；`MountEspByGuid` 的卷 GUID 路径在该 PE 也没成功。support 包里没有主日志（只有 dism/history），因为 GUI/CLI 日志根可能不同。
+  · **修复**：`AcquireEspRoot` 新增 ②c `FindEspDriveByLabel` —— 扫 D..Z 的已有盘符，只接受 **卷标 `ESP` + FAT/FAT32 + 总大小与目标 ESP 分区一致（±1MB）** 的卷，直接使用其根目录。它在 `MountEspByGuid` 失败后兜底，不会误选 NTFS 数据盘。
+  · **support**：`BuildSupportBundle` 额外收 `<程序目录>\logs`（前缀 `app-logs`），覆盖 GUI 与 CLI 日志根不一致导致主日志缺失。
+  · **验证**：`make check` / `make package`；🚧 待用户在 PE10586 用 0.9.37 复测新分区 GPT 的 ESP 修复；若仍失败，日志会多出 `ESP via label/size fallback` 或完整 `ESP acquire log`。
+
+- PIT-178 **停止猜 ESP：独立 `ESP-diag.txt` 诊断（不依赖主日志）+ 每个候选盘符/卷/挂载点全量记录**（2026-10-26，`0.9.38`）：
+  · **背景**：0.9.37 的 label/size 兜底仍失败；support 包又缺主日志，无法确认 `FindEspPartition`/`letter`/卷标/大小/挂载失败点。用户明确要求先强化日志，不再猜。
+  · **实现**：`ops.cpp` 新增 `EspDiagLine`/`EspDiagVolumes`，直接写 `<日志根>\logs\ESP-diag.txt` **和** `<程序目录>\logs\ESP-diag.txt`（不依赖 `LogInfo` 主日志，support 的 logs 树必收）。每次 `AcquireEspRoot` 记录：attempt、targetDisk、全部分区、`FindEspPartition` 的 matched/letter/volumeName/guid/offset/size、`mountvol /s` 结果、盘号校验、existing letter、volume GUID、label/size fallback、FAT/EFI fallback、最终失败。
+  · **盘符清单**：`EspDiagVolumes` 记录 C..Z 的 `type/label/fs/total/volume GUID`，可直接看出 E: 到底是什么卷、是否 ESP/FAT、大小是否等于 p1；`FindEspDriveByLabel` 的候选筛选也走同一份数据。
+  · **support**：`BuildSupportBundle` 继续额外收 `<程序目录>\logs`（PIT-177），因此即使主日志缺失，`ESP-diag.txt` 也会进包。
+  · **验证**：`make check` / `make package`；🚧 待 PE10586 用 0.9.38 复现后导出日志，按 `ESP-diag.txt` 定因，不再改逻辑猜测。
+
+- PIT-179 **ESP-diag 定因：PE10586 的 E: 卷总大小比 p1 分区小 4MB，0.9.38 的 1MB 容差把正确 ESP 排除；放宽到 16MB**（2026-10-27，`0.9.39`）：
+  · **日志证据**：`ESP-diag.txt` 显示 `E: type=3 label=ESP fs=FAT32 total=310378496 volume=`，p1 `offset=1048576 size=314572800`；差 **4,194,304 字节（4MB）**。`FindEspPartition matched=1`，但 `letter`/`volumeName` 为空；label/size fallback `found nothing` 正是因为 4MB > 1MB 容差。
+  · **修复**：`FindEspDriveByLabel` 改为绝对差 ≤ **16MB**，仍要求卷标 `ESP` + FAT/FAT32；说明 FAT32/分区保留区会使 `GetDiskFreeSpaceEx` 的 total 与分区长度不完全相等。`E: volume=` 为空也不影响（直接用盘符根）。
+  · **验证**：`make check` / `make package`；🚧 待 PE10586 用 0.9.39 复测：日志应出现 `ESP via label/size fallback at E:\`，随后 bcdboot 成功。
+
+- PIT-180 **用户六项界面改动：还原模式第三行重构（打包日志 / 安装到启动 / 「更多功能>>」下拉）+ 备份模式文案与限速顺序 + 分区向导进度**（2026-10-27，`0.9.40`）：
+  · **① 还原模式第三行**（`skin/main.xml` + `main_form.cpp::ApplyModeUi`）：`日志` → **`打包日志`**（x420..465）；`修复引导` 收进「更多功能>>」；`安装菜单` → **`安装到启动`**（x539..623，**只安装**：已安装时置灰 + tooltip 指引到「更多功能>>」清除，删除入口唯一化）；新增 **`更多功能>>`**（x625..709，`SkinButton` + 原生 `TrackPopupMenu`，四项：`使用异机还原`[带 `MF_CHECKED`] / `修复引导` / `清除启动中还原菜单`[未安装时 `MF_GRAYED`] / `镜像检查（完整校验）`[镜像未解析时 `MF_GRAYED`]）。控件是顶层 `float` → `GetPos()` 已是客户区坐标，`ClientToScreen` 后弹出。
+  · **② 异机勾选框移入菜单**：控件仍是隐藏的 `Universal`（`GlyphCheck` 派生 `COptionUI`），菜单项状态读 `IsSelected()`、切换调 **`Selected(on, false)`**；切换后状态栏提示 + `LogInfo("GUI universal: on|off")`。
+  · **③ 镜像检查**：接 `WimEngine::Verify`（全量 `wimlib_verify_wim`，与 CLI `verify` 同源；0=成功），先弹确认框讲清"几十 GB 可能十几分钟"（默认取消），完成消息 **`WM_VERIFY_DONE = WM_APP+25`**，失败按 CLI `CmdVerify` 的 rc=5 处理。
+  · **④ 备份模式**：`ESP` → **`同时备份ESP`**；CPU 限制顺序改为 **`75 / 50 / 25`**（`不限速` 不变）。
+  · **⑤ 新硬盘分区向导进度**（`partinit.cpp/h`）：`ApplyPartInitPlan` 新增阶段回调（`letters` 5% / `script` 15% / `diskpart` 25→70% / `bootsect` 75% / `verify` 90% / `done` 100%），GUI 经既有 `WM_PROGRESS_UPDATE` 显示，`StageCn` 翻成中文；回调返回 `void`（不参与取消）。
+  · **⚠️ 坑 1（编译门禁）**：`COptionUI` **没有 `SetSelected`**，状态切换接口是 `Selected(bool bSelected, bool bTriggerEvent=true)` —— `make check` 只链纯逻辑 TU、**不编译 GUI**，此错只有 `make package` 才抓得到（再次验证 PIT-153/154 的"最终判据必须是 `make package`"）。
+  · **⚠️ 坑 2（菜单自动化验证）**：`TrackPopupMenu` 的菜单窗口（类名 `#32768`）**不吃 `PostMessage` 的鼠标按键**（不产生高亮 → 抬起只关闭菜单、不触发命令）；键盘 `WM_KEYDOWN` 同样无效。**可靠做法**：`GetWindowRect` 取菜单屏幕坐标 → `SetCursorPos` + `mouse_event(LEFTDOWN/LEFTUP)` 真实输入。实测两轮 `GUI universal: on` / `off`。
+  · **⚠️ 坑 3（确认框参数顺序）**：`CConfirmDlg::Ask2(hwnd, title, message, leftText, rightText, defaultIsRight)` —— 新增调用点别把 title/message 写反（`StartVerifyImage` 即按此顺序）。
+  · **验证**：`make check` **58 用例/459 断言** + `check-i18n` **612/612** + widths（1 既有 WARN）+ shell/docs/config/layers/secrets 全 PASS；`make package` 双架构 + `make sha256`（349 文件）+ `make dist-check` PASS + `make smoke-cli` 19 项 PASS；GUI 截图确认两模式第三行文案/顺序（还原：静默 / 打包日志 / 安装到启动 / 更多功能>>；备份：静默 / 同时备份ESP / 不限速），「更多功能>>」菜单弹出与切换实测通过。🚧 待实测：新硬盘分区向导进度条逐步走动（需空盘 VM）；`镜像检查` 对真实大镜像的进度与失败提示；`安装到启动` 已安装置灰与「清除启动中还原菜单」联动。
+
+- PIT-181 **用户 2026-10-27 四项需求：`更多功能M>>` / 独立「镜像检查」程序 / 分区向导分步提示 / 启动项写后读回校验（防安全软件静默拦截）**（`0.9.41`）：
+  · **① 「更多功能>>M」→「更多功能M>>」**：`skin/main.xml` 的 `MoreBtn` 直接改文案并保留 `shortcut="M"`；关键是 `ui_skin.cpp::ShortcutHit` 原来在**词内命中**时会把快捷键字母追加到词尾（"更多功能>>" + M = "更多功能>>M"），新增 **`ShortcutPrefixW`**：词内命中只画下划线、不追加尾随字母（词尾/词首命中仍追加），两条路径共用同一词条文本。**纪律**：皮肤文案里已经写了字母的（如 `更多功能M>>`）不能再让渲染层追加一次。
+  · **② 独立「镜像检查」程序 `SysRecoverCheck.exe`**（`src/tools/wimcheck_main.cpp`，console）：镜像路径参数（多个/拖入均支持）/ `--quick` 只快检 + 列子镜像 / `--help` / `--lang`；**无参且独占控制台**（`GetConsoleProcessList()==1`）时弹 `GetOpenFileNameW`（`OFN_ALLOWMULTISELECT`，64KB 缓冲）→ 双击可用、拖入可用、脚本可用（管道场景无参直接给用法 rc=2，不会卡住等对话框）。检查链 = `WimEngine::Probe` 快检（PIT-057 半截镜像防护）+ `ListImages` 列子镜像 + `Verify` 全量带进度；退出码 **0/1/2/5/6**（Ctrl+C → 6），末尾独占控制台才 `暂停`。**实现纪律**：输出统一走窄串 UTF-8（`T()` = `Tr` + `ToUtf8`，`printf("%s")`），彻底避开 PIT-007 的 `wprintf %s` 坑；`SetConsoleOutputCP(CP_UTF8)`；**不嵌提权清单、不带图标、不装崩溃处理器、不调 `ReexecX64IfNeeded`**（纯只读工具，普通权限即可跑）。产物三处：`dist/x64/SysRecoverCheck.exe`（`CHECK_NAME`）、根 `dist/SysRecoverCheck.exe`（`launcher.cpp` 的 `ZJ_LAUNCH_CHECK` 分支：console + wait=true，**不带 `.rc`**）、`dist/SysRecoverCheck_x86.exe`。Makefile 目标名必须叫 **`wimcheck`**（`check` 已被门禁占用），链接补 **`-lcomdlg32`**（`GetOpenFileNameW`）。
+  · **③ 分区向导分步提示**：原实现把整段 diskpart 脚本一次丢给 `diskpart`（几十秒无任何反馈）。改为 `src/disk/partscript.{h,cpp}` 纯逻辑生成器 —— `BuildDiskpartSteps` 按「清表 / 转换 / ESP / MSR / 系统盘 / 数据盘」拆成**多次独立 diskpart 调用**，`JoinDiskpartSteps` 供单测拼回校验；`partinit.cpp` 改成循环 `WriteAsciiFile` → `RunProcess` → rc 检查，**每步之前** `report(pct, stage)`（12..82 均分），再 bootsect 86 / verify 90 / done 100；日志 `partinit: step <stage> rc=N`。GUI 经既有 `WM_PROGRESS_UPDATE` 显示（`StageCn` 补 6 个新阶段中文）。
+  · **④ 启动项写后读回校验（客户实测：装了金山毒霸/360 的机器上两种还原路径都在重启后进原系统、看不到启动选单）**：根因是 `bcdedit` 的**假成功**（返回 0 但值没落盘），旧代码完全信任退出码。现在所有启动项写入都**写后读回**：
+    - `bcd.h` 新增纯逻辑 **`ParseBootsequence`**（只认 `bootsequence` 这个 **ASCII 元素名**、大小写不敏感、值必须是 38 字符 `{...}`，与 `ParseBootmgrTimeout` 的"不依赖标签语言"同款纪律）与 **`SameGuidAscii`**（GUID 比较大小写不敏感）。
+    - `BcdSetBootsequence(guid, log)`：**两轮**「写 → 读回 → 比对」，失败日志 `bootsequence verify FAILED (wanted …, got …)`；`BcdSetBootmgrTimeout` 同样两轮读回；`BcdCreateBootsector` 末尾用 `BcdEntryExists` 复核（`entry verify ok` / `entry verify FAILED`）。
+    - `uefi.cpp::SetUefiBootNext`：两轮「`SetVarW` → `GetFirmwareEnvironmentVariableW(L"BootNext")` 比对」，日志 `BootNext = Boot%04X (verified)` / `verify FAILED`（固件变量同样会被安全软件拦）。bootapp 分支改调 `BcdSetBootsequence`。
+    - `ops.cpp` 新增 **`BootWriteBlockedHint()`**（返回 `std::string`：`Tr()` 窄重载返回 `const char*` UTF-8，`err` 是 `std::string`），三处调用点（安装菜单 timeout / 暂存单次启动 / 返回旧系统单次启动）失败时**追加该提示并中止**（不再"写失败也照样重启进原系统"）；成功时 `LogInfo("bootsequence verified: " + slog)`。
+  · **实测（本机真实 BCD，写→读→还原，零残留）**：`bcdedit /enum {bootmgr}` 回显形态 = `bootsequence            {GUID}`（38 字符 ✓）；**GUID 回显被 bcdedit 转成小写**（我们写 `…CBA987654321`，回显 `…cba987654321`）→ 正好验证 `SameGuidAscii` 大小写不敏感的必要性；另实测 **`{current}` 别名会原样回显**（不展开成 GUID）—— 我们只写显式 GUID，不受影响，但任何"写别名再比对 GUID"的新写法都会踩这个坑。
+  · **门禁**：`make check` **61 用例/532 断言**（新增 `bcd_parse_bootsequence` 11 断言 + `same_guid_ascii` 7 断言 + `part_script_steps`）+ `check-i18n` **650/650**（新增 3 键：安全软件提示、单次启动失败、检查程序串）+ docs/宽度/shell PASS；`make package` 双架构 + `make sha256`（**352** 文件）+ `dist-check` PASS；**`smoke-cli` 扩到 24 项**（新增第二个参数 = 检查程序：`--help` / 未知选项 / 无参 / 不存在文件 / `--lang en help`）。实测：`--quick` rc=0（列 1 个子镜像）、全量校验 rc=0（进度行「校验镜像」中文生效、673 MB/s）、不存在文件 rc=1、`--badopt` rc=2、根启动器透传 rc、`SysRecoverCheck_x86.exe --lang en` 英文正确；输出落盘用 Python 复核 = **合法 UTF-8、零替换字符**（PowerShell 5.1 控制台里 `。`/`：` 显示成 `?` 是 PS 解码假象，**不是程序问题**）。
+  · **⚠️ 坑（本轮）**：`src/disk/partscript.cpp` 只加进了 `TEST_UNITS` 没进 `APP_SRC` → `make check` 全绿（单测自己链了）而 `make package` 链接报 `undefined reference to BuildDiskpartSteps/JoinDiskpartSteps`。**再次确认：`make check` 不编译 `ops.o`/GUI/`partinit.cpp`/`src/launcher`/`src/tools`，最终判据必须是 `make package`**（PIT-153/154/180 同款）。另：`tools/check-dist.py` 的 `REQUIRED` 已补三个 check exe；`tools/i18n-wrap.py` 的 `WRAP_FILES` 已加 `wimcheck_main.cpp`（PIT-109 教训：漏加会静默删词条）。
+  · 🚧 **待实测**：① 客户那台装流氓软件的机器（需求 4 的原始场景）——应看到「可能被安全软件…」提示并中止，而不是重启后进原系统；② `SysRecoverCheck.exe` 双击（弹多选文件框）与拖入镜像；③ 空盘 VM 里分区向导逐步进度 + 小容量磁盘规则。
+
+- PIT-182 **双击根目录 `SysRecoverCheck.exe` 不弹文件框、窗口一闪即关：启动器与子进程**共用**一个控制台 → `GetConsoleProcessList()`=2 → 子进程把自己当成"脚本调用"**（2026-10-27，`0.9.42`）：
+  · **现象**：直接跑 `dist\x64\SysRecoverCheck.exe`（双击/自建控制台）**正常**：新控制台 + 弹「选择要检查的系统镜像」`#32770`；但双击**根目录**的 `dist\SysRecoverCheck.exe`（x64 启动器）只看到控制台闪一下就没了 —— 既不弹框、也看不到任何输出。
+  · **根因**：`wimcheck_main.cpp::OwnConsole()` 用 `GetConsoleProcessList()==1` 判"这个控制台是我自己的"（决定**弹文件框**与**结束时等回车**）。根启动器是 `-mconsole` 程序，双击时**它先拿到**新控制台，再 `CreateProcessW` 拉起 `x64\SysRecoverCheck.exe`（**继承**同一控制台，这是 `CreateProcessW` 的默认语义）→ 进程数 = **2** → 子进程判"不是我的控制台" → 当成被脚本调用：无参时直接打用法 rc=2、跑完立即退出，控制台跟着启动器一起消失。**判据本身没错**（它要挡的正是"`make smoke-cli`/管道调用被暂停卡住"），错在启动器这种"其实是我自己的控制台、只是多了一个中间人"的情形。
+  · **修法（一句话交接，不猜）**：启动器在 `CreateProcessW` **之前**调 `MarkConsoleForChildIfOwned()` —— 仅当 ① 控制台进程数 == 1（确实是自己独占的）**且** ② 父进程不是自动化宿主 时，`SetEnvironmentVariableW("ZJ_CHECK_LAUNCHER","1")`（**环境变量随 CreateProcessW 自动继承**）；子进程 `OwnConsole()` 先认这个标记 → 照常弹框/等待。
+  · **为什么要判父进程（否则门禁会挂）**：本会话的 PowerShell / 计划任务 / `make smoke-cli` 都是"无控制台或独占控制台"的宿主 —— 若只判进程数，启动器会给子进程打标记 → `smoke-cli` 的 5 个检查程序用例**每次多等一次回车**（无人值守会一直挂着）。故新增 `StartedByAutomationHost()`：`CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS)` 找自己的 `th32ParentProcessID`，再按名字 `_wcsicmp` 比对名单 `cmd.exe / powershell.exe / pwsh.exe / python.exe / pythonw.exe / cscript.exe / wscript.exe / svchost.exe / services.exe`（计划任务走 `svchost.exe`，服务走 `services.exe`）。
+  · **验证（两条路径都要跑，缺一不可）**：① **自动化路径**：`& dist\SysRecoverCheck.exe --quick <img>` → rc=0 **0 秒**；无参 → rc=2 **0 秒**（`secs` 用 `Get-Date` 差值量，停在那儿等回车就会 >0）；`make smoke-cli` **24 项 PASS**。② **双击路径**：宿主 shell 里 `Start-Process` 的父进程是 `powershell.exe`（命中宿主名单，**永远测不出发弹框**）→ 必须用 **`& explorer.exe <exe>`** 让父进程变成 `explorer.exe`；实测 `processes=2`（pid=7536 parent=1504/**explorer**、pid=8384 parent=7536/**SysRecoverCheck**）→ 子进程窗口表里有 `460956|#32770|vis|选择要检查的系统镜像` → `PostMessage(WM_CLOSE)` → **`left after close=0`**（启动器与子进程都退出）。
+  · **门禁**：`make check` 61 用例/532 断言 + check-docs PASS；`make package` 双架构（`0.9.42`）+ `make sha256`（352 文件）+ `dist-check` + `smoke-cli` 24 项全绿。
+  · **教训**：① `CreateProcessW` 的**控制台继承**会让"子进程独占控制台"的判据失效 —— 跨进程传"这个控制台归你"这种**上下文**，用环境变量最省事（无需改命令行、无需 IPC、不会被参数解析吃掉）；② 判"是不是无人值守"**不能只看控制台进程数**，还要看**父进程是谁**（PowerShell 脚本里子进程同样独占控制台）；③ 自动化验证"双击行为"**必须换父进程**（`explorer.exe <exe>`），`Start-Process` 模拟不出来 —— 否则会得出"修完还是不弹框"的假阴性。
 
 ## 14. License 合规（SBOM，随版本更新）
 

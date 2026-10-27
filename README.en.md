@@ -47,6 +47,13 @@
 9. **Universal restore**:
    - Ships with common storage drivers (about 165MB in `Drivers`);
    - Not every machine is covered. Export drivers from the target machine, put them in `Drivers`, and the software injects them offline.
+   - You can also export them with built-in Windows 10/11 commands. On the target PC (or a working PC of the same model), open an elevated Command Prompt and run (replace `D:` with a USB drive or data disk, not a partition that will be formatted):
+     ```bat
+     mkdir D:\Drivers
+     dism /online /export-driver /destination:D:\Drivers
+     ```
+     or `pnputil /export-driver * D:\Drivers`. Merge the exported `Drivers` folder into the program's `Drivers\` folder; `.inf` files are found recursively.
+   - This exports third-party drivers only; Windows in-box drivers do not need exporting. If the target PC no longer boots, export from another working PC of the same model. Use OEM drivers locally; do not redistribute them.
 
 ## 2. What is no longer supported
 
@@ -116,6 +123,8 @@ SysRecover.exe restore --image D:\backup\win10.esd --disk 0 --part 3 --index 1 -
   - target is not in use (PE / non-system disk): restore in place without rebooting.
 - An image with an ESP sub-image (created with `--esp`) restores the ESP automatically.
 - Keep the image on a local partition; the rescue layer cannot access the network.
+
+> PE note: root `SysRecoverUI.exe` is the **x64 entry with icon** and launches `x64\SysRecoverUI.exe`; an x64-only PE (for example NewBee 20210523) can run it directly. On 32-bit Windows use `SysRecoverUI_x86.exe`. That PE also lacks `dism.exe`, so universal driver injection is unavailable; use a full PE/Windows with DISM.
 
 Exit codes:
 

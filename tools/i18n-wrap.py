@@ -63,6 +63,7 @@ WRAP_FILES = [
     "src/boot/uefi.cpp",
     "src/boot/grub.cpp",
     "src/wim/wim.cpp",
+    "src/tools/wimcheck_main.cpp",
 ]
 SKIN_FILES = ["skin/main.xml", "skin/confirm.xml", "skin/instance.xml"]
 

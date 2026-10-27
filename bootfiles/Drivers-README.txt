@@ -1,4 +1,4 @@
-﻿﻿SysRecover 异机还原 · 驱动包说明
+﻿SysRecover 异机还原 · 驱动包说明
 
 把驱动放在本文件所在目录（Drivers\）或其子目录里，「异机还原」会自动注入
 （仅支持 Windows 10/11）。只需 .inf / .sys / .cat，不要放 .exe 安装包。
@@ -18,14 +18,19 @@
 推荐来源（公开发布、可直接下载；省去自己收集驱动的工作量）
 ────────────────────────────────────────────────────────────
 1) 目标机原来的 Windows（最准确）
-   管理员命令提示符：
+   管理员命令提示符（Windows 10/11 自带，任选一条）：
      pnputil /export-driver * <U盘或数据盘>\Drivers
+     dism /online /export-driver /destination:<U盘或数据盘>\Drivers
    适用于“旧系统还能启动、只是要换盘/换机”的场景。
 
 2) Dell WinPE 11 驱动包（约 32MB，含 Intel RST、AMD RAID、LSI MegaRAID 等）
    https://www.dell.com/support/kbdoc/en-us/000211541/winpe-11-driver-pack
    （Win10 环境可用 000108642 的 WinPE 10 包，约 134MB）
    下载后是 CAB/EXE，用 7-Zip 解压，把解压出的目录整体放进 Drivers\ 即可。
+   说明：`Dell-WinPE11` 是 Dell 官方包的来源目录名；WinPE 是它的用途/目标环境，
+   不是“只能在 PE 里运行”。其中的 .inf / .sys / .cat 是标准 Windows 驱动，
+   本软件只把它作为异机还原的启动关键驱动兜底；普通 Windows 装好后仍建议
+   安装厂商对应机型的完整驱动。Win10 目标优先用目标机导出或 WinPE 10 包。
 
 3) HP WinPE 驱动包
    https://ftp.ext.hp.com/pub/caps-softpaq/cmit/HP_WinPE_DriverPack.html

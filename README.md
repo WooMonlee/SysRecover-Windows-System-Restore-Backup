@@ -47,6 +47,13 @@
 9. **支持异机还原**：
    - 自带最常用硬件的驱动（约 165MB，位于 `Drivers`）；
    - 无法覆盖所有机型。用户可在自己的电脑上导出驱动，放进 `Drivers` 文件夹，软件会离线注入。
+   - 也可以用 Windows 10/11 自带命令自己导出：在目标电脑（或同型号正常机）上以管理员身份打开命令提示符，执行（`D:` 换成 U 盘或数据盘，别放会被还原格式化的分区）：
+     ```bat
+     mkdir D:\Drivers
+     dism /online /export-driver /destination:D:\Drivers
+     ```
+     或 `pnputil /export-driver * D:\Drivers`。然后把导出的 `Drivers` 文件夹内容合并到程序目录的 `Drivers\`；软件会递归查找其中的 `.inf`。
+   - 导出的只是本机第三方驱动，Windows 自带驱动无需导出；目标机已无法启动时，可从同型号正常机导出。OEM 驱动请只在本机使用，不要公开分发。
 
 ## 二、失去的功能
 
@@ -116,6 +123,8 @@ SysRecover.exe restore --image D:\backup\win10.esd --disk 0 --part 3 --index 1 -
   - 目标未被占用（PE 里 / 非系统盘）→ 就地还原，不重启。
 - 镜像带 ESP 子镜像（备份时 `--esp`）会自动一并恢复
 - 镜像必须放在本地分区，救援层访问不到网络
+
+> PE 注意：根目录 `SysRecoverUI.exe` 是 **x64 总入口（带图标）**，会调用 `x64\SysRecoverUI.exe`；纯 x64 PE（例如 NewBee 20210523）可以直接运行。32 位 Windows 请用 `SysRecoverUI_x86.exe`。该 PE 没有 `dism.exe`，异机驱动注入不可用，请改用带 DISM 的完整 PE/Windows。
 
 退出码：
 
