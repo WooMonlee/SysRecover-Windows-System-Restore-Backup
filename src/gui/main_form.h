@@ -66,6 +66,9 @@ using namespace DuiLib;
 #define WM_PART_INIT_DONE  (WM_APP + 23)
 // 「修复引导」worker 完成：wParam=rc；说明在 m_fixMsg。
 #define WM_FIXBOOT_DONE    (WM_APP + 24)
+// 「镜像检查」（完整校验，2026-10-27）worker 完成：wParam=rc(0=通过)；
+// 说明在 m_verifyMsg。放在「更多功能>>」菜单里（原「异机」勾选框位置）。
+#define WM_VERIFY_DONE     (WM_APP + 25)
 
 namespace sysrecover {
 struct PartitionInfo;
@@ -134,7 +137,16 @@ private:
     void SyncPathExtFromFormat();
     // 「限制CPU」下拉 → m_cpuCap；备份中改了会立即作用到正在跑的任务。
     void ApplyCpuCapFromUi();
-    void ToggleBootMenu();       // 「安装/删除启动还原」按钮（UI 线程：确认 → StartMenuToggle）
+    void ToggleBootMenu();       // 「安装到启动」按钮（UI 线程：确认 → StartMenuToggle）
+    // 「更多功能>>」下拉（2026-10-27 用户规格）：原「异机」勾选框、「修复引导」、
+    // 原「清除菜单」、新增「镜像检查」四个入口收进这里。用原生 TrackPopupMenu
+    // （与 ShowImagePickMenu 同款），不改皮肤结构。
+    void ShowMoreMenu();
+    // 清除启动中还原菜单（原 RepairBootBtn 的逻辑）：确认 → 异步删引导层 + 绑定契约。
+    void ClearBootMenuEntry();
+    // 镜像检查（完整校验）：worker 里跑 WimEngine::Verify，完成走 WM_VERIFY_DONE。
+    void StartVerifyImage();
+    void VerifyImageAsync();
     void StartMenuToggle(bool install);  // 异步入口（2026-10-18：不再 UI 线程同步跑）
     void MenuToggleAsync(bool install,
                          const sysrecover::RestoreRequest& req);  // worker 线程体
@@ -162,6 +174,8 @@ private:
     void SetProgress(int pct);
     // 进度条（+百分比）只在任务执行中显示；静止时整行状态栏让给状态文字（见 .cpp）。
     void ShowProgress(bool show);
+    // 异机驱动注入阶段：主进度已 100%，用独立小进度条做"仍在工作"提示。
+    void ShowPostProgress(bool show);
     void OnProgressUpdate(int pct, const std::wstring& stage);
     void OnTaskComplete(int rc);
     // 2026-10-20：新硬盘分区向导（第二步分区下拉为空时直接打开）与「修复引导」。
@@ -192,6 +206,7 @@ private:
     std::wstring m_initErr;
     std::string m_initLog;
     std::string m_fixMsg;
+    std::string m_verifyMsg;   // 镜像检查结果说明（worker 写、主线程读）
     std::vector<std::wstring> m_searchHits;  // 最近一次「搜索」结果（修改时间新→旧）
     bool m_pickGuard = false;   // 下拉选择菜单重入防护（EN_SETFOCUS → TrackPopupMenu）
 
@@ -226,6 +241,8 @@ private:
     std::chrono::steady_clock::time_point m_start{};
     std::wstring m_lastStage;  // WM_TIMER 刷新「已用」时复用
     std::wstring m_lastStatus; // 最近一条状态文字（进度条显隐后要按新宽度重新收放）
+    bool m_postBusy = false;   // 异机驱动注入阶段的小进度条正在跑
+    int  m_postPulse = 0;      // 小进度条的循环值（0..100）
     static constexpr int kProgressThrottleMs = 100;
     HWND m_tipHwnd = NULL;   // 自管 tooltip（Duilib TTM_ADDTOOL 失败，见 PIT-089）
     TOOLINFO m_tipInfo{};

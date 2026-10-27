@@ -34,14 +34,13 @@ std::wstring SizeText(unsigned long long bytes) {
     return b;
 }
 
+BOOL CALLBACK SetFontProc(HWND ch, LPARAM lp) {
+    SendMessageW(ch, WM_SETFONT, (WPARAM)lp, TRUE);
+    return TRUE;
+}
+
 void SetAllFont(Ctx* c, HWND hwnd) {
-    EnumChildWindows(
-        hwnd,
-        [](HWND ch, LPARAM lp) -> BOOL {
-            SendMessageW(ch, WM_SETFONT, (WPARAM)lp, TRUE);
-            return TRUE;
-        },
-        (LPARAM)c->font);
+    EnumChildWindows(hwnd, SetFontProc, (LPARAM)c->font);
 }
 
 DiskScheme SelectedScheme(Ctx* c) {
@@ -316,6 +315,18 @@ LRESULT CALLBACK Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_CLOSE:
             if (c) Finish(c, hwnd, false);
             return 0;
+        case WM_PAINT: {
+            // 0.9.33（用户 2026-10-26）：部分 PE/主题下标题窗框几乎看不见，
+            // 分区方案窗口与背景糊在一起。这里在客户区边缘补一圈灰色实线，
+            // 不依赖视觉样式/阴影。
+            PAINTSTRUCT ps;
+            HDC dc = BeginPaint(hwnd, &ps);
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            FrameRect(dc, &rc, (HBRUSH)GetStockObject(GRAY_BRUSH));
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
         case WM_DESTROY:
             if (c) {
                 c->done = true;

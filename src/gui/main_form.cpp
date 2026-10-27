@@ -414,6 +414,15 @@ LRESULT CMainForm::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             SetStatus(m_lastStage + Tr(L"    已用 ") + ElapsedText());
         return 0;
     }
+    if (msg == WM_TIMER && wParam == 3) {
+        if (m_postBusy) {
+            m_postPulse = (m_postPulse + 5) % 100;
+            CRoundProgressUI* p = static_cast<CRoundProgressUI*>(
+                m_PaintManager.FindControl(_T("PostProgress")));
+            if (p) p->SetValue(m_postPulse);
+        }
+        return 0;
+    }
     if (msg == WM_PROGRESS_UPDATE) {
         // 防御（PIT-096）：lParam 是 worker new 的 std::wstring*，正常永不为 0；
         // 为 0 = 消息撞车/异常投递，必须丢弃 —— 解引用空指针就是 2026-09-30
@@ -528,6 +537,32 @@ LRESULT CMainForm::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         UpdateMainAction();
         return 0;
     }
+    if (msg == WM_VERIFY_DONE) {
+        // 「镜像检查」worker 完成（2026-10-27）：wParam=rc(0=通过)。
+        m_busy = false;
+        KillTimer(m_hWnd, 1);
+        ShowProgress(false);
+        if (m_worker.joinable()) m_worker.join();
+        const int rc = (int)wParam;
+        if (m_cancel) {
+            SetStatus(Tr(L"镜像检查已取消"));
+            UpdateMainAction();
+            return 0;
+        }
+        if (rc == 0) {
+            SetStatus(Tr(L"镜像校验通过"));
+            MessageBoxW(m_hWnd, Tr(L"镜像校验通过：文件完整，可以放心还原。"),
+                        Tr(L"镜像检查"), MB_OK | MB_ICONINFORMATION);
+        } else {
+            SetStatus(Tr(L"镜像校验失败"));
+            std::wstring e = m_verifyMsg.empty() ? Tr(L"镜像校验失败，请打开日志查看详情。")
+                                                 : U2W(m_verifyMsg);
+            MessageBoxW(m_hWnd, e.c_str(), Tr(L"镜像检查"),
+                        MB_OK | MB_ICONERROR);
+        }
+        UpdateMainAction();
+        return 0;
+    }
     if (msg == WM_SR_QUERY_BUSY) {
         // 新实例问「你在忙吗」——忙则不让它关掉本进程（见 instance_dlg.cpp）。
         return m_busy ? 1 : 0;
@@ -596,9 +631,39 @@ static std::wstring StageCn(const std::wstring& s) {
     if (s.compare(0, 6, L"verify") == 0) return Tr(L"校验镜像");
     if (s.compare(0, 5, L"probe") == 0) return Tr(L"完整性检查");
     if (s.compare(0, 7, L"ea-scan") == 0) return Tr(L"文件属性检查");
+    // 异机还原（0.9.33）：apply 100% 后的驱动注入阶段，状态栏必须继续报活。
+    if (s.compare(0, 9, L"universal") == 0) {
+        if (s.find(L"inbox-done") != std::wstring::npos)
+            return Tr(L"内置驱动已启用");
+        if (s.find(L"inbox") != std::wstring::npos)
+            return Tr(L"正在启用内置存储驱动");
+        if (s.find(L"drivers") != std::wstring::npos)
+            return Tr(L"正在注入驱动包");
+        if (s.find(L"done") != std::wstring::npos)
+            return Tr(L"驱动注入完成");
+        return Tr(L"正在准备异机还原");
+    }
     // 引导层部署（2026-10-18）：ops 在 apply 后上报的收官阶段（暂存与菜单
     // 安装都经过；菜单安装的"无响应窗"正是发生在这里的 28MB 载荷写入）。
     if (s.compare(0, 4, L"boot") == 0) return Tr(L"写入引导文件");
+    // 新硬盘分区向导（2026-10-27 用户规格：每一步都要看得见，不能只写一句
+    // "正在创建分区"——diskpart 建分区+格式化能跑几十秒）。阶段名来自
+    // partscript.cpp：每一步**一次独立 diskpart 调用**，见 BuildDiskpartSteps。
+    // 状态栏可用宽度只有约 179px（进度条一出现就收窄），所以每条压到 6~8 字。
+    if (s.compare(0, 8, L"partinit") == 0) {
+        if (s.find(L"letters") != std::wstring::npos) return Tr(L"正在分配盘符");
+        if (s.find(L"script") != std::wstring::npos) return Tr(L"正在生成脚本");
+        if (s.find(L"clean") != std::wstring::npos) return Tr(L"正在清除旧分区");
+        if (s.find(L"convert") != std::wstring::npos) return Tr(L"正在转换分区表");
+        if (s.find(L"esp") != std::wstring::npos) return Tr(L"正在创建ESP");
+        if (s.find(L"msr") != std::wstring::npos) return Tr(L"正在创建MSR");
+        if (s.find(L"system") != std::wstring::npos) return Tr(L"正在创建系统盘");
+        if (s.find(L"data") != std::wstring::npos) return Tr(L"正在创建数据盘");
+        if (s.find(L"bootsect") != std::wstring::npos) return Tr(L"正在写入引导代码");
+        if (s.find(L"verify") != std::wstring::npos) return Tr(L"正在校验分区");
+        if (s.find(L"done") != std::wstring::npos) return Tr(L"分区创建完成");
+        return Tr(L"正在创建分区");
+    }
     return s;
 }
 
@@ -606,13 +671,24 @@ void CMainForm::OnProgressUpdate(int pct, const std::wstring& stage) {
     // 进度条随**第一条进度**出现（不是点按钮那一刻）：校验/暂存阶段没有进度，
     // 整行状态栏留给状态文字；真开始跑进度了，文字才收在进度条左边。
     ShowProgress(true);
-    SetProgress(pct);
+    const bool universal =
+        stage.compare(0, 9, L"universal") == 0;
+    if (universal) {
+        // 主进度已走完（100%），这里不再把它打回 0；驱动注入耗时另用
+        // PostProgress 小进度条循环提示"仍在工作"。
+        SetProgress(100);
+        const bool done = stage.find(L"done") != std::wstring::npos;
+        ShowPostProgress(!done);
+    } else {
+        ShowPostProgress(false);
+        SetProgress(pct);
+    }
     m_lastStage = StageCn(stage);
     SetStatus(m_lastStage + Tr(L"    已用 ") + ElapsedText());
     CControlUI* pPct = m_PaintManager.FindControl(_T("PercentText"));
     if (pPct) {
         wchar_t b[16];
-        swprintf(b, 16, L"%d%%", pct);
+        swprintf(b, 16, L"%d%%", universal ? 100 : pct);
         pPct->SetText(b);
     }
 }
@@ -1034,16 +1110,10 @@ void CMainForm::Notify(TNotifyUI& msg) {
         } else if (name == _T("MainAction")) {
             if (m_backupMode) StartBackup(); else StartRestore();
         } else if (name == _T("FixBootBtn")) {
+            // 皮肤里已隐藏（2026-10-27 收进「更多功能>>」）；保留路由给旧皮肤。
             StartRepairBoot();
-        } else if (name == _T("RepairBootBtn")) {
-            // 「清除引导」：删 BCD 条目 + 清 bootsequence + 删数据盘上的
-            // grldr/grldr.mbr/menu.lst/ZJRESTORE（用户要求：要清就清干净）
-            std::string log;
-            bool ok = RemoveBootLayer(log);
-            DeleteMenuBinding();  // 绑定副契约一并清（同 BootMenuBtn，2026-10-05）
-            SetStatus(ok ? Tr(L"已清除引导项与相关文件") : Tr(L"清除引导项未完全成功"));
-            LogInfo(std::string("GUI remove boot layer: ") + log);
-            RefreshBootMenuBtn();
+        } else if (name == _T("MoreBtn")) {
+            ShowMoreMenu();   // 「更多功能>>」下拉（异机还原/修复引导/清除菜单/镜像检查）
         } else if (name == _T("BootMenuBtn")) {
             ToggleBootMenu();
         } else if (name == _T("LogBtn")) {
@@ -1127,8 +1197,9 @@ void CMainForm::RefreshBootMenuBtn() {
 
     wchar_t tip[512] = {};
     if (installed) {
-        // 已安装：按钮 = 「删除菜单」；悬停说清"绑的是哪个镜像 → 哪个分区"。
-        // 用户规格（2026-09-29）：要换镜像请**先删除再安装**。
+        // 已安装（2026-10-27 用户规格）：按钮**只负责安装**，已装即置灰；删除入口
+        // 唯一化到「更多功能>>」→「清除启动中还原菜单」（避免同一件事两个入口，
+        // 也避免按钮在两种语义间跳字）。悬停仍说清"绑的是哪个镜像 → 哪个分区"。
         if (hasBinding) {
             std::wstring tgt;
             bool uefiPath = false;
@@ -1146,18 +1217,18 @@ void CMainForm::RefreshBootMenuBtn() {
                 // 开机键按品牌/机型识别（bioskey：表移植自 BiosKC，2026-10-18）；
                 // 识别不到用中性措辞，绝不写死 F12（HP 是 F9，见客户反馈）。
                 swprintf(tip, 512,
-                         Tr(L"已安装：开机按 %ls 选「SysRecover」，\n把 %ls（第 %d 个镜像）还原到 %ls。\n点此删除（要换镜像请先删除、再安装）\n镜像请勿移动或删除，否则该菜单无法还原"),
+                         Tr(L"已安装：开机按 %ls 选「SysRecover」，\n把 %ls（第 %d 个镜像）还原到 %ls。\n要清除请用「更多功能>>」→「清除启动中还原菜单」\n镜像请勿移动或删除，否则该菜单无法还原"),
                          BootMenuKeyHint().c_str(), boundImg.c_str(), boundIdx,
                          tgt.c_str());
             } else
                 swprintf(tip, 512,
-                         Tr(L"已安装：开机菜单里选「SysRecover」即可把\n%ls（第 %d 个镜像）还原到 %ls。\n点此删除（要换镜像请先删除、再安装）\n镜像请勿移动或删除，否则该菜单无法还原"),
+                         Tr(L"已安装：开机菜单里选「SysRecover」即可把\n%ls（第 %d 个镜像）还原到 %ls。\n要清除请用「更多功能>>」→「清除启动中还原菜单」\n镜像请勿移动或删除，否则该菜单无法还原"),
                          boundImg.c_str(), boundIdx, tgt.c_str());
         } else {
-            wcscpy_s(tip, Tr(L"已安装启动还原（旧版安装，未绑定镜像）。点此删除"));
+            wcscpy_s(tip, Tr(L"已安装启动还原（旧版安装，未绑定镜像）。\n要清除请用「更多功能>>」→「清除启动中还原菜单」"));
         }
-        p->SetText(Tr(L"删除菜单"));
-        p->SetEnabled(!m_busy);
+        p->SetText(Tr(L"安装到启动"));
+        p->SetEnabled(false);
         p->SetBkColor(0xFFFFFFFF);
         btn->SetTextColor(ui_skin::C_TEXT);
     } else {
@@ -1173,37 +1244,28 @@ void CMainForm::RefreshBootMenuBtn() {
                     " imageOk=" + std::to_string(m_imageOk ? 1 : 0) +
                     " part=" + std::to_string(m_selPart) + " busy=" +
                     std::to_string(m_busy ? 1 : 0));
-        p->SetText(Tr(L"安装菜单"));
+        p->SetText(Tr(L"安装到启动"));
         p->SetEnabled(can);
         p->SetBkColor(0xFFFFFFFF);
         btn->SetTextColor(ui_skin::C_TEXT);
         wcscpy_s(tip, can
             ? Tr(L"把当前镜像写进开机菜单：重启后选「SysRecover」进恢复环境，\n自动把该镜像还原到第二步选中的目标分区\n镜像请勿移动或删除，否则该菜单无法还原")
-            : Tr(L"请先选择镜像与目标分区，再安装菜单"));
+            : Tr(L"请先选择镜像与目标分区，再安装到启动"));
     }
     p->SetToolTip(tip);
     p->Invalidate();
 }
 
 void CMainForm::ToggleBootMenu() {
-    // 「已安装」判定与 RefreshBootMenuBtn 一致 = 引导层在 **或** 绑定契约在
-    //  —— 只比 BootMenuInstalled 会出现"按钮写着删除菜单、点了却走安装"的错位。
-    std::string detail;
-    std::wstring boundImg;
-    int boundIdx = 1;
-    unsigned long long boundOff = 0, boundSz = 0;
-    if (BootMenuInstalled(detail) ||
-        ReadMenuBinding(&boundImg, &boundIdx, &boundOff, &boundSz)) {
-        // 删除：无确认（按钮文案已是「删除菜单」）→ 异步执行（2026-10-18）：
-        // 删除要卸载 ESP 上 ~28MB 载荷，同步跑在慢盘上同样触发"无响应"。
-        StartMenuToggle(/*install=*/false);
-        return;
-    }
+    // 「安装到启动」= **只负责安装**（2026-10-27 用户规格）：已安装时按钮由
+    // RefreshBootMenuBtn 置灰，删除入口唯一化到「更多功能>>」→「清除启动中还原
+    // 菜单」（ClearBootMenuEntry）。这里不再保留"已安装就走删除"的分支。
+    if (m_busy) return;
     // ── 安装（用户 2026-09-29 规格）：把**当前镜像 → 第二步选中的目标分区**写成
     //    常驻任务契约，并装常驻启动项；开机菜单里选「SysRecover」即执行该还原。
     if (m_wimPath.empty() || m_selPart < 0 ||
         m_selPart >= (int)m_parts.size()) {
-        SetStatus(Tr(L"请先选择镜像与目标分区，再安装菜单"));
+        SetStatus(Tr(L"请先选择镜像与目标分区，再安装到启动"));
         return;
     }
     {
@@ -1238,7 +1300,7 @@ void CMainForm::ToggleBootMenu() {
                      name.c_str(), m_selImageIndex,
                      part.letter.empty() ? L"?" : part.letter.c_str());
         // 与"确认还原"一致：右按钮（动作）高亮且为回车默认项，ESC 一律取消。
-        if (CConfirmDlg::Ask2(m_hWnd, Tr(L"安装启动还原菜单"), msg, Tr(L"取消"),
+        if (CConfirmDlg::Ask2(m_hWnd, Tr(L"安装到启动"), msg, Tr(L"取消"),
                               Tr(L"安装"), /*defaultIsRight=*/true) != 1)
             return;
         StartMenuToggle(/*install=*/true);
@@ -1384,6 +1446,149 @@ void CMainForm::OnMenuDone(int rc, bool install) {
     UpdateMainAction();
 }
 
+// ── 「更多功能>>」下拉（2026-10-27 用户规格） ─────────────────────
+// 原「异机」勾选框、「修复引导」按钮、原「清除菜单」按钮 + 新增「镜像检查」
+// 全部收进这个菜单：第三行原本挤了 6 个按钮，英文/高分屏下必然裁字。
+// 用原生 TrackPopupMenu（与 ShowImagePickMenu 同款）：菜单项的勾选/禁用态
+// 每次打开时按当前状态现算，不依赖皮肤控件（也就没有尺寸/裁剪问题）。
+void CMainForm::ShowMoreMenu() {
+    if (m_busy) return;
+    HMENU hMenu = ::CreatePopupMenu();
+    if (!hMenu) return;
+    std::string detail;
+    std::wstring boundImg;
+    int boundIdx = 1;
+    unsigned long long boundOff = 0, boundSz = 0;
+    const bool installed =
+        BootMenuInstalled(detail) ||
+        ReadMenuBinding(&boundImg, &boundIdx, &boundOff, &boundSz);
+    // 「清除」只在真装了东西时可点（否则点了也是空转，用户会以为没生效）。
+    // 「镜像检查」只在镜像已解析成功时可点（对坏镜像做全量校验没有意义）。
+    const bool canVerify = !m_backupMode && !m_wimPath.empty() && m_imageOk;
+    ::AppendMenuW(hMenu,
+                  MF_STRING | (IsUniversalChecked() ? MF_CHECKED : 0u), 1,
+                  Tr(L"使用异机还原"));
+    ::AppendMenuW(hMenu, MF_STRING, 2, Tr(L"修复引导"));
+    ::AppendMenuW(hMenu, MF_STRING | (installed ? 0u : MF_GRAYED), 3,
+                  Tr(L"清除启动中还原菜单"));
+    ::AppendMenuW(hMenu, MF_STRING | (canVerify ? 0u : MF_GRAYED), 4,
+                  Tr(L"镜像检查（完整校验）"));
+
+    // MoreBtn 是顶层 float 控件 → GetPos() 已是客户区坐标；换屏幕坐标再弹。
+    RECT rc{};
+    CControlUI* pBtn = m_PaintManager.FindControl(_T("MoreBtn"));
+    if (pBtn) rc = pBtn->GetPos();
+    POINT pt = {rc.left, rc.bottom + 2};
+    ::ClientToScreen(m_hWnd, &pt);
+    // m_pickGuard 防"菜单关闭后焦点回来又把别的下拉顶出来"（同 ShowImagePickMenu）。
+    m_pickGuard = true;
+    const int cmd = ::TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_LEFTALIGN, pt.x,
+                                     pt.y, 0, m_hWnd, nullptr);
+    ::DestroyMenu(hMenu);
+    m_pickGuard = false;
+    if (cmd <= 0) return;
+    if (cmd == 1) {
+        COptionUI* p = static_cast<COptionUI*>(
+            m_PaintManager.FindControl(_T("Universal")));
+        if (p) {
+            const bool on = !p->IsSelected();
+            p->Selected(on, /*bTriggerEvent=*/false);  // COptionUI 的接口是 Selected()
+            SetStatus(on ? Tr(L"已启用异机还原（还原时自动注入启动驱动）")
+                         : Tr(L"已关闭异机还原"));
+            LogInfo(std::string("GUI universal: ") + (on ? "on" : "off"));
+        }
+        UpdateMainAction();
+    } else if (cmd == 2) {
+        StartRepairBoot();
+    } else if (cmd == 3) {
+        ClearBootMenuEntry();
+    } else if (cmd == 4) {
+        StartVerifyImage();
+    }
+}
+
+// 「清除启动中还原菜单」（原 RepairBootBtn 的逻辑）：确认 → **异步**删引导层 +
+// 绑定副契约。异步是必须的：删除要卸载 ESP 上的 ~28MB 载荷，同步跑在慢盘上
+// 会触发 Windows 的"无响应"幽灵窗（PIT-152 同款）。
+void CMainForm::ClearBootMenuEntry() {
+    if (m_busy) return;
+    if (CConfirmDlg::Ask2(
+            m_hWnd, Tr(L"清除启动中还原菜单"),
+            Tr(L"将删除开机启动菜单里的 SysRecover 条目，\n"
+               L"并清理目标分区上的救援文件。\n"
+               L"确定继续吗？"),
+            Tr(L"取消"), Tr(L"清除"),
+            /*defaultIsRight=*/false) != 1)
+        return;
+    StartMenuToggle(/*install=*/false);
+}
+
+// 「镜像检查」= 完整校验（wimlib_verify_wim 全文件扫描，CLI 的 `verify` 命令同源）。
+// 与备份收尾的 Probe（秒级快检，PIT-106）区分：这里用户显式要求，愿意等。
+void CMainForm::StartVerifyImage() {
+    if (m_busy) return;
+    if (m_wimPath.empty() || !m_imageOk) {
+        SetStatus(Tr(L"请先选择可用的镜像文件"));
+        return;
+    }
+    // 大镜像（几十 GB）全量扫描要十几分钟，必须先讲清代价（默认项 = 取消）。
+    if (CConfirmDlg::Ask2(
+            m_hWnd,
+            Tr(L"将对整个镜像做完整性校验（逐字节扫描）。\n"
+               L"几十 GB 的镜像可能需要十几分钟。\n"
+               L"确定现在校验吗？"),
+            Tr(L"镜像检查"), Tr(L"取消"), Tr(L"开始校验"),
+            /*defaultIsRight=*/false) != 1)
+        return;
+    m_busy = true;
+    m_verifyMsg.clear();
+    m_lastStageRaw.clear();
+    m_lastStage = Tr(L"正在校验镜像...");
+    SetStatus(m_lastStage);
+    SetProgress(0);
+    m_start = std::chrono::steady_clock::now();
+    SetTimer(m_hWnd, 1, 1000, nullptr);
+    UpdateMainAction();
+    if (m_worker.joinable()) m_worker.join();
+    m_cancel = false;
+    try {
+        m_worker = std::thread(&CMainForm::VerifyImageAsync, this);
+    } catch (...) {
+        m_busy = false;
+        KillTimer(m_hWnd, 1);
+        ShowProgress(false);
+        UpdateMainAction();
+        SetStatus(Tr(L"无法启动校验线程"));
+    }
+}
+
+void CMainForm::VerifyImageAsync() {
+    ::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    const std::wstring img = m_wimPath;  // busy 期间 UI 已锁，这里只是取快照
+    auto progressFn = [this](int pct, const std::string& stage) -> bool {
+        if (m_cancel) return true;   // 返回 true = 请求中止（与其它 worker 同约定）
+        auto now = std::chrono::steady_clock::now();
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      now - m_lastProgressPost).count();
+        const bool stageChanged = stage != m_lastStageRaw;
+        if (ms < kProgressThrottleMs && pct < 100 && !stageChanged) return false;
+        m_lastProgressPost = now;
+        m_lastStageRaw = stage;
+        PostMessage(WM_PROGRESS_UPDATE, (WPARAM)pct,
+                    (LPARAM)new std::wstring(U2W(stage)));
+        return false;
+    };
+    WimEngine wim;
+    int rc = wim.ok() ? wim.Verify(img, progressFn) : -1;
+    if (rc == 0)
+        m_verifyMsg.clear();
+    else
+        m_verifyMsg = W2U(WimEngine::ErrorString(rc));
+    LogInfo("GUI verify rc=" + std::to_string(rc) +
+            (m_verifyMsg.empty() ? "" : (" / " + m_verifyMsg)));
+    ::PostMessageW(m_hWnd, WM_VERIFY_DONE, (WPARAM)rc, 0);
+}
+
 // ────────────────── 分区枚举 ──────────────────
 
 void CMainForm::PopulatePartitions(const std::vector<DiskInfo>& disks) {
@@ -1491,12 +1696,33 @@ void CMainForm::OpenInitDiskWizard() {
     UpdateMainAction();
     SetStatus(Tr(L"正在为新硬盘创建分区..."));
     SetProgress(0);
+    // 进度条必须显式打开（2026-10-27 用户规格）：diskpart 建分区+格式化能跑
+    // 几十秒，以前只有状态栏一行字、进度条根本不出现，看着像卡死。
+    ShowProgress(true);
     SetTimer(m_hWnd, 1, 1000, nullptr);
     if (m_worker.joinable()) m_worker.join();
+    m_lastProgressPost = std::chrono::steady_clock::now();
+    m_lastStageRaw.clear();
     m_worker = std::thread([this, plan] {
         std::wstring err;
         std::string log;
-        const int rc = sysrecover::ApplyPartInitPlan(plan, err, log);
+        // 阶段 → 进度条（partinit-* 由 StageCn 翻中文）。节流与备份/还原同款：
+        // 阶段名一变立刻发（否则 100ms 内首个阶段会被吞掉，PIT-098）。
+        auto progressFn = [this](int pct, const std::string& stage) {
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now - m_lastProgressPost)
+                    .count();
+            const bool stageChanged = stage != m_lastStageRaw;
+            if (elapsed < kProgressThrottleMs && pct < 100 && !stageChanged)
+                return;
+            m_lastProgressPost = now;
+            m_lastStageRaw = stage;
+            auto* pStage = new std::wstring(U2W(stage));
+            PostMessage(WM_PROGRESS_UPDATE, (WPARAM)pct, (LPARAM)pStage);
+        };
+        const int rc = sysrecover::ApplyPartInitPlan(plan, err, log, progressFn);
         m_initErr = err;
         m_initLog = log;
         LogInfo("partinit rc=" + std::to_string(rc) + "\n" + log);
@@ -1820,15 +2046,19 @@ void CMainForm::SyncPathExtFromFormat() {
     SetImagePathEdit(m_backupPath);
 }
 
-// 「限制CPU」下拉 → 上限百分比（下标 0/1/2/3 = 不限/25/50/75，见 skin/main.xml）。
+// 「限制CPU」下拉 → 上限百分比。条目顺序（用户 2026-10-27 规格）：
+//   不限速 / CPU 75% / CPU 50% / CPU 25%（从宽到严，见 skin/main.xml）。
 // 备份中改了立即生效：改的是 Job 对象的速率，不打断正在跑的 wimlib。
 void CMainForm::ApplyCpuCapFromUi() {
+    // 下标 → 上限（**不是** sel*25：第 1 项是 75%，顺序已按用户要求重排）
+    static const int kCapByIndex[] = {0, 75, 50, 25};
     CComboUI* p =
         static_cast<CComboUI*>(m_PaintManager.FindControl(_T("CpuCapBox")));
     if (!p) return;
     int sel = p->GetCurSel();
-    if (sel < 0) sel = 0;
-    m_cpuCap = sel * 25;
+    if (sel < 0 || sel >= (int)(sizeof(kCapByIndex) / sizeof(kCapByIndex[0])))
+        sel = 0;
+    m_cpuCap = kCapByIndex[sel];
     std::wstring msg = Tr(L"CPU 不限制");
     if (m_cpuCap != 0) {
         wchar_t buf[64];
@@ -2198,7 +2428,9 @@ void CMainForm::SetBusyControls(bool busy) {
     enable(_T("FormatBox"), false);
     enable(_T("ModeRestore"), false);
     enable(_T("ModeBackup"), false);
-    enable(_T("RepairBootBtn"), false);
+    // 「更多功能>>」是一个按钮（内部四项：异机还原/修复引导/清除启动中还原菜单/
+    // 镜像检查）——任务执行中整组禁用，避免同一时刻两路写盘（2026-10-27）。
+    enable(_T("MoreBtn"), false);
     enable(_T("FixBootBtn"), false);
     enable(_T("LogBtn"), false);
     enable(_T("BootMenuBtn"), false);
@@ -2270,13 +2502,14 @@ void CMainForm::ApplyModeUi() {
                 pNote->SetText(info.c_str());
             }
         }
-        // 备份模式不给「清除引导项」（那是还原/清理用的，用户 2026-09-28 规格），
-        // 空出来的位置换成「限制CPU」下拉（见上方 Vis(CpuCapBox)）；还原模式反过来。
-        Vis(_T("RepairBootBtn"),false);
-        Vis(_T("FixBootBtn"),   false);  // 「修复引导」是还原模式专属（2026-10-20）
-        Vis(_T("Universal"), false);  // 「异机还原」是还原模式专属（2026-10-21）
+        // 备份模式不给这些还原专属按钮（2026-09-28 / 2026-10-27 规格）：
+        // 「安装到启动」「打包日志」「更多功能>>」都只在还原模式出现；
+        // 空出来的位置换成「限制CPU」下拉（见上方 Vis(CpuCapBox)）。
+        Vis(_T("FixBootBtn"),   false);  // 皮肤已隐藏；入口在「更多功能>>」
+        Vis(_T("Universal"), false);  // 皮肤已隐藏；入口在「更多功能>>」
+        Vis(_T("MoreBtn"),      false);
         Vis(_T("BootMenuBtn"),  false);
-        Vis(_T("LogBtn"),       false);  // 「日志」按钮是还原模式专属（用户 2026-10-03 规格）
+        Vis(_T("LogBtn"),       false);  // 「打包日志」是还原模式专属（用户 2026-10-03 规格）
         Text(_T("PartTitle"),   Tr(L"备份源分区"));
         Text(_T("PartHint"),    Tr(L"选择要备份为镜像的源分区（移动盘已隐藏）"));
         // 第三步右侧：备份模式 = 静默模式 + CPU 下拉；引导按钮两模式共用同一位置（XML 定）。
@@ -2301,23 +2534,23 @@ void CMainForm::ApplyModeUi() {
         Vis(_T("FormatLabel"),  false);
         Vis(_T("FormatBox"),    false);
         Vis(_T("CpuCapBox"),    false);
-        Vis(_T("RepairBootBtn"),true);
-        Vis(_T("FixBootBtn"),   true);
-        Vis(_T("Universal"), true);
+        // 皮肤里这两行控件保持隐藏：入口已收进「更多功能>>」（2026-10-27 用户规格：
+        // 第三行原本挤 6 个按钮，英文/高分屏必然裁字）。这里显式压回 false，防止
+        // 皮肤改动或上一模式遗留把它们又露出来。
+        Vis(_T("FixBootBtn"),   false);
+        Vis(_T("Universal"),    false);
+        Vis(_T("MoreBtn"),      true);
         Vis(_T("BootMenuBtn"),  true);
         Vis(_T("LogBtn"),       true);
         Text(_T("PartTitle"),   Tr(L"系统安装位置"));
         Text(_T("PartHint"),    Tr(L"选择要安装恢复镜像的目标分区（移动盘已隐藏）"));
-        // 还原模式几何（切回时必须复位第三步右侧那几个）。2026-10-20 用户规格：
-        // 「修复引导」插在 静默模式 之后、「日志」「清除引导」之前：
-        //   静默 250..350 / 修复 356..438 / 日志 444..502 / 清除 508..590 /
-        //   菜单 596..684。
+        // 还原模式几何（切回时必须复位第三步右侧那几个）。2026-10-27 用户规格：
+        //   静默 248..330 / 打包日志 340..438 / 安装到启动 446..562 / 更多功能>> 570..721
+        // 四项等距 8px，右侧贴到卡片内沿；`Universal`/`FixBootBtn` 已隐藏、不再占位。
         Pos(_T("Silent"),        248, 302, 330, 326);
-        Pos(_T("Universal"),     336, 302, 398, 326);
-        Pos(_T("FixBootBtn"),    471, 298, 541, 331);
-        Pos(_T("LogBtn"),        404, 298, 449, 331);
-        Pos(_T("RepairBootBtn"), 637, 298, 721, 331);
-        Pos(_T("BootMenuBtn"),   547, 298, 631, 331);
+        Pos(_T("LogBtn"),        340, 298, 438, 331);
+        Pos(_T("BootMenuBtn"),   446, 298, 562, 331);
+        Pos(_T("MoreBtn"),       570, 298, 721, 331);
         Pos(_T("FormatLabel"),   350, 302, 388, 326);
         Pos(_T("FormatBox"),     388, 296, 510, 329);
     }
@@ -2521,6 +2754,7 @@ void CMainForm::SetStatus(const std::wstring& text) {
 }
 
 void CMainForm::ShowProgress(bool show) {
+    if (!show) ShowPostProgress(false);
     for (const TCHAR* name : {_T("Progress"), _T("PercentText")}) {
         CControlUI* p = m_PaintManager.FindControl(name);
         if (p && p->IsVisible() != show) p->SetVisible(show);
@@ -2529,6 +2763,21 @@ void CMainForm::ShowProgress(bool show) {
     if (!m_lastStatus.empty()) {
         CControlUI* p = m_PaintManager.FindControl(_T("StatusText"));
         if (p) p->SetText(FitStatusLine(m_PaintManager, m_lastStatus).c_str());
+    }
+}
+
+void CMainForm::ShowPostProgress(bool show) {
+    CRoundProgressUI* p = static_cast<CRoundProgressUI*>(
+        m_PaintManager.FindControl(_T("PostProgress")));
+    if (p && p->IsVisible() != show) p->SetVisible(show);
+    m_postBusy = show;
+    if (show) {
+        m_postPulse = 0;
+        if (p) p->SetValue(0);
+        SetTimer(m_hWnd, 3, 120, nullptr);
+    } else {
+        KillTimer(m_hWnd, 3);
+        if (p) p->SetValue(0);
     }
 }
 

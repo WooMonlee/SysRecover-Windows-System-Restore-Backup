@@ -179,6 +179,61 @@ bool SameDrive(wchar_t a, wchar_t b) {
     return towupper(a) == towupper(b);
 }
 
+// 0.9.38：ESP 诊断必须有不依赖主日志的落点。主日志在部分 PE 的 support 包里
+// 会缺失（GUI/CLI 日志根或文件共享问题），所以这里直接写 `ESP-diag.txt`：
+// 同时写“日志根\logs”和“程序目录\logs”，support 的 logs 树一定能收到。
+void EspDiagAppendAt(const std::wstring& dir, const std::string& text) {
+    if (dir.empty()) return;
+    CreateDirectoryW(dir.c_str(), nullptr);
+    const std::wstring file = dir + L"\\ESP-diag.txt";
+    HANDLE h = CreateFileW(file.c_str(), FILE_APPEND_DATA,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                           OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+    DWORD wrote = 0;
+    WriteFile(h, text.data(), (DWORD)text.size(), &wrote, nullptr);
+    CloseHandle(h);
+}
+
+void EspDiagLine(const std::string& s) {
+    SYSTEMTIME st = {};
+    GetLocalTime(&st);
+    char ts[64] = {};
+    snprintf(ts, sizeof(ts), "%04u-%02u-%02u %02u:%02u:%02u ",
+             st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    std::string line = std::string(ts) + s + "\r\n";
+    const std::wstring primary = LogBaseDir() + L"\\logs";
+    const std::wstring app = AppDir() + L"\\logs";
+    EspDiagAppendAt(primary, line);
+    if (_wcsicmp(primary.c_str(), app.c_str()) != 0)
+        EspDiagAppendAt(app, line);
+    LogFileInfo("ESP-DIAG " + s);
+}
+
+void EspDiagVolumes() {
+    EspDiagLine("--- logical drives ---");
+    DWORD mask = GetLogicalDrives();
+    for (wchar_t c = L'C'; c <= L'Z'; ++c) {
+        if (!(mask & (1u << (c - L'A')))) continue;
+        std::wstring root = std::wstring(1, c) + L":\\";
+        const UINT type = GetDriveTypeW(root.c_str());
+        wchar_t label[64] = {}, fs[32] = {};
+        GetVolumeInformationW(root.c_str(), label, 64, nullptr, nullptr,
+                              nullptr, fs, 32);
+        ULARGE_INTEGER total = {};
+        GetDiskFreeSpaceExW(root.c_str(), nullptr, &total, nullptr);
+        wchar_t vn[MAX_PATH] = {};
+        GetVolumeNameForVolumeMountPointW(root.c_str(), vn, MAX_PATH);
+        char line[512] = {};
+        snprintf(line, sizeof(line),
+                 "%c: type=%u label=%ls fs=%ls total=%llu volume=%ls",
+                 (char)c, type, label, fs,
+                 (unsigned long long)total.QuadPart, vn);
+        EspDiagLine(line);
+    }
+}
+
+
 // 目标盘的分区风格（找不到该盘 → Unknown）。
 PartitionStyle DiskStyleOf(uint32_t diskIndex) {
     for (const auto& d : EnumerateDisks())
@@ -191,23 +246,44 @@ PartitionStyle DiskStyleOf(uint32_t diskIndex) {
 // 由 GuidToString 给出、已去花括号小写；mountvol 只认 `\\?\Volume{...}` 格式，
 // GUID 解析大小写不敏感，这里仍转大写求稳）。多盘机「还原到非固件盘」时 ①（固件
 // ESP 在别的盘）被盘号校验拒掉、③ 又要求有盘符 —— 没有 ②b 就只能硬失败。
-bool MountEspByGuid(const std::wstring& partGuid, std::wstring& root,
+bool MountEspByGuid(const std::wstring& volumeOrGuid, std::wstring& root,
                     std::string& log) {
-    if (partGuid.empty())
+    if (volumeOrGuid.empty())
         return false;
-    std::wstring g = partGuid;
-    for (auto& ch : g)
-        ch = (wchar_t)towupper(ch);
+    // volumeName 来自 FindFirstVolume，已经是 \\?\Volume{...}\；只有传分区
+    // GUID 时（老调用/兜底）才拼出卷名。0.9.33：刚分区的 ESP 用真实卷名
+    // 才能立即挂上，分区 GUID 在少数 PE/盘上要等重启后的 mount manager。
+    std::wstring vn = volumeOrGuid;
+    if (vn.rfind(L"\\\\?\\", 0) != 0) {
+        std::wstring g = volumeOrGuid;
+        for (auto& ch : g)
+            ch = (wchar_t)towupper(ch);
+        vn = L"\\\\?\\Volume{" + g + L"}\\";
+    }
+    if (!vn.empty() && vn.back() != L'\\')
+        vn += L'\\';
     DWORD mask = GetLogicalDrives();
     for (wchar_t c = L'S'; c <= L'Z'; ++c) {
         if (mask & (1u << (c - L'A')))
             continue;
+        std::wstring r = std::wstring(1, c) + L":\\";
+        // 0.9.33：优先用 Win32 SetVolumeMountPointW，不依赖外部的
+        // mountvol.exe —— 部分精简 PE 根本没有 mountvol，表现为“找不到 ESP”，
+        // 换到正常 Windows 重试又正常。
+        if (SetVolumeMountPointW(r.c_str(), vn.c_str())) {
+            if (GetFileAttributesW(r.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                root = r;
+                log += "ESP mounted by volume at ";
+                log += (char)c;
+                log += ":\\ (Win32)\n";
+                return true;
+            }
+            DeleteVolumeMountPointW(r.c_str());
+        }
         std::string out;
-        std::wstring args =
-            std::wstring(1, c) + L": \\\\?\\Volume{" + g + L"}";
+        std::wstring args = std::wstring(1, c) + L": " + vn;
         if (RunProcess(SysToolPath(L"mountvol.exe"), args, out) != 0)
             continue;
-        std::wstring r = std::wstring(1, c) + L":\\";
         if (GetFileAttributesW(r.c_str()) == INVALID_FILE_ATTRIBUTES) {
             std::string o2;  // 挂上了却看不到内容 → 撤掉换下一个空闲符
             RunProcess(SysToolPath(L"mountvol.exe"),
@@ -215,12 +291,54 @@ bool MountEspByGuid(const std::wstring& partGuid, std::wstring& root,
             continue;
         }
         root = r;
-        log += "ESP mounted by volume GUID at ";
+        log += "ESP mounted by volume at ";
         log += (char)c;
-        log += ":\\\n";
+        log += ":\\ (mountvol)\n";
         return true;
     }
     return false;
+}
+
+// 0.9.37：PE 10586 这类 PE 的卷枚举有时拿不到“卷 ↔ 分区”的 extent 映射，
+// 即使 Explorer 里 ESP 明明有 E: 盘符，`PartitionInfo.letter` 仍为空。
+// 最后按 ESP 的卷标 `ESP` + FAT 文件系统 + 分区大小核对，直接用已有盘符。
+// 只接受大小与目标 ESP 分区一致的 FAT 卷，避免误选数据盘。
+std::wstring FindEspDriveByLabel(const PartitionInfo& esp) {
+    DWORD mask = GetLogicalDrives();
+    for (wchar_t c = L'D'; c <= L'Z'; ++c) {
+        if (!(mask & (1u << (c - L'A')))) continue;
+        std::wstring root = std::wstring(1, c) + L":\\";
+        const UINT type = GetDriveTypeW(root.c_str());
+        if (type == DRIVE_CDROM || type == DRIVE_REMOTE ||
+            type == DRIVE_NO_ROOT_DIR)
+            continue;
+        wchar_t label[64] = {}, fs[32] = {};
+        if (!GetVolumeInformationW(root.c_str(), label, 64, nullptr, nullptr,
+                                   nullptr, fs, 32))
+            continue;
+        if (_wcsicmp(label, L"ESP") != 0) continue;
+        if (_wcsicmp(fs, L"FAT32") != 0 && _wcsicmp(fs, L"FAT") != 0)
+            continue;
+        ULARGE_INTEGER total = {};
+        if (esp.sizeBytes > 0) {
+            // PE10586 实测：300MB 的 ESP，p1=314,572,800 字节，E: 的
+            // GetDiskFreeSpaceEx total=310,378,496（差 4MB，FAT32/分区保留区
+            // 与分区长度本来就不完全相等）。允许 16MB 误差，避免把正确 ESP
+            // 误判成“大小不匹配”。
+            const unsigned long long kTolerance = 16ull << 20;
+            if (!GetDiskFreeSpaceExW(root.c_str(), nullptr, &total, nullptr) ||
+                total.QuadPart == 0)
+                continue;
+            const unsigned long long diff =
+                total.QuadPart > esp.sizeBytes
+                    ? total.QuadPart - esp.sizeBytes
+                    : esp.sizeBytes - total.QuadPart;
+            if (diff > kTolerance)
+                continue;
+        }
+        return root;
+    }
+    return L"";
 }
 
 // 取一个**可用的 ESP 根**（形如 "X:\\"）。顺序（docs/15 · P4 + Q2 盘号限定，
@@ -241,46 +359,99 @@ bool MountEspByGuid(const std::wstring& partGuid, std::wstring& root,
 // guidMatched=true 表示"GPT 类型 GUID 也认对了"（正常机器；false 时调用方只记警告）。
 bool AcquireEspRoot(std::wstring& espRoot, bool& guidMatched, std::string& log,
                     int targetDisk = -1) {
-    PartitionInfo esp;
-    guidMatched = FindEspPartition(esp, targetDisk);
-    // ① 固件 ESP（mountvol /s）+ 盘号校验
-    espRoot = MountEsp(log);
-    if (!espRoot.empty()) {
-        if (targetDisk >= 0) {
-            int d = VolumeDiskIndex(espRoot[0]);
-            if (d >= 0 && d != targetDisk) {
-                log += "mounted ESP is on disk " + std::to_string(d) +
-                       " but target is disk " + std::to_string(targetDisk) +
-                       "; unmount, look on target disk\n";
-                UnmountEsp(espRoot, log);
-                espRoot.clear();
-            } else if (d < 0) {
-                log += "WARN: cannot verify mounted ESP disk index; keeping it\n";
+    // 0.9.33（用户 2026-10-26 实测）：刚用向导建好分区的磁盘，Windows 的
+    // mount manager 偶尔要过几百毫秒才把 ESP 卷注册完整 —— 第一次找 ESP
+    // 失败、重启后同一套分区就正常。这里重试三次（并每次重新枚举，
+    // 等卷名/盘符出现），而不是一次失败就直接判死。
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        EspDiagLine("AcquireEspRoot start attempt=" + std::to_string(attempt + 1) +
+                    " targetDisk=" + std::to_string(targetDisk));
+        EspDiagVolumes();
+        EspDiagLine("partitions: " + W2U(DescribePartitions()));
+        PartitionInfo esp;
+        guidMatched = FindEspPartition(esp, targetDisk);
+        EspDiagLine("FindEspPartition matched=" +
+                    std::string(guidMatched ? "1" : "0") +
+                    " letter=" + W2U(esp.letter) +
+                    " volumeName=" + W2U(esp.volumeName) +
+                    " guid=" + W2U(esp.guid) +
+                    " offset=" + std::to_string(esp.offsetBytes) +
+                    " size=" + std::to_string(esp.sizeBytes));
+        // ① 固件 ESP（mountvol /s）+ 盘号校验
+        espRoot = MountEsp(log);
+        EspDiagLine("MountEsp /s -> " + W2U(espRoot));
+        if (!espRoot.empty()) {
+            if (targetDisk >= 0) {
+                int d = VolumeDiskIndex(espRoot[0]);
+                if (d >= 0 && d != targetDisk) {
+                    log += "mounted ESP is on disk " + std::to_string(d) +
+                           " but target is disk " + std::to_string(targetDisk) +
+                           "; unmount, look on target disk\n";
+                    UnmountEsp(espRoot, log);
+                    espRoot.clear();
+                } else if (d < 0) {
+                    log += "WARN: cannot verify mounted ESP disk index; keeping it\n";
+                    EspDiagLine("MountEsp disk index unknown; keeping root");
+                }
+            }
+            if (!espRoot.empty()) {
+                EspDiagLine("AcquireEspRoot OK via mountvol/s: " + W2U(espRoot));
+                return true;
             }
         }
-        if (!espRoot.empty())
-            return true;
-    }
-    // ② 目标盘 GUID ESP：有盘符
-    if (guidMatched && !esp.letter.empty()) {
-        std::wstring root = esp.letter + L":\\";
-        if (GetFileAttributesW(root.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            espRoot = root;
-            log += "ESP via existing drive letter\n";
+        // ② 目标盘 GUID ESP：有盘符
+        if (guidMatched && !esp.letter.empty()) {
+            std::wstring root = esp.letter + L":\\";
+            if (GetFileAttributesW(root.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                espRoot = root;
+                log += "ESP via existing drive letter\n";
+                EspDiagLine("AcquireEspRoot OK via existing letter: " + W2U(root));
+                return true;
+            }
+            EspDiagLine("existing ESP letter not accessible: " + W2U(root));
+        }
+        // ②b 目标盘 GUID ESP：无盘符 → 用真实卷名挂（卷名取不到才退回
+        //     partition GUID）。这是刚分区 ESP 的正解。
+        if (guidMatched && esp.letter.empty()) {
+            const std::wstring& volume =
+                esp.volumeName.empty() ? esp.guid : esp.volumeName;
+            EspDiagLine("trying MountEspByGuid volume=" + W2U(volume));
+            if (MountEspByGuid(volume, espRoot, log)) {
+                EspDiagLine("AcquireEspRoot OK via volume GUID: " + W2U(espRoot));
+                return true;
+            }
+        }
+        // ②c PE 卷枚举拿不到 letter 时的兜底：已有盘符 + 卷标 ESP + 大小核对。
+        if (guidMatched) {
+            const std::wstring byLabel = FindEspDriveByLabel(esp);
+            if (!byLabel.empty()) {
+                espRoot = byLabel;
+                log += "ESP via label/size fallback at ";
+                log += (char)espRoot[0];
+                log += ":\\\n";
+                EspDiagLine("AcquireEspRoot OK via label/size: " + W2U(byLabel));
+                return true;
+            }
+            EspDiagLine("label/size fallback found nothing");
+        }
+        // ③ 回退（仍限定目标盘）
+        PartitionInfo fb;
+        if (FindEspPartitionFallback(fb, targetDisk) && !fb.letter.empty()) {
+            espRoot = fb.letter + L":\\";
+            log += "ESP via fallback (FAT partition with \\EFI boot files)\n";
+            EspDiagLine("AcquireEspRoot OK via FAT/EFI fallback: " + W2U(espRoot));
             return true;
         }
+        EspDiagLine("AcquireEspRoot attempt " + std::to_string(attempt + 1) +
+                    " failed; retry/backoff");
+        if (attempt < 2) {
+            log += "ESP acquire retry " + std::to_string(attempt + 1) +
+                   "/3 (volume not ready)\n";
+            Sleep(attempt == 0 ? 300 : 700);
+        }
     }
-    // ②b 目标盘 GUID ESP：无盘符 → 按卷 GUID 挂
-    if (guidMatched && esp.letter.empty() &&
-        MountEspByGuid(esp.guid, espRoot, log))
-        return true;
-    // ③ 回退（仍限定目标盘）
-    PartitionInfo fb;
-    if (FindEspPartitionFallback(fb, targetDisk) && !fb.letter.empty()) {
-        espRoot = fb.letter + L":\\";
-        log += "ESP via fallback (FAT partition with \\EFI boot files)\n";
-        return true;
-    }
+    EspDiagLine("AcquireEspRoot FAILED targetDisk=" + std::to_string(targetDisk) +
+                " partitions=" + W2U(DescribePartitions()));
     return false;
 }
 
@@ -354,7 +525,12 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
     if (req.universal) {
         std::string ulog;
         std::wstring uerr;
-        if (!PrepareUniversal(letter + L":", req.driverDir, ulog, uerr)) {
+        auto uProgress = [&](int pct, const std::string& st) {
+            ProgressUpdate("restore", pct, st);
+            return progress ? progress(pct, st) : false;
+        };
+        if (!PrepareUniversal(letter + L":", req.driverDir, ulog, uerr,
+                              uProgress)) {
             err = Tr("就地还原已完成，但异机还原准备失败：") + W2U(uerr);
             LogError(err);
             LogError("universal log:\n" + ulog);
@@ -387,7 +563,7 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
             UnmountEsp(espRoot, blog);
         } else {
             LogWarn("task has esp subimage (idx " + std::to_string(espIndex) +
-                    ") but no ESP partition found (skip)");
+                    ") but no ESP partition found (skip); " + blog);
         }
     }
     // 2.6) ZJEA 修复子镜像（PIT-122 / PIT-136；1019 案 F4 补上**就地还原侧**）：
@@ -461,6 +637,7 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
                 std::string detail;
                 if (!AcquireEspRoot(espRoot, guidMatched, blog,
                                      (int)target.diskIndex)) {
+                    LogError("ESP acquire log (in-place):\n" + blog);
                     err = Tr("就地还原已完成，但找不到可用的 ESP 引导分区，无法修复引导：\n") +
                           W2U(DescribePartitions());
                     LogError(err);
@@ -671,6 +848,15 @@ bool InstallFirstBootCleanup(const std::wstring& newDir,
 // 定义必须在匿名命名空间**之外**，否则 ops.h 的声明没有外部定义、链接不到。
 bool UseUefiBootFor(const PartitionInfo& t) {
     return ShouldUseUefiBoot(IsUefiFirmware(), DiskStyleOf(t.diskIndex));
+}
+
+// 启动项/固件变量写入失败时的统一提示（用户 2026-10-27 需求）：
+// 装了金山毒霸/360 一类底层拦截的机器上，bcdedit / BootNext 都会"假成功"——
+// 命令返回 0，实际没落盘，重启后照旧进原系统，用户完全没有提示。凡写后
+// 读回校验失败（或命令本身失败）都要带上这句，指向"退出防护重试/PE 就地还原"。
+static std::string BootWriteBlockedHint() {
+    return Tr(" 可能被安全软件（如金山毒霸/360）拦截，写入未生效："
+              "请退出其防护后重试，或用 PE 就地还原。");
 }
 
 // 目标分区是否**未**被占用（可以就地写）？—— 对外可见（ops.h），因为 GUI/CLI 要用它
@@ -1960,7 +2146,12 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
         if (req.universal) {
             std::string ulog;
             std::wstring uerr;
-            if (!PrepareUniversal(newDir, req.driverDir, ulog, uerr)) {
+            auto uProgress = [&](int pct, const std::string& st) {
+                ProgressUpdate("restore", pct, st);
+                return progress ? progress(pct, st) : false;
+            };
+            if (!PrepareUniversal(newDir, req.driverDir, ulog, uerr,
+                                  uProgress)) {
                 DeleteTreeRec(newDir);
                 err = Tr("异机还原准备失败：") + W2U(uerr);
                 LogError(err);
@@ -2318,6 +2509,7 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             std::string detail;
             if (!AcquireEspRoot(espRoot, guidMatched, blog,
                                  (int)target.diskIndex)) {
+                LogError("ESP acquire log (staged):\n" + blog);
                 ReleaseOpLock();
                 ProgressDone("restore", "failed");
                 err = Tr("UEFI 机器未找到可用的 ESP 引导分区，无法部署引导层。\n"
@@ -2431,10 +2623,11 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             }
         }
         // 单次启动（都只生效一次）：
-        //   UEFI + shim/direct → 固件 BootNext
-        //   UEFI + bootapp     → BCD bootsequence（install 里已设好，不重复设）
-        //   BIOS/MBR           → BCD bootsequence
+        //   UEFI + shim/direct → 固件 BootNext（写后读回校验）
+        //   UEFI + bootapp     → BCD bootsequence（此处再校验一遍）
+        //   BIOS/MBR           → BCD bootsequence（写后读回校验）
         // 单次启动**只在"暂存+重启"模式设**；菜单项模式保持"用户自己选"（用户规格）。
+        // 三处都校验：安全软件可让命令返回 0 但不落盘 → 重启照旧进原系统（用户反馈）。
         if (menuEntry) {
             // 常驻菜单**可被选中**的前提：{bootmgr} timeout > 0 —— timeout=0 时
             // bootmgr 不停留直接进 Windows，按什么键都没用（用户 2026-09-29 实测；
@@ -2452,7 +2645,7 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
                         ReleaseOpLock();
                         ProgressDone("restore", "failed");
                         err = Tr("设置启动菜单停留时间失败（菜单将无法被选中）: ") +
-                              tlog;
+                              tlog + BootWriteBlockedHint();
                         LogError(err);
                         return 1;
                     }
@@ -2469,16 +2662,22 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             if (!SetUefiBootNext(blog, true)) {
                 ReleaseOpLock();
                 ProgressDone("restore", "failed");
-                err = Tr("设置固件单次启动失败: ") + blog;
+                err = Tr("设置固件单次启动失败: ") + blog +
+                      BootWriteBlockedHint();
                 LogError(err);
                 return 1;
             }
-        } else if (!useUefi && !BcdSetBootsequence(TemporaryGuid())) {
-            ReleaseOpLock();
-            ProgressDone("restore", "failed");
-            err = Tr("设置单次启动失败");
-            LogError(err);
-            return 1;
+        } else if (!useUefi || CurrentSbMode() == SbMode::Bootapp) {
+            std::string slog;
+            if (!BcdSetBootsequence(TemporaryGuid(), slog)) {
+                ReleaseOpLock();
+                ProgressDone("restore", "failed");
+                err = Tr("设置单次启动失败（重启后可能进不了还原环境）: ") + slog +
+                      BootWriteBlockedHint();
+                LogError(err);
+                return 1;
+            }
+            LogInfo("bootsequence verified: " + slog);
         }
     }
     // 日常还原（非安装菜单）→ 新系统首启自动清掉**临时**启动项/载荷。
@@ -2793,6 +2992,7 @@ int StageReturnOld(const PartitionInfo& target, std::string& err,
         bool guidMatched = false;
         if (!AcquireEspRoot(espRoot, guidMatched, blog,
                              (int)target.diskIndex)) {
+            LogError("ESP acquire log (returnold):\n" + blog);
             ReleaseOpLock();
             ProgressDone("restore", "failed");
             err = Tr("UEFI 机器未找到可用的 ESP 引导分区，无法部署引导层。\n"
@@ -2819,21 +3019,26 @@ int StageReturnOld(const PartitionInfo& target, std::string& err,
             return 1;
         }
     }
-    // 单次启动（只生效一次）
+    // 单次启动（只生效一次；写后读回校验，见 BootWriteBlockedHint）
     if (useUefi && CurrentSbMode() != SbMode::Bootapp) {
         if (!SetUefiBootNext(blog, true)) {
             ReleaseOpLock();
             ProgressDone("restore", "failed");
-            err = Tr("设置固件单次启动失败: ") + blog;
+            err = Tr("设置固件单次启动失败: ") + blog + BootWriteBlockedHint();
             LogError(err);
             return 1;
         }
-    } else if (!useUefi && !BcdSetBootsequence(TemporaryGuid())) {
-        ReleaseOpLock();
-        ProgressDone("restore", "failed");
-        err = Tr("设置单次启动失败");
-        LogError(err);
-        return 1;
+    } else {
+        std::string slog;
+        if (!BcdSetBootsequence(TemporaryGuid(), slog)) {
+            ReleaseOpLock();
+            ProgressDone("restore", "failed");
+            err = Tr("设置单次启动失败（重启后可能进不了还原环境）: ") + slog +
+                  BootWriteBlockedHint();
+            LogError(err);
+            return 1;
+        }
+        LogInfo("bootsequence verified: " + slog);
     }
     // 返回旧系统也是一次性引导：把清理器注入即将回到根的旧系统 ~old，
     // 首启删除临时条目（常驻菜单已在入口处禁止覆盖）。

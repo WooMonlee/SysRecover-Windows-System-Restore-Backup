@@ -14,14 +14,26 @@ const int kQuadW  = 520;
 const int kWndH   = 196;
 const int kLineH  = 22;
 const int kCorner = 24;
+const int kButtonH = 38;
+const int kButtonGap = 18;
+const int kBottomGap = 18;
 
-// 消息行数（按 '\n' 计），上限 5（skin 里只有 DlgMsg1..5）。
+// 消息行数（按 '\n' 计），上限 6（skin 里 DlgMsg1..6）。
 int MsgLineCount(const std::wstring& msg) {
     int lines = 1;
     for (wchar_t c : msg)
         if (c == L'\n' && ++lines >= 6)
             return 6;
     return lines;
+}
+
+// 自适应几何：按钮顶部 = 最后一行文字底部 + 固定间距；窗口底部 = 按钮底部
+// + 固定留白。这样不会再出现“按钮下移了、窗口没长高 → 底部被裁掉”。
+int MessageBottom(int lines) { return 56 + lines * kLineH; }
+int ButtonTop(int lines) { return MessageBottom(lines) + kButtonGap; }
+int WindowHeight(int lines) {
+    const int h = ButtonTop(lines) + kButtonH + kBottomGap;
+    return h > kWndH ? h : kWndH;
 }
 }  // namespace
 
@@ -59,7 +71,7 @@ void CConfirmDlg::InitWindow() {
     const bool three = !m_midText.empty();
     const bool quad = !m_moreText.empty();
     const int lines = MsgLineCount(m_msg);
-    const int extra = (lines > 3) ? (lines - 3) * kLineH : 0;
+    const int buttonTop = ButtonTop(lines);
     const wchar_t* names[6] = {_T("DlgMsg1"), _T("DlgMsg2"), _T("DlgMsg3"),
                                _T("DlgMsg4"), _T("DlgMsg5"), _T("DlgMsg6")};
     if (quad && b1 && bm && b2 && b4) {
@@ -84,10 +96,10 @@ void CConfirmDlg::InitWindow() {
         bm->SetVisible(true);
         b4->SetText(m_moreText.c_str());
         b4->SetVisible(true);
-        RECT r1 = { 12, 140 + extra, 126, 178 + extra };
-        RECT rm = { 134, 140 + extra, 248, 178 + extra };
-        RECT r2 = { 256, 140 + extra, 370, 178 + extra };
-        RECT r4 = { 378, 140 + extra, 492, 178 + extra };
+        RECT r1 = { 12, buttonTop, 126, buttonTop + kButtonH };
+        RECT rm = { 134, buttonTop, 248, buttonTop + kButtonH };
+        RECT r2 = { 256, buttonTop, 370, buttonTop + kButtonH };
+        RECT r4 = { 378, buttonTop, 492, buttonTop + kButtonH };
         b1->SetPos(r1);
         bm->SetPos(rm);
         b2->SetPos(r2);
@@ -95,15 +107,15 @@ void CConfirmDlg::InitWindow() {
     } else if (three && bm && b1 && b2) {
         bm->SetText(m_midText.c_str());
         bm->SetVisible(true);
-        RECT r1 = { 12, 140 + extra, 137, 178 + extra };
-        RECT rm = { 145, 140 + extra, 270, 178 + extra };
-        RECT r2 = { 278, 140 + extra, 403, 178 + extra };
+        RECT r1 = { 12, buttonTop, 137, buttonTop + kButtonH };
+        RECT rm = { 145, buttonTop, 270, buttonTop + kButtonH };
+        RECT r2 = { 278, buttonTop, 403, buttonTop + kButtonH };
         b1->SetPos(r1);
         bm->SetPos(rm);
         b2->SetPos(r2);
-    } else if (extra && b1 && b2) {
-        RECT r1 = { 106, 140 + extra, 232, 178 + extra };
-        RECT r2 = { 242, 140 + extra, 398, 178 + extra };
+    } else if (b1 && b2) {
+        RECT r1 = { 106, buttonTop, 232, buttonTop + kButtonH };
+        RECT r2 = { 242, buttonTop, 398, buttonTop + kButtonH };
         b1->SetPos(r1);
         b2->SetPos(r2);
     }
@@ -260,11 +272,11 @@ int CConfirmDlg::Ask4(HWND owner, const std::wstring& title,
 
 int CConfirmDlg::RunModal(HWND owner, CConfirmDlg* dlg) {
     // 无系统外框（WS_POPUP）+ 不进任务栏；owner = 主窗口（模态禁用）。
-    // 4/5 行消息 → 窗口加高（InitWindow 里按钮同步下移）；四选 → 加宽到 520。
+    // 消息行数自适应：窗口高度永远包含按钮底部 + 底留白；四选 → 加宽到 520。
     const bool quad = !dlg->m_moreText.empty();
     const int w = quad ? kQuadW : kWndW;
     const int lines = MsgLineCount(dlg->m_msg);
-    const int hgt = kWndH + ((lines > 3) ? (lines - 3) * kLineH : 0);
+    const int hgt = WindowHeight(lines);
     HWND h = dlg->Create(owner, Tr(L"九转还原"),
                          WS_POPUP | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
                          WS_EX_TOOLWINDOW, 0, 0, w, hgt);

@@ -1350,6 +1350,14 @@ SupportBundle BuildSupportBundle(const std::wstring& outZip) {
 
     // 当前日志目录（递归；跳过输出包自身，防自吞）
     ZipAddTree(zip, logsDir, L"logs", 8, zipPath, n);
+    // GUI 与 CLI 在部分 PE 下可能选中不同的日志根（GUI 主日志在程序目录、
+    // CLI support 在数据盘）；把程序目录 logs 也收进来，避免主日志缺失。
+    {
+        std::wstring appLogs = AppDir() + L"\\logs";
+        if (_wcsicmp(appLogs.c_str(), logsDir.c_str()) != 0 &&
+            GetFileAttributesW(appLogs.c_str()) != INVALID_FILE_ATTRIBUTES)
+            ZipAddTree(zip, appLogs, L"app-logs", 8, zipPath, n);
+    }
     // 其它固定盘的 ZJRESTORE\logs（覆盖"单文件/temp 运行、日志落数据盘"的情况）
     {
         DWORD mask = GetLogicalDrives();
