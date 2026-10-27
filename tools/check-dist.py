@@ -20,8 +20,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 REQUIRED = [
-    "SysRecover.exe", "SysRecoverUI.exe",
-    "x64/SysRecover.exe", "x64/SysRecoverUI.exe",
+    "SysRecover.exe", "SysRecoverUI.exe", "SysRecoverCheck.exe",
+    "x64/SysRecover.exe", "x64/SysRecoverUI.exe", "x64/SysRecoverCheck.exe",
+    "SysRecoverCheck_x86.exe",
     "bootfiles/vmlinuz-zjrestore",
     "bootfiles/initramfs-zjrestore.cpio.gz",
     "bootfiles/zjrestore-lite.sh",

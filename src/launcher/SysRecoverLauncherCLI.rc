@@ -1,0 +1,2 @@
+/* x64 总入口（CLI）：无图标（品牌图标只给 GUI），带提权清单。 */
+1 24 "SysRecover.manifest"

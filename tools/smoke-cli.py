@@ -10,7 +10,10 @@
   * 无参数                   退出 2（Usage）
   * 未知命令                 退出 2（Usage）
 
-用法：python tools/smoke-cli.py [dist/x64/SysRecover.exe]
+第二个参数可给「镜像检查」程序（dist/x64/SysRecoverCheck.exe），
+再跑一组同样的启动/退出码用例（--help / 未知选项 / 不存在文件 / 无参）。
+
+用法：python tools/smoke-cli.py [dist/x64/SysRecover.exe] [dist/x64/SysRecoverCheck.exe]
 """
 from __future__ import annotations
 
@@ -27,6 +30,42 @@ def run(exe: Path, args: list[str]) -> tuple[int, str]:
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                        timeout=60)
     return p.returncode, p.stdout.decode("utf-8", "replace")
+
+
+def run_check(exe: Path) -> int:
+    """「镜像检查」程序的冒烟（SysRecoverCheck.exe，需求 2 的独立程序）。"""
+    if not exe.is_file():
+        print("smoke-cli: FAIL missing %s" % exe)
+        return 1
+    # 不存在的镜像路径：只验证参数/退出码口径，不读任何真实镜像。
+    missing = str(ROOT / "build" / "definitely-not-an-image.esd")
+    cases = [
+        ("check --help", ["--help"], 0),
+        ("check unknown option", ["--badopt"], 2),
+        ("check no args", [], 2),          # 非独占控制台（管道）→ 用法 + 2
+        ("check missing file", ["--quick", missing], 1),
+        ("check --lang en help", ["--lang", "en", "--help"], 0),
+    ]
+    bad = 0
+    for name, args, want in cases:
+        try:
+            rc, out = run(exe, args)
+        except Exception as e:
+            print("FAIL %-22s exception: %s" % (name, e))
+            bad += 1
+            continue
+        ok = rc == want
+        if name == "check --help" and ok:
+            ok = "SysRecover" in out
+        if name == "check unknown option" and ok:
+            ok = "badopt" in out
+        if name == "check --lang en help" and ok:
+            ok = "Check image" in out and "Usage:" in out
+        print("%s %-22s rc=%d want=%d" % ("ok  " if ok else "FAIL", name, rc, want))
+        if not ok:
+            bad += 1
+            print(out[-600:])
+    return bad
 
 
 def main() -> int:
@@ -77,6 +116,12 @@ def main() -> int:
     if bad:
         print("smoke-cli: FAIL (%d)" % bad)
         return 1
+    # 第二个参数 = 「镜像检查」程序（可选；给了就一起冒烟）
+    if len(sys.argv) > 2:
+        bad += run_check(Path(sys.argv[2]))
+        if bad:
+            print("smoke-cli: FAIL (%d)" % bad)
+            return 1
     print("smoke-cli: PASS")
     return 0
 

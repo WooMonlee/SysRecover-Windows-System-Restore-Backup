@@ -3,16 +3,15 @@
 #         x86 = D:\Prog\ProgIDE\mingw32 (GCC 14.2.0, i686-w64-mingw32,  UCRT)
 # 用法（PowerShell）：
 #   $env:Path = "D:\Prog\ProgIDE\mingw64\bin;" + $env:Path
-#   mingw32-make -f Makefile package        # ★ 发布包 → dist/（根=x86 整套 + x64/ + 共享资源）
-#   mingw32-make -f Makefile all            # 仅 x64 → dist/x64
-#   mingw32-make -f Makefile ARCH=x86 all   # 仅 x86 → dist（根目录）
+#   mingw32-make -f Makefile package        # ★ 发布包：x64 总入口 + x64/ + x86 兼容入口 + 共享资源
+#   mingw32-make -f Makefile all            # 仅 x64 真程序 → dist/x64
+#   mingw32-make -f Makefile ARCH=x86 all   # 仅 x86 兼容程序 → dist/*_x86.exe
 #   mingw32-make -f Makefile check          # 单元测试（纯逻辑，零依赖）
 #   mingw32-make -f Makefile clean          # 清理（当前 ARCH）
 #
-# 架构设计（2026-09-24 方案 D）：**Windows 侧位数跟随系统**（32 位系统跑 x86、64 位系统跑 x64，
-# 主要为备份压缩速度）。发布包**不做独立启动器**，而是：
-#   根目录 = x86 整套（入口）；x64/ = x64 整套；32 位程序在 64 位系统上**把自己换成 x64\同名**
-#   （见 src/common/selfarch.cpp）。**Linux 救援层固定 x86_64**（与宿主位数无关）。见 docs/08 §0。
+# 架构设计（2026-10-26 调整）：根目录 = x64 总入口（带图标，调用 x64\ 真程序）；
+# 32 位 Windows 用同目录 *_x86.exe。x64-only PE（无 WOW64）直接跑根入口，不再需要
+# 32 位自举。**Linux 救援层固定 x86_64**（与宿主位数无关）。见 docs/08 §0。
 
 ARCH ?= x64
 MINGW32 ?= D:/Prog/ProgIDE/mingw32
@@ -24,8 +23,11 @@ ifeq ($(ARCH),x86)
   AR       = $(MINGW)/bin/ar.exe
   WINDRES  = $(MINGW)/bin/windres.exe
   OBJDIR   = build-x86
-  # x86 是**入口**：产物直接放发布包根目录（x64 放 dist/x64）
+  # x86 是**32 位兼容入口**：产物带 _x86 后缀（根目录总入口是 x64 启动器）
   DISTDIR  = dist
+  CLI_NAME = SysRecover_x86.exe
+  GUI_NAME = SysRecoverUI_x86.exe
+  CHECK_NAME = SysRecoverCheck_x86.exe
   WIMLIB   = third_party/wimlib/x86
   UCRT     = third_party/ucrt/x86
 else
@@ -35,7 +37,11 @@ else
   AR       = $(MINGW)/bin/ar.exe
   WINDRES  = $(MINGW)/bin/windres.exe
   OBJDIR   = build
+  # x64 真程序放在 x64/；根目录 SysRecover*.exe 是 x64 总入口启动器
   DISTDIR  = dist/x64
+  CLI_NAME = SysRecover.exe
+  GUI_NAME = SysRecoverUI.exe
+  CHECK_NAME = SysRecoverCheck.exe
   WIMLIB   = third_party/wimlib
   UCRT     = third_party/ucrt/x64
 endif
@@ -52,7 +58,7 @@ LDFLAGS  = -static -mconsole -s
 LDLIBS   = -L$(WIMLIB) -l:libwim-15.dll -ladvapi32 -lole32 -lshell32 -luuid -lgdi32 -lntdll -lversion
 
 # ---- 应用模块静态库（CLI 与 GUI 共用，避免双份编译 ODR 问题） ----
-APP_SRC = src/disk/disk.cpp src/disk/partinit.cpp src/wim/wim.cpp src/wim/exclude.cpp \
+APP_SRC = src/disk/disk.cpp src/disk/partinit.cpp src/disk/partscript.cpp src/wim/wim.cpp src/wim/exclude.cpp \
       src/common/process.cpp src/common/logger.cpp src/common/progress.cpp \
       src/common/singleton.cpp src/common/sysinfo.cpp src/common/zip.cpp \
       src/common/selfarch.cpp src/common/crash.cpp src/common/vss.cpp src/common/i18n.cpp \
@@ -66,10 +72,16 @@ APP_LIB  = $(OBJDIR)/libapp.a
 
 # ---- CLI（console） ----
 CLI_MAIN = src/cli/main.cpp
-CLI_OUT = $(DISTDIR)/SysRecover.exe
+CLI_OUT = $(DISTDIR)/$(CLI_NAME)
 # 提权清单（requireAdministrator）：见本文件 GUI 段与 PIT-018。
 CLI_RC     = src/cli/SysRecover.rc
 CLI_RC_OBJ = $(OBJDIR)/SysRecover_rc.o
+
+# ---- 独立镜像检查程序（需求 2，2026-10-27）----
+# 只读检查（快检 + 列子镜像 + 可选全量校验），**不需要管理员** → 不嵌提权清单，
+# 也不装崩溃处理器/不自举位数（根目录 SysRecoverCheck.exe 是 x64 启动器）。
+CHECK_MAIN = src/tools/wimcheck_main.cpp
+CHECK_OUT  = $(DISTDIR)/$(CHECK_NAME)
 
 # ---- Duilib 静态库（经典 Duilib，MIT；见 AGENTS.md PIT-012；源清单 build/duilib.mk 自动生成） ----
 DUI_ROOT  = third_party/duilib-master/DuiLib
@@ -81,7 +93,7 @@ include build/duilib.mk
 
 # ---- GUI（windows，经典 Duilib） ----
 GUI_SRC = src/gui/main_win.cpp src/gui/main_form.cpp src/gui/ui_skin.cpp src/gui/instance_dlg.cpp src/gui/confirm_dlg.cpp src/gui/imgsearch.cpp src/gui/initdisk_dlg.cpp
-GUI_OUT = $(DISTDIR)/SysRecoverUI.exe
+GUI_OUT = $(DISTDIR)/$(GUI_NAME)
 GUI_INCLUDES = -Isrc -I$(DUI_ROOT) -I$(DUI_ROOT)/Control -I$(DUI_ROOT)/Core -I$(DUI_ROOT)/Layout -I$(DUI_ROOT)/Utils
 GUI_FLAGS = -std=c++17 -O1 -fpermissive -DUNICODE -D_UNICODE -DWIN32 -D_WIN32_WINNT=0x0601 -D_stdcall=__stdcall -DUILIB_STATIC
 GUI_LDLIBS = -lgdi32 -lcomctl32 -limm32 -lole32 -luuid -lmsimg32 -lshlwapi -luxtheme -ldwmapi -lwinmm -lgdiplus -loleaut32 -ladvapi32 -lshell32 -lntdll -lversion -lversion
@@ -99,11 +111,12 @@ GUI_RC     = src/gui/SysRecoverUI.rc
 # "if not exist ..." 是 cmd 语法，在 sh 下会语法错误，别再仿写）。
 GUI_RC_OBJ = $(OBJDIR)/SysRecoverUI_rc.o
 
-all: cli gui
+all: cli gui wimcheck
 	@copy /Y $(subst /,\,$(WIMLIB))\libwim-15.dll $(subst /,\,$(DISTDIR))\ >nul
 	@if exist $(subst /,\,$(UCRT))\*.dll copy /Y $(subst /,\,$(UCRT))\*.dll $(subst /,\,$(DISTDIR))\ >nul
 
 cli: $(CLI_OUT)
+wimcheck: $(CHECK_OUT)
 
 # 独立输出目录（cmd 的 mkdir 会自动建中间目录，故 dist\x64 可直接建）
 $(OBJDIR):
@@ -129,6 +142,10 @@ $(CLI_RC_OBJ): $(CLI_RC) src/cli/SysRecover.manifest resources/SysRecover.ico | 
 $(CLI_OUT): $(CLI_MAIN) $(CLI_RC_OBJ) $(APP_LIB) $(WIMLIB)/libwim-15.dll src/common/version.h | $(DISTDIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(CLI_MAIN) $(CLI_RC_OBJ) $(APP_LIB) -o $(CLI_OUT) $(LDFLAGS) $(LDLIBS)
 
+# 镜像检查程序：console、无 .rc（不要求管理员）、-lcomdlg32（多选打开框）。
+$(CHECK_OUT): $(CHECK_MAIN) $(APP_LIB) $(WIMLIB)/libwim-15.dll src/common/version.h | $(DISTDIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(CHECK_MAIN) $(APP_LIB) -o $(CHECK_OUT) $(LDFLAGS) $(LDLIBS) -lcomdlg32
+
 $(OBJDIR)/duilib:
 	@if not exist $(subst /,\,$(OBJDIR))\duilib mkdir $(subst /,\,$(OBJDIR))\duilib
 
@@ -145,8 +162,42 @@ $(GUI_RC_OBJ): $(GUI_RC) src/gui/SysRecoverUI.manifest resources/SysRecover.ico 
 $(GUI_OUT): $(GUI_SRC) $(GUI_RC_OBJ) $(DUI_LIB) $(APP_LIB) src/common/version.h | $(DISTDIR)
 	$(CXX) $(GUI_FLAGS) $(GUI_INCLUDES) $(GUI_SRC) $(GUI_RC_OBJ) $(APP_LIB) $(DUI_LIB) -o $(GUI_OUT) -static -mwindows -s $(GUI_LDLIBS) -L$(WIMLIB) -l:libwim-15.dll
 
+# ---- x64 总入口（图标 + 调用 x64\ 下的真程序）----
+# 根目录只放这个 x64 启动器；纯 x64 PE（没有 WOW64）也能运行。
+# 32 位兼容程序是 dist\SysRecoverUI_x86.exe / SysRecover_x86.exe（由 ARCH=x86 构建）。
+LAUNCHER_CXX = $(MINGW64)/bin/x86_64-w64-mingw32-g++
+LAUNCHER_UI  = dist/SysRecoverUI.exe
+LAUNCHER_CLI = dist/SysRecover.exe
+LAUNCHER_CHECK = dist/SysRecoverCheck.exe
+LAUNCHER_UI_RC  = build/SysRecoverLauncherUI_rc.o
+LAUNCHER_CLI_RC = build/SysRecoverLauncherCLI_rc.o
+
+launchers: $(LAUNCHER_UI) $(LAUNCHER_CLI) $(LAUNCHER_CHECK)
+
+$(LAUNCHER_UI_RC): src/launcher/SysRecoverLauncherUI.rc src/gui/SysRecoverUI.manifest resources/SysRecover.ico
+	@if not exist build mkdir build
+	$(MINGW64)/bin/windres.exe -I resources -I src/gui $< -o $@
+
+$(LAUNCHER_CLI_RC): src/launcher/SysRecoverLauncherCLI.rc src/cli/SysRecover.manifest
+	@if not exist build mkdir build
+	$(MINGW64)/bin/windres.exe -I src/cli $< -o $@
+
+$(LAUNCHER_UI): src/launcher/launcher.cpp $(LAUNCHER_UI_RC)
+	@if not exist dist mkdir dist
+	$(LAUNCHER_CXX) -O2 -std=c++17 -DUNICODE -D_UNICODE -D_WIN32_WINNT=0x0601 -DZJ_LAUNCH_GUI $< $(LAUNCHER_UI_RC) -o $@ -static -mwindows -s -luser32
+
+$(LAUNCHER_CLI): src/launcher/launcher.cpp $(LAUNCHER_CLI_RC)
+	@if not exist dist mkdir dist
+	$(LAUNCHER_CXX) -O2 -std=c++17 -DUNICODE -D_UNICODE -D_WIN32_WINNT=0x0601 $< $(LAUNCHER_CLI_RC) -o $@ -static -mconsole -s -luser32
+
+# 镜像检查入口：console + 等待子进程并透传退出码（脚本/拖放都能拿到结果）。
+# **不带 .rc** —— 检查镜像只需读权限，不能要求管理员。
+$(LAUNCHER_CHECK): src/launcher/launcher.cpp
+	@if not exist dist mkdir dist
+	$(LAUNCHER_CXX) -O2 -std=c++17 -DUNICODE -D_UNICODE -D_WIN32_WINNT=0x0601 -DZJ_LAUNCH_CHECK $< -o $@ -static -mconsole -s -luser32
+
 clean:
-	-del /Q $(subst /,\,$(DISTDIR))\SysRecover.exe $(subst /,\,$(DISTDIR))\SysRecoverUI.exe 2>nul
+	-del /Q $(subst /,\,$(CLI_OUT)) $(subst /,\,$(GUI_OUT)) $(subst /,\,$(CHECK_OUT)) 2>nul
 	-del /S /Q $(subst /,\,$(OBJDIR)) 2>nul
 
 # ---- 首启 EA 补写器（PIT-122/123）----
@@ -176,7 +227,8 @@ $(BOOT_CLEANUP_OUT): $(BOOT_CLEANUP_SRC) src/boot/bcd.h src/boot/bootnames.h | $
 TEST_SRC   = tests/tiny_test.cpp tests/unit_tests.cpp tests/main.cpp
 TEST_UNITS = src/common/sysinfo.cpp src/wim/exclude.cpp src/boot/task.cpp src/common/zip.cpp src/app/advice.cpp \
       src/common/i18n.cpp src/common/selfarch.cpp src/common/relocate.cpp src/common/pathutil.cpp src/boot/bcd_parse.cpp src/boot/bootpath.cpp \
-      src/common/ea.cpp src/common/refscan.cpp src/app/swapleft.cpp src/common/logger.cpp src/common/bioskey.cpp
+      src/common/ea.cpp src/common/refscan.cpp src/app/swapleft.cpp src/common/logger.cpp src/common/bioskey.cpp \
+      src/disk/partscript.cpp
 TEST_BIN   = $(OBJDIR)/tests.exe
 $(TEST_BIN): $(TEST_SRC) $(TEST_UNITS) src/common/rescue_decision.h src/common/version.h tests/tiny_test.h | $(OBJDIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(TEST_SRC) $(TEST_UNITS) -o $(TEST_BIN) -static -mconsole -ladvapi32 -lole32 -luuid -lntdll
@@ -202,12 +254,12 @@ check: $(TEST_BIN)
 	$(PYTHON) tools/check-layers.py
 	$(PYTHON) tools/check-secrets.py
 
-# ---- ★ 发布包：根目录 = x86 整套（入口）；x64/ = x64 整套；与位数无关的资源放根目录 ----
+# ---- ★ 发布包：根目录 = x64 总入口 + x86 兼容入口；x64/ = x64 真程序；共享资源放根目录 ----
 # 需要**两套工具链**：x64 走 PATH 上的 g++（请先把 mingw64\bin 加到 PATH），x86 走绝对路径。
 # 递归调用 make 时**必须把 $(MAKE) 的正斜杠换成反斜杠**：mingw32-make 把 $(MAKE) 展开成
 # `D:/Prog/.../mingw32-make.exe`，而 shell 是 cmd，正斜杠路径会被判为"系统找不到指定的路径"。
 SELF = $(subst /,\,$(MAKE))
-package: ea-apply boot-cleanup
+package: ea-apply boot-cleanup launchers
 	@echo === [1/3] 构建 x64 -^> dist/x64 ===
 	$(SELF) -f Makefile ARCH=x64 all
 	@echo === [2/3] 构建 x86 -^> dist（根，入口）===
@@ -250,7 +302,7 @@ package: ea-apply boot-cleanup
 	@if not exist dist\lang mkdir dist\lang
 	@copy /Y lang\*.lang dist\lang\ >nul
 	@echo {"name":"SysRecover","version":"$(VERSION)","arch":"x86+x64"} > dist\version.json
-	@dir dist\SysRecover.exe dist\SysRecoverUI.exe dist\x64\SysRecover.exe dist\x64\SysRecoverUI.exe
+	@dir dist\SysRecover.exe dist\SysRecoverUI.exe dist\SysRecoverCheck.exe dist\SysRecover_x86.exe dist\SysRecoverUI_x86.exe dist\SysRecoverCheck_x86.exe dist\x64\SysRecover.exe dist\x64\SysRecoverUI.exe dist\x64\SysRecoverCheck.exe
 # 打完包再严格核一次"指针"（version.json ↔ version.h 等）—— 防止"改了源码没打包"
 	@$(PYTHON) tools/check-docs.py --strict-dist
 
@@ -263,7 +315,7 @@ dist-check:
 	@if exist dist\logs rmdir /S /Q dist\logs
 	$(PYTHON) tools/check-dist.py dist
 smoke-cli:
-	$(PYTHON) tools/smoke-cli.py $(subst /,\,$(DISTDIR))\SysRecover.exe
+	$(PYTHON) tools/smoke-cli.py $(subst /,\,$(DISTDIR))\SysRecover.exe $(subst /,\,$(DISTDIR))\$(CHECK_NAME)
 
 # ---- B 引擎端到端演练（docs/24 P2-4；QEMU + 断言，数分钟；演练盘不入库）----
 # 先重建演练盘（陈旧 drill.raw 会报 Cannot find GRLDR），再跑 run-drill 断言。
@@ -271,4 +323,4 @@ drill:
 	$(PYTHON) tools/vmtest/mk-drill.py
 	powershell -ExecutionPolicy Bypass -File tools/vmtest/run-drill.ps1 -Secs 240
 
-.PHONY: all cli gui clean package check crash-test smoke drill sha256 dist-check smoke-cli
+.PHONY: all cli gui wimcheck clean package check crash-test smoke drill sha256 dist-check smoke-cli

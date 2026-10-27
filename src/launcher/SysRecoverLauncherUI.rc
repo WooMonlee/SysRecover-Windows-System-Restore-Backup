@@ -1,0 +1,3 @@
+/* x64 总入口（GUI）：图标 + 提权清单。真正的程序在 x64\SysRecoverUI.exe。 */
+1 ICON "SysRecover.ico"
+1 24 "SysRecoverUI.manifest"
