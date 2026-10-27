@@ -2,11 +2,11 @@
 #include "common/i18n.h"
 #include "common/process.h"
 #include "partinit.h"
+#include "partscript.h"
 
 #include <windows.h>
 #include <winioctl.h>
 
-#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 
@@ -277,54 +277,17 @@ bool ValidatePartInitPlan(const PartInitPlan& p, uint64_t diskSize,
     return true;
 }
 
-std::string BuildDiskpartScript(const PartInitPlan& p, wchar_t espLetter,
-                                wchar_t sysLetter, wchar_t dataLetter,
-                                bool& needBootsect) {
-    char buf[2048];
-    std::string s;
-    auto add = [&](const char* fmt, ...) {
-        va_list ap;
-        va_start(ap, fmt);
-        vsnprintf(buf, sizeof(buf), fmt, ap);
-        va_end(ap);
-        s += buf;
-    };
-    add("select disk %u\n", p.diskIndex);
-    add("clean\n");
-    if (p.scheme == DiskScheme::Gpt) {
-        add("convert gpt\n");
-        add("create partition efi size=%llu\n", p.espMb);
-        add("format quick fs=fat32 label=ESP\n");
-        if (espLetter) add("assign letter=%c\n", (char)espLetter);
-        add("create partition msr size=%llu\n", p.msrMb);
-        add("create partition primary size=%llu\n", p.systemGb * 1024ull);
-        add("format quick fs=ntfs label=Windows\n");
-        if (sysLetter) add("assign letter=%c\n", (char)sysLetter);
-        if (p.createData) {
-            add("create partition primary\n");
-            add("format quick fs=ntfs label=Data\n");
-            if (dataLetter) add("assign letter=%c\n", (char)dataLetter);
-        }
-        needBootsect = false;
-    } else {
-        add("convert mbr\n");
-        add("create partition primary size=%llu\n", p.systemGb * 1024ull);
-        add("format quick fs=ntfs label=Windows\n");
-        add("active\n");
-        if (sysLetter) add("assign letter=%c\n", (char)sysLetter);
-        if (p.createData) {
-            add("create partition primary\n");
-            add("format quick fs=ntfs label=Data\n");
-            if (dataLetter) add("assign letter=%c\n", (char)dataLetter);
-        }
-        needBootsect = true;
-    }
-    add("exit\n");
-    return s;
-}
-
 int ApplyPartInitPlan(const PartInitPlan& p, std::wstring& err,
-                      std::string& log) {
+                      std::string& log,
+                      const PartInitProgressFn& progress) {
+    // 阶段上报（2026-10-27）：diskpart 一步能跑几十秒（建分区+格式化），
+    // 中途没有任何输出 —— 不给阶段标记的话 GUI 就是一个冻住的进度条。
+    // 因此脚本按"清表 / 转换 / ESP / MSR / 系统盘 / 数据盘"拆成多次 diskpart
+    // 调用，每一步之前都报一次阶段名（用户规格：每一步操作都要看得见）。
+    // 失败分支**不报 done**（100 只留给真正成功），见各 return 1 前。
+    auto report = [&progress](int pct, const char* stage) {
+        if (progress) progress(pct, stage);
+    };
     wchar_t letters[3] = {0, 0, 0};
     letters[0] = PickLetter(L'D', letters, 0);
     letters[1] = PickLetter(L'D', letters, 1);
@@ -333,25 +296,42 @@ int ApplyPartInitPlan(const PartInitPlan& p, std::wstring& err,
         err = Tr(L"没有足够的空闲盘符可分配");
         return 1;
     }
-    bool needBootsect = false;
-    const std::string script = BuildDiskpartScript(
-        p, letters[0], letters[1], letters[2], needBootsect);
+    report(5, "partinit-letters");
+    const bool gpt = p.scheme == DiskScheme::Gpt;
+    const bool needBootsect = !gpt;
+    const std::vector<PartScriptStep> steps = BuildDiskpartSteps(
+        gpt, p.diskIndex, p.espMb, p.msrMb, p.systemGb, p.createData, letters[0],
+        letters[1], letters[2]);
+    report(12, "partinit-script");
+    log += "partinit: diskpart script (joined):\n" +
+           JoinDiskpartSteps(steps, p.diskIndex);
+
     wchar_t tmp[MAX_PATH] = {};
     GetTempPathW(MAX_PATH, tmp);
-    std::wstring sp = std::wstring(tmp) + L"zjpartinit.txt";
-    if (!WriteAsciiFile(sp, script)) {
-        err = Tr(L"无法写入分区脚本（临时目录不可写）");
-        return 1;
-    }
-    log += "partinit: diskpart script:\n" + script;
-    std::string out;
-    int rc = RunProcess(SysToolPath(L"diskpart.exe"),
-                        L"/s \"" + sp + L"\"", out);
-    DeleteFileW(sp.c_str());
-    log += "partinit: diskpart rc=" + std::to_string(rc) + "\n" + out;
-    if (rc != 0) {
-        err = Tr(L"分区失败（diskpart 返回错误）。请打开日志查看详情。");
-        return 1;
+    const std::wstring sp = std::wstring(tmp) + L"zjpartinit.txt";
+    // 12..82 均分给各步（每一步的**开始**上报；具体一步内部无法细分）。
+    const int kFirstPct = 12;
+    const int kLastPct = 82;
+    for (size_t i = 0; i < steps.size(); ++i) {
+        const int pct =
+            kFirstPct + static_cast<int>((kLastPct - kFirstPct) *
+                                         static_cast<int>(i) /
+                                         static_cast<int>(steps.size()));
+        report(pct, steps[i].stage.c_str());
+        if (!WriteAsciiFile(sp, steps[i].script)) {
+            err = Tr(L"无法写入分区脚本（临时目录不可写）");
+            return 1;
+        }
+        std::string out;
+        int rc = RunProcess(SysToolPath(L"diskpart.exe"),
+                            L"/s \"" + sp + L"\"", out);
+        DeleteFileW(sp.c_str());
+        log += "partinit: step " + steps[i].stage + " rc=" +
+               std::to_string(rc) + "\n" + out;
+        if (rc != 0) {
+            err = Tr(L"分区失败（diskpart 返回错误）。请打开日志查看详情。");
+            return 1;
+        }
     }
     if (needBootsect) {
         // MBR 新盘必须写磁盘引导代码 + 活动分区，否则还原完黑屏。
@@ -368,6 +348,7 @@ int ApplyPartInitPlan(const PartInitPlan& p, std::wstring& err,
         std::string bsd;
         std::wstring args =
             L"/nt60 " + std::wstring(1, letters[1]) + L": /mbr";
+        report(86, "partinit-bootsect");
         int brc = RunProcess(bsexe, args, bsd);
         log += "partinit: bootsect /nt60 " +
                std::string(1, (char)letters[1]) + ": /mbr rc=" +
@@ -380,6 +361,7 @@ int ApplyPartInitPlan(const PartInitPlan& p, std::wstring& err,
         }
     }
     // 回读校验：分区风格/数量/ESP/引导代码。
+    report(90, "partinit-verify");
     const auto disks = EnumerateDisks();
     const DiskInfo* di = nullptr;
     for (const auto& d : disks)
@@ -416,6 +398,7 @@ int ApplyPartInitPlan(const PartInitPlan& p, std::wstring& err,
     log += "partinit: verify ok (style=" +
            std::string(StyleName(di->style)) + " parts=" +
            std::to_string(di->parts.size()) + ")\n";
+    report(100, "partinit-done");
     return 0;
 }
 

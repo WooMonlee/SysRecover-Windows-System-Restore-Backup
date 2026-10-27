@@ -56,6 +56,7 @@ wchar_t SystemDriveLetter() {
 
 // 卷记录（用于把盘符/卷标/文件系统映射到磁盘分区）
 struct VolumeRec {
+    std::wstring volumeName;            // FindFirstVolume 返回的卷名（带尾反斜杠）
     std::vector<std::wstring> letters;  // L"C"（无冒号）
     std::wstring label;
     std::wstring fs;
@@ -79,6 +80,7 @@ std::vector<VolumeRec> EnumerateVolumes() {
             continue;
 
         VolumeRec rec;
+        rec.volumeName = volName;
         // 盘符/挂载点
         DWORD need = 0;
         GetVolumePathNamesForVolumeNameW(volName, nullptr, 0, &need);
@@ -269,6 +271,7 @@ std::vector<DiskInfo> EnumerateDisks() {
             for (const auto& v : volumes) {
                 for (const auto& ex : v.extents) {
                     if (ex.disk == idx && ex.offset == p.offsetBytes) {
+                        p.volumeName = v.volumeName;
                         if (!v.letters.empty())
                             p.letter = v.letters[0];
                         p.label = v.label;

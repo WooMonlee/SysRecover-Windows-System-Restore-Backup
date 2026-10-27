@@ -8,6 +8,8 @@
 // apply）没有 DISM，调用方在暂存阶段拒绝。
 #include <string>
 
+#include "wim/wim.h"  // ProgressFn
+
 namespace sysrecover {
 
 // 纯逻辑：镜像 OS 版本是否支持异机（Win10/11 = major 10）。
@@ -26,7 +28,7 @@ bool ValidateDriverFolder(const std::wstring& dir, int* infCount,
 // offlineRoot = 离线 Windows 根目录（A 引擎 ~new / 就地还原的 X:\）。
 bool PrepareUniversal(const std::wstring& offlineRoot,
                       const std::wstring& driverDir, std::string& log,
-                      std::wstring& err);
+                      std::wstring& err, ProgressFn progress = nullptr);
 
 // 当前宿主是否为 64 位（PE/系统）；x64 镜像需要 64 位环境才能用 DISM。
 bool IsHost64();

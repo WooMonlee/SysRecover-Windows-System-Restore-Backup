@@ -332,8 +332,14 @@ std::wstring MountEsp(std::string& log) {
         std::wstring args = std::wstring(1, c) + L": /s";
         if (RunProcess(SysToolPath(L"mountvol.exe"), args, out) != 0)
             continue;
-        if (GetFileAttributesW(root) == INVALID_FILE_ATTRIBUTES)
+        if (GetFileAttributesW(root) == INVALID_FILE_ATTRIBUTES) {
+            // 0.9.33：mountvol 返回 0 但卷还没就绪时，别把这个盘符永久占着
+            // （下一次 mountvol /s 会因盘符已用而失败）。撤掉再试下一个。
+            std::string o2;
+            RunProcess(SysToolPath(L"mountvol.exe"),
+                       std::wstring(1, c) + L": /d", o2);
             continue;
+        }
         char line[64];
         snprintf(line, sizeof(line), "ESP mounted at %c:\\\n", (char)c);
         log += line;
@@ -346,6 +352,11 @@ std::wstring MountEsp(std::string& log) {
 void UnmountEsp(const std::wstring& espRoot, std::string& log) {
     if (espRoot.size() < 2)
         return;
+    // 0.9.33：优先 Win32；精简 PE 可能没有 mountvol.exe。
+    if (DeleteVolumeMountPointW(espRoot.c_str())) {
+        log += "ESP unmounted (Win32)\n";
+        return;
+    }
     std::string out;
     std::wstring args = espRoot.substr(0, 2) + L" /d";
     RunProcess(SysToolPath(L"mountvol.exe"), args, out);

@@ -12,6 +12,10 @@ struct PartitionInfo {
     uint32_t diskIndex = 0;
     uint32_t partNumber = 0;  // 1-based；0 表示未编号条目
     std::wstring guid;        // GPT PartitionId，小写无花括号；MBR 为空
+    // 卷名 \\?\Volume{...}\（FindFirstVolume 原样返回）；无卷映射时为空。
+    // GPT 下通常与 partition GUID 相同，但刚分区/刚格式化时 mountvol 按
+    // partition GUID 可能找不到，必须用这个真实卷名（0.9.33 ESP 修复）。
+    std::wstring volumeName;
     uint64_t offsetBytes = 0;
     uint64_t sizeBytes = 0;
     std::wstring letter;      // L"C"，无盘符为空

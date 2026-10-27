@@ -1,6 +1,7 @@
 #pragma once
 // BCD 操作（bcdedit 封装）。成熟方案见 AGENTS.md §7，严禁发明。
 // 条目存在性：bcdedit /enum {GUID} 看输出是否回显 GUID（两者退出码都 0）。
+#include <cctype>
 #include <string>
 
 namespace sysrecover {
@@ -64,6 +65,52 @@ inline int ParseBootmgrTimeout(const std::string& out) {
 // 条目是否存在（ASCII GUID 匹配，不受代码页影响）。
 bool BcdEntryExists(const std::wstring& guid);
 
+// ASCII GUID 不区分大小写比较（读回值来自 bcdedit 输出，大小写可能变）。
+inline bool SameGuidAscii(const std::string& a, const std::wstring& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        unsigned char ca = static_cast<unsigned char>(a[i]);
+        unsigned char cb = static_cast<unsigned char>(b[i]);
+        if (std::tolower(ca) != std::tolower(cb)) return false;
+    }
+    return true;
+}
+
+// 从 `bcdedit /enum {bootmgr}` 输出里取 `bootsequence` 的值（`{GUID}`）。
+// 用途：**写后读回校验**（用户 2026-10-27 需求 —— 装了安全软件的机器上，
+// bootsequence 可能被静默丢弃/回滚，重启后照旧进原系统，用户毫无提示）。
+// 判定**不依赖其它元素的标签语言**：`bootsequence` 是 bcdedit 固定输出的
+// ASCII 元素名（与 identifier/device/timeout 同族），值恒为
+// `{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}`（38 字符）。找不到/形态不对 →
+// 空串（= 没有单次启动项）。纯逻辑，单测覆盖。
+inline std::string ParseBootsequence(const std::string& out) {
+    size_t pos = 0;
+    for (;;) {
+        size_t eol = out.find_first_of("\r\n", pos);
+        if (eol == std::string::npos) eol = out.size();
+        size_t a = pos;
+        while (a < eol && (out[a] == ' ' || out[a] == '\t')) ++a;
+        size_t b = a;
+        while (b < eol && out[b] != ' ' && out[b] != '\t') ++b;
+        std::string key = out.substr(a, b - a);
+        for (size_t i = 0; i < key.size(); ++i)
+            key[i] = static_cast<char>(
+                std::tolower(static_cast<unsigned char>(key[i])));
+        if (key == "bootsequence") {
+            size_t c = b;
+            while (c < eol && (out[c] == ' ' || out[c] == '\t')) ++c;
+            size_t d = c;
+            while (d < eol && out[d] != ' ' && out[d] != '\t') ++d;
+            std::string v = out.substr(c, d - c);
+            if (v.size() == 38 && v.front() == '{' && v.back() == '}')
+                return v;
+        }
+        if (eol >= out.size()) break;
+        pos = eol + 1;
+    }
+    return std::string();
+}
+
 // 读系统存储的 `{bootmgr} timeout`（秒）；解析不到返回 -1（原文追加进 log）。
 int BcdGetBootmgrTimeout(std::string& log);
 
@@ -77,7 +124,13 @@ bool BcdCreateBootsector(const std::wstring& guid, const std::wstring& desc,
                          wchar_t driveLetter, std::string& log);
 
 // 单次启动（BIOS 路径；UEFI 用固件 BootNext，见 boot/uefi.h）。
-bool BcdSetBootsequence(const std::wstring& guid);
+// **写后读回校验**（失败重试一次）：安全软件拦截时 bcdedit 可能返回 0 却没生效，
+// 结果就是"重启后照旧进原系统、毫无提示"（用户 2026-10-27 反馈）。
+// 失败时 log 里带 `bootsequence verify FAILED`，调用方应中止并提示用户。
+bool BcdSetBootsequence(const std::wstring& guid, std::string& log);
+
+// 读 `{bootmgr}` 的 `bootsequence`（`{GUID}`）；没有则空串。原文追加进 log。
+std::string BcdGetBootsequence(std::string& log);
 
 // 备份 BCD（bcdedit /export），失败不致命。
 bool BcdExport(const std::wstring& backupPath);

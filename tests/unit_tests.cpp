@@ -29,6 +29,7 @@
 #include "common/version.h"
 #include "common/zip.h"
 #include "common/ea.h"
+#include "disk/partscript.h"
 #include "wim/exclude.h"
 
 using namespace sysrecover;
@@ -1277,4 +1278,144 @@ TEST(swapleft_decision_table) {
 
     // 决策永不产生空理由（日志/排障可用性）
     CHECK(!v.reason.empty());
+}
+
+// ────────────────── partscript（新硬盘分区：分步 diskpart 脚本）──────────────────
+// 用户 2026-10-27 规格：分区向导每一步都要在状态栏显示正在做什么。实现把一条
+// 大脚本拆成**多次独立 diskpart 调用**（每步之前报一次阶段名）。单测守三条
+// 属运维级的事实（真机踩过才写进来）：
+//   ① 每一步都必须自带 `select disk N` —— 独立进程没有上下文，少这一行
+//      diskpart 会拿"当前磁盘"（默认 disk 0，很可能就是系统盘）；
+//   ② 顺序不能乱：clean 在 convert 之前、ESP 在 MSR 之前、系统盘在数据盘之前；
+//   ③ MBR 的系统盘必须 `active`（缺了 → 还原完黑屏，PIT-159 实测教训）。
+TEST(part_script_steps) {
+    // ---- GPT + 数据盘：clean → convert → esp → msr → system → data ----
+    auto g = BuildDiskpartSteps(true, 3, 300, 16, 100, true, L'D', L'E', L'F');
+    CHECK_EQ(g.size(), static_cast<size_t>(6));
+    CHECK_EQ(g[0].stage, std::string("partinit-clean"));
+    CHECK_EQ(g[1].stage, std::string("partinit-convert"));
+    CHECK_EQ(g[2].stage, std::string("partinit-esp"));
+    CHECK_EQ(g[3].stage, std::string("partinit-msr"));
+    CHECK_EQ(g[4].stage, std::string("partinit-system"));
+    CHECK_EQ(g[5].stage, std::string("partinit-data"));
+    for (const auto& s : g) {
+        CHECK_CONTAINS(s.script, "select disk 3\n");
+        CHECK(s.script.size() >= 5 &&
+              s.script.compare(s.script.size() - 5, 5, "exit\n") == 0);
+    }
+    CHECK_CONTAINS(g[1].script, "convert gpt\n");
+    CHECK_CONTAINS(g[2].script, "create partition efi size=300\n");
+    CHECK_CONTAINS(g[2].script, "format quick fs=fat32 label=ESP\n");
+    CHECK_CONTAINS(g[2].script, "assign letter=D\n");
+    CHECK_CONTAINS(g[3].script, "create partition msr size=16\n");
+    CHECK_CONTAINS(g[4].script, "create partition primary size=102400\n");
+    CHECK_CONTAINS(g[4].script, "format quick fs=ntfs label=Windows\n");
+    CHECK_CONTAINS(g[4].script, "assign letter=E\n");
+    CHECK_NOT_CONTAINS(g[4].script, "active\n");  // GPT 不能 active
+    CHECK_CONTAINS(g[5].script, "assign letter=F\n");
+    // MSR：不格式化、不分配盘符（写了 format 会把保留分区弄坏）
+    CHECK_NOT_CONTAINS(g[3].script, "format");
+    CHECK_NOT_CONTAINS(g[3].script, "assign");
+
+    // ---- MBR + 数据盘：clean → convert → system(active) → data ----
+    auto m = BuildDiskpartSteps(false, 0, 300, 16, 60, true, 0, L'C', L'D');
+    CHECK_EQ(m.size(), static_cast<size_t>(4));
+    CHECK_EQ(m[0].stage, std::string("partinit-clean"));
+    CHECK_EQ(m[1].stage, std::string("partinit-convert"));
+    CHECK_EQ(m[2].stage, std::string("partinit-system"));
+    CHECK_EQ(m[3].stage, std::string("partinit-data"));
+    CHECK_CONTAINS(m[1].script, "convert mbr\n");
+    CHECK_CONTAINS(m[2].script, "active\n");  // MBR 必须 active
+    CHECK_CONTAINS(m[2].script, "assign letter=C\n");
+    CHECK_NOT_CONTAINS(m[0].script, "convert");  // 清表与转换是两步
+
+    // ---- 小盘（整盘只做系统盘）：不应出现数据盘这一步 ----
+    auto small = BuildDiskpartSteps(false, 0, 300, 16, 60, false, 0, L'C', 0);
+    CHECK_EQ(small.size(), static_cast<size_t>(3));
+    CHECK_EQ(small.back().stage, std::string("partinit-system"));
+
+    // ---- 盘符传 0 = 不分配（没有空闲盘符时不能写出空的 assign）----
+    auto nol = BuildDiskpartSteps(true, 1, 300, 16, 100, true, 0, 0, 0);
+    for (const auto& s : nol) CHECK_NOT_CONTAINS(s.script, "assign letter=");
+    CHECK_CONTAINS(nol[2].script, "format quick fs=fat32 label=ESP\n");
+
+    // ---- JoinDiskpartSteps：只用于日志留档，不能出现重复 select/exit ----
+    const std::string joined = JoinDiskpartSteps(g, 3);
+    CHECK_CONTAINS(joined, "select disk 3\n");
+    CHECK_CONTAINS(joined, "clean\n");
+    CHECK_CONTAINS(joined, "convert gpt\n");
+    auto count = [](const std::string& hay, const std::string& needle) {
+        size_t n = 0;
+        size_t at = 0;
+        while ((at = hay.find(needle, at)) != std::string::npos) {
+            ++n;
+            at += needle.size();
+        }
+        return n;
+    };
+    CHECK_EQ(count(joined, "select disk 3"), static_cast<size_t>(1));
+    CHECK_EQ(count(joined, "exit"), static_cast<size_t>(1));
+    CHECK(joined.find("clean\n") < joined.find("convert gpt\n"));
+    CHECK(joined.find("convert gpt\n") < joined.find("create partition efi"));
+    CHECK(joined.find("create partition msr") <
+          joined.find("create partition primary size="));
+}
+
+// ───────────────────── 启动项写后读回校验（需求 4，2026-10-27） ─────────────────
+// 用户实测：装了金山毒霸/360 一类底层拦截的机器上，bcdedit / BootNext 会"假成功"
+// ——命令返回 0、实际没落盘，重启后照旧进原系统且毫无提示。写后读回校验靠这两个
+// 纯逻辑函数，必须守三条：
+//   ① 只认 `bootsequence` 这个 **ASCII 元素名**（大小写不敏感），不受标签本地化影响
+//      （与 ParseBootmgrTimeout 的"不依赖标签语言"同款纪律，PIT-094）；
+//   ② 值必须是 38 字符 `{...}` —— 缺值/残行/别元素的值都不算；
+//   ③ GUID 比较大小写不敏感（bcdedit 回显大小写不保证）。
+TEST(bcd_parse_bootsequence) {
+    const std::string guid = "{12345678-1234-1234-1234-123456789abc}";
+    // 英文输出：bootsequence 夹在其它元素中间
+    std::string en =
+        "Windows Boot Manager\r\n"
+        "--------------------\r\n"
+        "identifier              {bootmgr}\r\n"
+        "device                  partition=\\Device\\HarddiskVolume1\r\n"
+        "timeout                 1\r\n"
+        "bootsequence            " +
+        guid + "\r\n";
+    CHECK_EQ(ParseBootsequence(en), guid);
+
+    // 元素名大小写不敏感
+    CHECK_EQ(ParseBootsequence("BOOTSEQUENCE   " + guid + "\n"), guid);
+    // 行首制表符/多空格
+    CHECK_EQ(ParseBootsequence("\t bootsequence\t" + guid + "\r\n"), guid);
+
+    // 本地化标签不影响：伪本地化的"单次启动"不是 ASCII 元素名 → 空
+    CHECK(ParseBootsequence("标识符                  {bootmgr}\n"
+                            "单次启动                " +
+                            guid + "\n")
+              .empty());
+
+    // 常态：还原完成/条目已清 → 没有 bootsequence
+    CHECK(ParseBootsequence("identifier              {bootmgr}\r\n"
+                            "timeout                 1\r\n")
+              .empty());
+    // 值形态不对：长度不足 / 空值
+    CHECK(ParseBootsequence("bootsequence            {12345678-1234}\n").empty());
+    CHECK(ParseBootsequence("bootsequence            \n").empty());
+    // 别元素以 bootsequence 开头 → 必须按整 token 比较，不能前缀误命中
+    CHECK(ParseBootsequence("bootsequenceX           " + guid + "\n").empty());
+    // 续行干扰：bcdedit 不会折行，但别让残值骗过校验
+    CHECK(ParseBootsequence("bootsequence\r\n" + guid + "\r\n").empty());
+}
+
+TEST(same_guid_ascii) {
+    const std::wstring want = L"{12345678-1234-1234-1234-123456789ABC}";
+    // 大小写混搭都算相同（bcdedit 回显大小写不保证）
+    CHECK(SameGuidAscii("{12345678-1234-1234-1234-123456789abc}", want));
+    CHECK(SameGuidAscii("{12345678-1234-1234-1234-123456789ABC}", want));
+    CHECK(SameGuidAscii("{12345678-1234-1234-1234-123456789AbC}", want));
+    // 长度不符：空 / 少一位 / 多一位
+    CHECK(!SameGuidAscii("", want));
+    CHECK(!SameGuidAscii("{12345678-1234-1234-1234-123456789ab}", want));
+    CHECK(!SameGuidAscii("{12345678-1234-1234-1234-123456789abcd}", want));
+    // 内容不同
+    CHECK(!SameGuidAscii("{12345678-1234-1234-1234-123456789abd}", want));
 }

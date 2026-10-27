@@ -12,6 +12,7 @@
 //  · 分区后：MBR 必须补写磁盘引导代码 + 活动分区（否则还原完黑屏）；
 //    GPT 写保护性 MBR + ESP(FAT32) + MSR。
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -70,16 +71,21 @@ void RankPartSchemes(bool uefiSession, bool uefiCapable, bool win7Family,
 bool ValidatePartInitPlan(const PartInitPlan& p, uint64_t diskSize,
                           std::wstring& err);
 
-// 纯逻辑：生成 diskpart 脚本（ASCII；纯逻辑便于单测）。
-// letters：分别给 ESP / 系统盘 / 数据盘分配的盘符。needBootsect=true 时
-// 调用方必须在格式化后执行 `bootsect /nt60 <系统盘>: /mbr`（MBR 方案）。
-std::string BuildDiskpartScript(const PartInitPlan& p, wchar_t espLetter,
-                                wchar_t sysLetter, wchar_t dataLetter,
-                                bool& needBootsect);
-
-// 执行：写脚本 → diskpart → bootsect（MBR）→ 回读校验。
+// 执行：分配盘符 → 逐步骤 diskpart → bootsect（MBR）→ 回读校验。
 // 返回 0 成功；非 0 失败（err=UTF-16 说明，log=UTF-8 过程）。
+// 磁盘脚本本身由 partscript.h 的 BuildDiskpartSteps() 生成（纯逻辑、可单测）。
+//
+// progress（可空，2026-10-27 用户规格：分区向导必须逐步报告）按阶段回调，
+// **每一步 diskpart 之前都报一次**（一条大脚本几十秒无输出 = 冻住的进度条）：
+//   partinit-letters(5) → partinit-script(12)
+//   → partinit-clean → partinit-convert → [partinit-esp → partinit-msr]
+//   → partinit-system → [partinit-data]   （12..82 均分，每步开始前上报）
+//   → partinit-bootsect(86) → partinit-verify(92) → partinit-done(100)
+// 阶段名保持纯 ASCII，由 GUI 侧 StageCn() 翻成中文（日志/契约不翻）。
+// 回调返回 void：diskpart/bootsect 一旦开始就无法安全中断，这里只做"看得见"。
+using PartInitProgressFn = std::function<void(int, const std::string&)>;
 int ApplyPartInitPlan(const PartInitPlan& p, std::wstring& err,
-                      std::string& log);
+                      std::string& log,
+                      const PartInitProgressFn& progress = nullptr);
 
 }  // namespace sysrecover

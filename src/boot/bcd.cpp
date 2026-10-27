@@ -42,12 +42,25 @@ int BcdGetBootmgrTimeout(std::string& log) {
 }
 
 bool BcdSetBootmgrTimeout(int seconds, std::string& log) {
-    std::string out;
-    int rc = RunProcess(SysToolPath(L"bcdedit.exe"),
-                        L"/set {bootmgr} timeout " + std::to_wstring(seconds),
-                        out);
-    log += out;
-    return rc == 0;
+    // 写后读回校验（用户 2026-10-27 需求）：装了金山毒霸/360 一类底层拦截的机器上，
+    // bcdedit 可能返回 0 却没真正落盘 → 常驻菜单 timeout 仍是 0 → 开机按什么都不停。
+    // 失败重试一次（首次写入常触发安全软件首次询问/拦截），仍不符才判失败。
+    for (int attempt = 1; attempt <= 2; ++attempt) {
+        std::string out;
+        int rc = RunProcess(SysToolPath(L"bcdedit.exe"),
+                            L"/set {bootmgr} timeout " + std::to_wstring(seconds),
+                            out);
+        log += "bcdedit timeout set rc=" + std::to_string(rc) + " (attempt " +
+               std::to_string(attempt) + "): " + out;
+        if (rc != 0) continue;
+        std::string rlog;
+        int back = BcdGetBootmgrTimeout(rlog);
+        log += "timeout readback=" + std::to_string(back) + "\n";
+        if (back == seconds) return true;
+        log += "timeout verify FAILED (wanted " + std::to_string(seconds) +
+               ", got " + std::to_string(back) + ")\n";
+    }
+    return false;
 }
 
 bool BcdCreateBootsector(const std::wstring& guid, const std::wstring& desc,
@@ -94,12 +107,47 @@ bool BcdCreateBootsector(const std::wstring& guid, const std::wstring& desc,
     std::wstring order = L"/displayorder " + guid + L" /addlast";
     rc = RunProcess(SysToolPath(L"bcdedit.exe"), order, out);
     log += out;
-    return rc == 0;
+    if (rc != 0) return false;
+    // 产物复核：本轮全部命令都返回 0 也可能被安全软件"假放行"（用户 2026-10-27 需求）。
+    if (!BcdEntryExists(guid)) {
+        log += "entry verify FAILED: bcdedit /enum does not echo this guid\n";
+        return false;
+    }
+    log += "entry verify ok\n";
+    return true;
 }
 
-bool BcdSetBootsequence(const std::wstring& guid) {
+std::string BcdGetBootsequence(std::string& log) {
     std::string out;
-    return RunProcess(SysToolPath(L"bcdedit.exe"), L"/bootsequence " + guid, out) == 0;
+    RunProcess(SysToolPath(L"bcdedit.exe"), L"/enum {bootmgr}", out);
+    std::string v = ParseBootsequence(out);
+    if (v.empty())
+        log += "bootsequence readback: none\n";
+    else
+        log += "bootsequence readback: " + v + "\n";
+    return v;
+}
+
+bool BcdSetBootsequence(const std::wstring& guid, std::string& log) {
+    // 写后读回校验（用户 2026-10-27 需求）：见 BcdSetBootmgrTimeout 的注释。
+    // 这是"重启后能不能进救援层"的唯一开关 —— 被安全软件静默拦掉就一定会
+    // 重启进原系统，D: 还白写了契约。故必须读回确认，失败重试一次。
+    for (int attempt = 1; attempt <= 2; ++attempt) {
+        std::string out;
+        int rc = RunProcess(SysToolPath(L"bcdedit.exe"),
+                            L"/bootsequence " + guid, out);
+        log += "bcdedit /bootsequence rc=" + std::to_string(rc) +
+               " (attempt " + std::to_string(attempt) + "): " + out;
+        if (rc != 0) continue;
+        std::string rlog;
+        std::string back = BcdGetBootsequence(rlog);
+        log += rlog;
+        if (SameGuidAscii(back, guid)) return true;
+        log += "bootsequence verify FAILED (wanted " +
+               std::string(guid.begin(), guid.end()) + ", got " +
+               (back.empty() ? std::string("<none>") : back) + ")\n";
+    }
+    return false;
 }
 
 bool BcdExport(const std::wstring& backupPath) {

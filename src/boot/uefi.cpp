@@ -3,6 +3,7 @@
 // LoadOptions 传递）；内核 efi-stub 的 efi_convert_cmdline() 按 efi_char16_t*
 // 读取，故命令行必须是 UTF-16LE。Rufus 的 EFICreateNewEntry 为同款实现。
 #include "../common/i18n.h"
+#include "../common/logger.h"
 #include "uefi.h"
 
 #include <windows.h>
@@ -694,10 +695,10 @@ bool InstallUefiBootEntry(const std::wstring& espRoot,
                    L"/displayorder " + guid + L" /addlast", out);
         if (!ok)
             return false;
-        // 单次启动
-        if (RunProcess(SysToolPath(L"bcdedit.exe"), L"/bootsequence " + guid,
-                       out) != 0) {
-            log += "set bcd bootsequence FAILED: " + out + "\n";
+        // 单次启动（写后读回校验，失败重试一次；安全软件可能假放行，
+        // 见 bcd.h::BcdSetBootsequence 注释）
+        if (!BcdSetBootsequence(guid, log)) {
+            log += "set bcd bootsequence FAILED (readback mismatch)\n";
             return false;
         }
         // 清掉可能残留的**同类**固件启动项（临时项不得动常驻菜单）
@@ -828,16 +829,33 @@ bool SetUefiBootNext(std::string& log, bool temporary) {
         return false;
     }
     WORD v = (WORD)num;
-    SetLastError(0);
-    if (!SetVarW(L"BootNext", kGlobalGuid, &v, sizeof(v))) {
-        log += "set BootNext failed err=" + std::to_string(GetLastError()) +
-               "\n";
-        return false;
+    // 写后读回校验 + 重试一次（用户 2026-10-27 需求）：安全软件可能吞掉固件变量
+    // 写入（返回成功但 BootNext 没落盘）→ 重启后照旧进原系统、用户毫无提示。
+    for (int attempt = 1; attempt <= 2; ++attempt) {
+        SetLastError(0);
+        if (!SetVarW(L"BootNext", kGlobalGuid, &v, sizeof(v))) {
+            log += "set BootNext failed err=" +
+                   std::to_string(GetLastError()) + " (attempt " +
+                   std::to_string(attempt) + ")\n";
+            continue;
+        }
+        WORD back = 0xFFFF;
+        DWORD len = GetFirmwareEnvironmentVariableW(L"BootNext", kGlobalGuid,
+                                                    &back, sizeof(back));
+        if (len == sizeof(back) && back == v) {
+            char line[64];
+            snprintf(line, sizeof(line), "BootNext = Boot%04X (verified)\n", num);
+            log += line;
+            return true;
+        }
+        log += "BootNext verify FAILED (wanted Boot" + std::to_string(num) +
+               ", got " +
+               (len == sizeof(back)
+                    ? "Boot" + std::to_string((int)back)
+                    : "len=" + std::to_string((int)len)) +
+               ") attempt " + std::to_string(attempt) + "\n";
     }
-    char line[64];
-    snprintf(line, sizeof(line), "BootNext = Boot%04X\n", num);
-    log += line;
-    return true;
+    return false;
 }
 
 bool IsSecureBootEnabled() {
@@ -991,18 +1009,26 @@ bool VerifyEspBcd(const std::wstring& espRoot, const std::wstring& srcWinDir,
         return false;
     }
     // ② bcdedit 能不能读出"有 displayorder + 有 winload 条目"
+    // 0.9.33：精简 PE（如 NewBee）没有 bcdedit.exe，但 bcdboot 可用；此时
+    // 仍做文件级检查，避免把能启动的 PE 因缺少枚举工具误判成失败。
     std::string out;
-    int rc = RunProcess(SysToolPath(L"bcdedit.exe"),
-                        L"/store \"" + bcd + L"\" /enum all", out);
-    if (rc != 0) {
-        detail = Tr("bcdedit 读取 ESP 上的 BCD 失败（rc=") +
-                 std::to_string(rc) + Tr("）");
-        return false;
-    }
-    std::string why;
-    if (!BcdEnumShowsOsEntry(out, &why)) {
-        detail = Tr("ESP 上的 BCD 不完整：") + why;
-        return false;
+    const std::wstring bcdedit = SysToolPath(L"bcdedit.exe");
+    if (GetFileAttributesW(bcdedit.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        detail = "bcdedit.exe missing; ESP BCD file-level check only";
+        LogWarn("ESP BCD verify: bcdedit.exe missing, skip enum check");
+    } else {
+        int rc = RunProcess(bcdedit,
+                            L"/store \"" + bcd + L"\" /enum all", out);
+        if (rc != 0) {
+            detail = Tr("bcdedit 读取 ESP 上的 BCD 失败（rc=") +
+                     std::to_string(rc) + Tr("）");
+            return false;
+        }
+        std::string why;
+        if (!BcdEnumShowsOsEntry(out, &why)) {
+            detail = Tr("ESP 上的 BCD 不完整：") + why;
+            return false;
+        }
     }
     // ③ 硬项：bootmgr 实体 + 固件兜底路径（bcdboot 必写；缺 = 真坏）
     struct Item {
