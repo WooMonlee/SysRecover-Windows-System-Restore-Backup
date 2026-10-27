@@ -1256,6 +1256,18 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **门禁**：`make check` 61 用例/532 断言 + check-docs PASS；`make package` 双架构（`0.9.42`）+ `make sha256`（352 文件）+ `dist-check` + `smoke-cli` 24 项全绿。
   · **教训**：① `CreateProcessW` 的**控制台继承**会让"子进程独占控制台"的判据失效 —— 跨进程传"这个控制台归你"这种**上下文**，用环境变量最省事（无需改命令行、无需 IPC、不会被参数解析吃掉）；② 判"是不是无人值守"**不能只看控制台进程数**，还要看**父进程是谁**（PowerShell 脚本里子进程同样独占控制台）；③ 自动化验证"双击行为"**必须换父进程**（`explorer.exe <exe>`），`Start-Process` 模拟不出来 —— 否则会得出"修完还是不弹框"的假阴性。
 
+- PIT-183 **「镜像检查」确认框标题只显示半句、右边超出外框：`Ask2` 的 title/msg 传反了 —— 整段 3 行提示进了只画单行的标题标签**（2026-10-27 用户实测，`0.9.43`）：
+  · **现象**（用户原文）：点「更多功能M>> → 镜像检查（完整校验）」后，弹框标题栏只有「将对整个镜像做完整性校验（逐字扫描）。几十GB的镜」，**右边超出外框看不到**；正文位置却显示「镜像检查」。
+  · **根因**：`CConfirmDlg::Ask2(owner, title, msg, leftText, rightText, defaultIsRight)` —— 五个参数里 title 与 msg **同为 `const std::wstring&`**，位置相邻、类型相同，编译器不会报错。`main_form.cpp::StartVerifyImage()` 把**整段 3 行提示写成了 title**、把「镜像检查」写成了 msg。而 `skin/confirm.xml` 的 `DlgTitle` 是 **22,12,300,38 的单行标签**（`CSkinLabelUI` 走 `TextOut`，不认 `'\n'`、超宽直接画到框外）→ 三行叠在一行高度里、第 300px 之后的字全被截。
+  · **修法（调用点 + 公共防御，两层）**：
+    ① 调用点交换参数：`title=Tr(L"镜像检查")`、`msg=`三行提示；行内补注释写明「title 只能单行」与本次事故原文（防止下次又照位置抄）。
+    ② `confirm_dlg.cpp` 新增 **`NormalizeTitleAndMsg()`**（`RunModal` 开头调用）：title 里出现 `'\n'` → 首行留作标题、其余行**并回正文前面**，并 `LogWarn("confirm dlg: multi-line title downgraded into message (fix the caller)")` —— 即便有人再写反，界面也退化成"标题+多行正文"的正确形态，且日志点名要修调用方。
+    ③ 同批新增 **`ClampMsgLines(msg, 6)`**：skin 只有 `DlgMsg1..6`，此前第 7 行起**静默丢弃**；现在截到 6 行并在末行加 `...` + `LogWarn`，让"还有内容没显示"在界面上可见。
+  · **全量复检**：`Ask2/Ask3/Ask4` 全部调用点逐一核对（`main_win.cpp` 380/536/615；`main_form.cpp` 852/857/894/898/917/967/990/1005/1303/1515/2189/2222）——**无第二处多行 title**。
+  · **验证**：`make check` **61 用例/532 断言** + check-i18n **650/650**（未新增词条）+ docs/widths/shell PASS；`make package` 双架构 + `make sha256`（352 文件）+ `dist-check` PASS。**GUI 自动化实测**（`verifydlg.ps1`：进程内拖入 `D:\ea-lab\ea.wim` → 点 MoreBtn(645,314) → 菜单取 rect/4 算第 4 项 → `SetCursorPos`+`mouse_event`）→ 确认框 **420×196**，标题单行「镜像检查」、三行提示完整、按钮「取消 / 开始校验」不被裁（截图为证）。
+  · **自动化踩坑（下次直接抄）**：① PS 5.1 里 `[UIntPtr]` 转换会失败（`GlobalAlloc` 的 `size` 只有声明成 **`uint`**、返回的 `IntPtr` 直接当 wParam 传给声明为 `IntPtr` 的 `PostMessageW` 才通）；② `#32768` 菜单不吃 `PostMessage`，必须真实鼠标事件；菜单项纵向位置可用 `(bottom-top)/项数` 估；③ 主窗口类名 `SysRecoverUI`、确认框 `SysRecoverUI.Confirm`，用 `EnumWindows`+`GetClassNameW` 找（`FindWindowW` 传 `$null` 在 PS 5.1 不可靠）。
+  · **教训**：① 相邻同类型参数（`title, msg`）**必须在调用方写行内注释**，否则"位置写反"是零成本事故；② 公共对话框要**防御调用方**（归一化 + 截断 + 留日志），不能假设每个调用点都记得约束；③ 界面上"少了一半字"优先查**控件宽度/单行绘制**，不要先怀疑字体或 DPI。
+
 ## 14. License 合规（SBOM，随版本更新）
 
 | 组件 | 版本/来源 | License | 链接/分发方式 |

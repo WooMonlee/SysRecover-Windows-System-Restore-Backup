@@ -1,4 +1,5 @@
 #include "common/i18n.h"
+#include "common/logger.h"
 #include "confirm_dlg.h"
 
 using sysrecover::Tr;
@@ -34,6 +35,37 @@ int ButtonTop(int lines) { return MessageBottom(lines) + kButtonGap; }
 int WindowHeight(int lines) {
     const int h = ButtonTop(lines) + kButtonH + kBottomGap;
     return h > kWndH ? h : kWndH;
+}
+
+// 标题只占**单行**（skin/confirm.xml 的 DlgTitle 是 22,12,300,38 单行标签，
+// CSkinLabelUI 用 TextOut 绘制、不认 '\n'，超出宽度的部分直接画到框外）。
+// 2026-10-27 用户实测（PIT-183）：镜像检查把整段 3 行提示误传给 title →
+// 屏上只剩「将对整个镜像做完整性校验（逐字扫描）。几十GB的镜」且右侧被切。
+// 这里兜底降级：首行做标题、其余行并回正文，并留日志便于修调用方。
+void NormalizeTitleAndMsg(std::wstring& title, std::wstring& msg) {
+    const size_t nl = title.find(L'\n');
+    if (nl == std::wstring::npos) return;
+    std::wstring rest = title.substr(nl + 1);
+    title = title.substr(0, nl);
+    msg = rest + (msg.empty() ? std::wstring() : L"\n" + msg);
+    sysrecover::LogWarn("confirm dlg: multi-line title downgraded into message "
+                        "(fix the caller)");
+}
+
+// 消息最多 6 行（skin 只有 DlgMsg1..6）：超出的行原本会被静默丢掉 ——
+// 截断并在末行加省略号，保证「还有内容」这件事在界面上看得见。
+void ClampMsgLines(std::wstring& msg, int maxLines) {
+    size_t pos = 0;
+    for (int line = 1; line <= maxLines; ++line) {
+        const size_t nl = msg.find(L'\n', pos);
+        if (nl == std::wstring::npos) return;          // 总行数未超限
+        if (line == maxLines) {                        // 末行之后还有内容
+            msg = msg.substr(0, nl) + L"...";
+            sysrecover::LogWarn("confirm dlg: message truncated to 6 lines");
+            return;
+        }
+        pos = nl + 1;
+    }
 }
 }  // namespace
 
@@ -273,6 +305,9 @@ int CConfirmDlg::Ask4(HWND owner, const std::wstring& title,
 int CConfirmDlg::RunModal(HWND owner, CConfirmDlg* dlg) {
     // 无系统外框（WS_POPUP）+ 不进任务栏；owner = 主窗口（模态禁用）。
     // 消息行数自适应：窗口高度永远包含按钮底部 + 底留白；四选 → 加宽到 520。
+    // 文案防御（PIT-183）：多行标题降级并回正文、超 6 行截断加省略号。
+    NormalizeTitleAndMsg(dlg->m_title, dlg->m_msg);
+    ClampMsgLines(dlg->m_msg, 6);
     const bool quad = !dlg->m_moreText.empty();
     const int w = quad ? kQuadW : kWndW;
     const int lines = MsgLineCount(dlg->m_msg);

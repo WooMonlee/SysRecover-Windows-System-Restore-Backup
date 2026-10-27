@@ -1532,12 +1532,15 @@ void CMainForm::StartVerifyImage() {
         return;
     }
     // 大镜像（几十 GB）全量扫描要十几分钟，必须先讲清代价（默认项 = 取消）。
+    // ⚠️ Ask2(owner, title, msg, ...) —— title 只能是**单行**（PIT-183）：
+    // 2026-10-27 用户实测曾把整段提示写成 title，标题被裁成
+    // 「将对整个镜像做完整性校验（逐字扫描）。几十GB的镜」且右边超出外框。
     if (CConfirmDlg::Ask2(
-            m_hWnd,
+            m_hWnd, Tr(L"镜像检查"),
             Tr(L"将对整个镜像做完整性校验（逐字节扫描）。\n"
                L"几十 GB 的镜像可能需要十几分钟。\n"
                L"确定现在校验吗？"),
-            Tr(L"镜像检查"), Tr(L"取消"), Tr(L"开始校验"),
+            Tr(L"取消"), Tr(L"开始校验"),
             /*defaultIsRight=*/false) != 1)
         return;
     m_busy = true;
