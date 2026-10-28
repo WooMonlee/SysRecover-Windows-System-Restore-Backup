@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：656/657 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：657/658 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n建议：以管理员身份运行（本程序要读写分区与引导）。': '\n\nAdvice: run as administrator (this program reads and writes partitions and boot data).',
@@ -17,6 +17,7 @@ EN = {
     '\n  - 驱动器自报：即将故障（SMART 阈值已超）': '\n  - drive reports imminent failure (SMART threshold exceeded)',
     '\n… 另有 %d 个文件\n': '\n... and %d more file(s)\n',
     '\n… 另有 %d 个文件，完整清单见日志：\n': '\n... and %d more file(s); full list:\n',
+    '\n「扫描」= 检查镜像条件并安装恢复选项（不另占空间）\n「解压」= 解压到 C:\\~new 并安装恢复选项（占 C 盘 %ls）': '\n"Scan" = check the image and install the recovery boot entry (no extra space)\n"Extract" = extract to C:\\~new and install the recovery boot entry (uses %ls on C:)',
     '\n「扫描」= 检查镜像条件并安装恢复选项（不另占空间）\n「解压」= 解压到 C:\\~new 并安装恢复选项（占 C 盘空间）': '\n"Scan" = check the image and install the recovery boot entry (no extra space)\n"Extract" = extract to C:\\~new and install the recovery boot entry (uses space on C:)',
     '\n可进入 PE 用 `SysRecover.exe repair-boot` 重试修复引导。': '\nEnter PE and run `SysRecover.exe repair-boot` to retry the boot repair.',
     '\n如果你没有对应的密码 / 恢复密钥，这些卷的数据在还原后，\n将无法恢复。是否继续还原？': '\nIf you do not have the matching password / recovery key, the data on these volumes\nwill be unrecoverable after the restore.\nContinue restoring?',

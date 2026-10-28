@@ -86,8 +86,15 @@ CControlUI* CConfirmDlg::CreateControl(LPCTSTR pstrClass) {
 void CConfirmDlg::InitWindow() {
     m_alive = true;
     CControlUI* t = m_PaintManager.FindControl(_T("DlgTitle"));
-    if (t && !m_title.empty())
+    if (t && !m_title.empty()) {
         t->SetText(m_title.c_str());
+        if (m_centerTitle) {
+            // 「安装到启动」标题居中（2026-10-28 用户规格）：加宽到整行 + 居中绘制。
+            t->SetAttribute(_T("align"), _T("center"));
+            RECT rt = { 22, 12, kWndW - 22, 38 };
+            t->SetPos(rt);
+        }
+    }
     // 按钮文案：skin/confirm.xml 里两个按钮默认写的是还原确认用的文案
     // （「退出」/「还原后重启」），这里按调用方给的文案覆盖。
     CControlUI* b1 = m_PaintManager.FindControl(_T("BtnExit"));
@@ -278,9 +285,11 @@ int CConfirmDlg::Ask2(HWND owner, const std::wstring& title,
 int CConfirmDlg::Ask3(HWND owner, const std::wstring& title,
                       const std::wstring& msg, const std::wstring& leftText,
                       const std::wstring& midText, const std::wstring& rightText,
-                      int defaultIdx, bool midDisabled, int escIdx) {
+                      int defaultIdx, bool midDisabled, int escIdx,
+                      bool centerTitle) {
     CConfirmDlg* dlg = new CConfirmDlg();
     dlg->m_title = title;
+    dlg->m_centerTitle = centerTitle;
     dlg->m_msg = msg;
     dlg->m_leftText = leftText;
     dlg->m_midText = midText;

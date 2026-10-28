@@ -1320,11 +1320,38 @@ void CMainForm::ToggleBootMenu() {
         //   「扫描后安装」= 只检查镜像能否**只靠救援层**还原（block 引擎，不另占空间），
         //                  通过就直接装启动项；
         //   「解压并安装」= 现在就解压到 C:\~new 再装启动项（A 引擎；EFS/特殊重解析点必须走这条）。
+        // 最后一行括号里的容量 = 镜像**未压缩内容大小**（即解压后实际写入 ~new 的量），
+        // 由 QuerySwapSpace 现算（只读元数据）；算不出来就退回不带数字的说法。
+        double needGb = 0.0;
+        {
+            sysrecover::SwapSpaceEstimate est;
+            if (sysrecover::QuerySwapSpace(m_wimPath, m_selImageIndex, part, est) &&
+                est.content > 0)
+                needGb = (double)est.content / (1024.0 * 1024.0 * 1024.0);
+        }
         std::wstring full = msg;
-        full += Tr(L"\n「扫描」= 检查镜像条件并安装恢复选项（不另占空间）\n「解压」= 解压到 C:\\~new 并安装恢复选项（占 C 盘空间）");
+        if (needGb > 0.0) {
+            // 自适应单位：≥1G 用 G（1 位小数），否则用 M（整数），再小用 K ——
+            // 避免小镜像显示 "0.0G"/"0M"。
+            wchar_t cap[32] = {};
+            if (needGb >= 1.0)
+                swprintf(cap, 32, L"%.1fG", needGb);
+            else if (needGb * 1024.0 >= 1.0)
+                swprintf(cap, 32, L"%.0fM", needGb * 1024.0);
+            else
+                swprintf(cap, 32, L"%.0fK", needGb * 1024.0 * 1024.0);
+            wchar_t line[320] = {};
+            swprintf(line, 320,
+                     Tr(L"\n「扫描」= 检查镜像条件并安装恢复选项（不另占空间）\n「解压」= 解压到 C:\\~new 并安装恢复选项（占 C 盘 %ls）"),
+                     cap);
+            full += line;
+        } else {
+            full += Tr(L"\n「扫描」= 检查镜像条件并安装恢复选项（不另占空间）\n「解压」= 解压到 C:\\~new 并安装恢复选项（占 C 盘空间）");
+        }
         const int pick = CConfirmDlg::Ask3(
             m_hWnd, Tr(L"安装到启动"), full, Tr(L"扫描后安装"), Tr(L"解压并安装"),
-            Tr(L"取消"), /*defaultIdx=*/0, /*midDisabled=*/false, /*escIdx=*/2);
+            Tr(L"取消"), /*defaultIdx=*/0, /*midDisabled=*/false, /*escIdx=*/2,
+            /*centerTitle=*/true);
         if (pick == 2) return;
         if (pick == 1) {
             LogInfo("GUI menu install: user chose 解压 (engine=swap)");
