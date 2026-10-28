@@ -1472,3 +1472,33 @@
 
 - **版本推进（2026-10-21）**：分区向导完成后版本定为 **0.8.0**（`version.py --set 0.8.0`，initramfs stamp 0.8.0）；下一任务 **异机还原**（还原到不同硬件/控制器），完成后进入 **0.9**。
   · **教训**：① "只推荐不禁止"与"技术硬限制"要分开——用户选择权优先，但 >2TB/MBR 与 Win7 x86/UEFI 是物理/系统限制；② 新 MBR 盘必须补磁盘引导代码（本项目的还原流程只写 PBR，PIT-051/053）；③ 空下拉直接调用向导比"提示项/额外按钮"更简洁（用户拍板）；④ 新增含 Tr 的源文件**必须同时加 WRAP_FILES**。
+
+### PIT-188
+
+- PIT-188 **镜像加密（ZJENC1）与增量备份落地：wimlib 只能按路径打开 → 加密镜像必须整包解到临时明文；ESP/EA 子镜像改由 Windows 暂存**（`0.9.53`，2026-10-29，用户拍板"全部按建议执行"）
+  · **需求**：①「对镜像实施加密码」——一个口令护全镜像；②「WIM/ESD 增量备份」；③ 两者本轮**不做组合**。
+  · **加密（`src/common/crypt.{h,cpp}`）**：容器 = 明文头（magic/版本/KDF/salt/块大小/明文长度/头 MAC）+ 加密 meta（子镜像清单）+ 1MB 分块正文。
+    口令 → `PBKDF2-HMAC-SHA256(600k)` → 64B（encKey+macKey）；正文 `AES-256-CTR`（counter = 块号 ‖ 块内计数，用 ECB 生成密钥流），每块 `HMAC-SHA256`（encrypt-then-MAC）；错口令/篡改/截断一律 fail-closed，且**不留半个明文文件**。
+    **不用 AES-GCM**：Win7 的 CNG 不保证支持 GCM；CTR+HMAC 是同等强度且 Vista/Win7 可用（`bcrypt.dll`，`-lbcrypt`）。
+  · **⚠️ 硬约束（这条决定实现形态）**：wimlib 只有 `wimlib_open_wim(path)`，**没有 fd / 自定义 I/O 回调**，而且按资源表**随机访问** →
+    加密镜像无法"边解边喂"；只能先解密成**同卷临时明文**再交给 wimlib，用完立即删（`app/imgsrc.cpp::ResolveImagePlain`，进程内按路径缓存一次）。
+    代价：`verify`/`extract`/`A 引擎解压`/PE 就地还原需要**与镜像等量的临时空间**；`backup` 加密不额外占（明文本来就存在 `<目标>.plain.tmp`，加密完删）。
+  · **meta 为什么必须加密存在容器里**：GUI 选镜像、`images`、空间预估、winload 预检原来都要开 WIM；加密后若每次都整包解密，选中一个 20GB 镜像要等几分钟。
+    meta 存 `{index,name,description,sizeBytes,creationTime,hasWinload}` → 只解 1 块就够（`ZjeReadMeta`），其余走 `ImageList/ImageContentSize/ImageHasWinload`。
+  · **引擎矩阵（用户确认）**：A 引擎（解压并安装 / 还原后重启）+ PE 就地还原 ✅；B 引擎（block，Linux wimlib apply）❌ `rc=4`；「安装到启动」常驻菜单 ❌ `rc=4`（开机阶段没人能输密码）。
+    `StageRestoreImpl` 在最前面统一拦（在一切写盘之前），GUI 在「安装到启动」点击时也先拦并说明。
+  · **ESP/EA 子镜像（加密镜像专用改道）**：原来由救援层 `wimlib apply`（它读不了密文）→ 改为 **Windows 暂存阶段解到 `~new\ZJRESTORE\{espfix,eafix}`**，
+    契约新增增量键 `esp_fix_dir` / `ea_fix_dir`（`esp_index`/`ea_index` 置 0），`zjrestore-lite.sh` 只做 `cp -a`（挂目标盘拷贝）。
+    非加密镜像**保持原行为**（Linux 自己 apply），不动已验证路径。
+  · **增量（`0.9.53`，docs/31）**：GUI「更多功能>>」→「增量备份（追加到当前镜像）」（备份模式 + 已存在的 `.wim/.esd` 才可点）；
+    走现有 `RunBackup(append=true)`（同文件多时间点，文件级去重），完成后提示"现在是第 N 个时间点，合计 X GB"；
+    **不设保留上限、不自动删**（删时间点=整包重写）。加密+增量本轮不做（`RunBackup` 直接拒绝 `--append --password`）。
+  · **精度坑**：`CryptProgress` 的约定要与 `ProgressFn` 一致（都返回 true=取消）——第一版写反了，CLI 一跑就报"已取消"（实测抓出）。
+  · **验证**：单测 `crypt_zje_roundtrip_meta_and_failclosed`（3MB+12345 字节跨块往返、错口令、篡改 1 字节 → 全部 fail-closed 且不留明文）；
+    CLI 端到端：`backup --password` → `.zje`（5,244,845B，无明文残留）→ `images --password` 列出子镜像 / 错口令与无口令均拒绝 →
+    `verify --password` 通过 → `extract --path \a.bin` 3,145,728B 逐字节一致 → `restore --engine block --password` `rc=4`、无口令 `rc=4`。
+  · **GUI 实测补记（口令框）**：① 原生 EDIT 是 **首次获得焦点时才创建**（Duilib `CEditUI::DoEvent` 收到 `UIEVENT_SETFOCUS`/`BUTTONDOWN`/`MOUSEENTER` 才 `new CEditWnd`），
+    光 `SetPos` 建不出来 → `CPasswordDlg::Ask` 里必须 `m_PaintManager.SetFocus(edit)` 触发；② 单行 EDIT **吃掉回车/ESC**（不往父窗口转发）→ 子类化 `SetWindowSubclass` 转发 `WM_KEYDOWN`；
+    ③ 自动化脚本找原生 EDIT 要按类名 **`EditWnd`**（不是 `Edit`）；④ 实测通过：粘贴 `.zje` 路径 → 弹「加密镜像」口令框（● 掩码）→ 输入口令回车 → 第一步下拉出现 `1 - Backup`、主按钮转蓝。
+  · **明文兜底**：`RunBackup` 加了 RAII `PlainGuard`（任何提前 return 都删 `<目标>.plain.tmp`）；GUI `CleanupIncompleteOutput` 的候选路径同时覆盖 `.plain.tmp{,.stage,.stage.tmp}`。
+    实测：目标名被目录占用导致加密改名失败 → `rc=1` 且**没有留下明文**。

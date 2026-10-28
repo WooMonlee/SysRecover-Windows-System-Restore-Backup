@@ -26,6 +26,9 @@ struct BackupRequest {
     // esp_index 定位、救援层恢复到 ESP 分区。无 ESP / 失败不致命（见 RunBackup：
     // 主镜像经 <dest>.stage 原子落盘，ESP 失败不损坏主镜像）。
     bool esp = false;
+    // 加密备份（ZJENC1，docs/30）：非空 = 用该口令加密。输出文件名必须是 .zje
+    // （GUI/CLI 负责把后缀改好），落盘后**不保留明文**。
+    std::wstring password;
 };
 
 struct RestoreRequest {
@@ -46,6 +49,9 @@ struct RestoreRequest {
     // 最小化 = 启用 in-box 启动存储驱动；driverDir 非空 = 再注用户驱动包。
     bool universal = false;
     std::wstring driverDir;
+    // 加密镜像口令（docs/30）。空 = 未提供（加密镜像会被拒绝并提示）。
+    // 引擎矩阵：A 引擎（swap）/PE 就地还原支持；B 引擎（block）与常驻菜单拒绝。
+    std::wstring password;
 };
 
 // 备份。覆盖确认由调用方负责（CLI --yes / GUI 对话框）。

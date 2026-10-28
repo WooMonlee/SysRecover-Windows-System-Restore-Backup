@@ -8,8 +8,10 @@
 
 #include "gui/ui_skin.h"
 #include "gui/confirm_dlg.h"
+#include "gui/passwd_dlg.h"
 #include "gui/imgsearch.h"
 #include "app/ops.h"
+#include "app/imgsrc.h"
 #include "app/universal.h"
 #include "app/safety.h"
 #include "app/selfdiag.h"
@@ -62,7 +64,7 @@ bool LooksLikeImagePath(const std::wstring& p) {
         }
         return true;
     };
-    return eq(L".wim") || eq(L".esd") || eq(L".swm");
+    return eq(L".wim") || eq(L".esd") || eq(L".swm") || eq(L".zje");
 }
 
 // 镜像路径是否"值得尝试打开"。
@@ -753,6 +755,17 @@ void CMainForm::OnTaskComplete(int rc) {
                     m_backupMode ? Tr(L"备份失败") : Tr(L"暂存失败"), MB_OK | MB_ICONERROR);
     } else if (m_backupMode) {
         m_imageOk = true;  // 备份完成即写盘有效；切到还原页后按钮可以点亮
+        // 增量备份：补一句"现在是第 N 个时间点，合计 X"（用户 2026-10-28 规格）。
+        std::wstring tp;
+        if (m_workerAppend && m_backupTimepoints > 0) {
+            wchar_t buf[256] = {};
+            swprintf(buf, 256,
+                     Tr(L"\n现在是第 %d 个时间点，合计 %.1f GB。"),
+                     m_backupTimepoints,
+                     static_cast<double>(m_backupTotalBytes) /
+                         (1024.0 * 1024.0 * 1024.0));
+            tp = buf;
+        }
         if (!m_skippedFiles.empty()) {
             const int n = static_cast<int>(m_skippedFiles.size());
             wchar_t head[256];
@@ -778,15 +791,15 @@ void CMainForm::OnTaskComplete(int rc) {
             wchar_t status[256];
             swprintf(status, 256, Tr(L"备份完成，但有 %d 个文件未备份"),
                      n);
-            SetStatus(status);
-            MessageBoxW(m_hWnd, msg.c_str(), Tr(L"备份不完整"),
+            SetStatus(std::wstring(status) + tp);
+            MessageBoxW(m_hWnd, (msg + tp).c_str(), Tr(L"备份不完整"),
                         MB_OK | MB_ICONWARNING);
         } else {
             SetStatus(Tr(L"备份完成，用时 ") + ElapsedText() + Tr(L"。"));
             if (!IsSilent())
                 MessageBoxW(m_hWnd,
                             (Tr(L"系统备份已完成。\n用时 ") + ElapsedText() +
-                             Tr(L"秒"))
+                             Tr(L"秒") + tp)
                                 .c_str(),
                             Tr(L"备份成功"), MB_OK | MB_ICONINFORMATION);
         }
@@ -1052,7 +1065,11 @@ void CMainForm::CancelAndExit() {
         LogInfo("GUI: worker still busy after 10s -> hard kill");
         for (const auto& p : {IncompletePath(m_workerDest),
                               m_workerDest + L".stage",
-                              m_workerDest + L".stage.tmp"})
+                              m_workerDest + L".stage.tmp",
+                              // 加密备份的明文中转（绝不能留下明文）
+                              m_workerDest + L".plain.tmp",
+                              m_workerDest + L".plain.tmp.stage",
+                              m_workerDest + L".plain.tmp.stage.tmp"})
             RegisterPendingDelete(p);
         ::TerminateProcess(::GetCurrentProcess(), 0);
         return;
@@ -1073,7 +1090,11 @@ void CMainForm::CleanupIncompleteOutput() {
         return;
     for (const auto& tmp : {IncompletePath(m_workerDest),
                             m_workerDest + L".stage",
-                            m_workerDest + L".stage.tmp"}) {
+                            m_workerDest + L".stage.tmp",
+                            // 加密备份的明文中转（绝不能留下明文）
+                            m_workerDest + L".plain.tmp",
+                            m_workerDest + L".plain.tmp.stage",
+                            m_workerDest + L".plain.tmp.stage.tmp"}) {
         if (::GetFileAttributesW(tmp.c_str()) == INVALID_FILE_ATTRIBUTES)
             continue;  // 正常取消时 Capture/RunBackup 已经删过了，这里是兜底
         ::SetFileAttributesW(tmp.c_str(), FILE_ATTRIBUTE_NORMAL);
@@ -1282,6 +1303,19 @@ void CMainForm::ToggleBootMenu() {
     if (m_wimPath.empty() || m_selPart < 0 ||
         m_selPart >= (int)m_parts.size()) {
         SetStatus(Tr(L"请先选择镜像与目标分区，再安装到启动"));
+        return;
+    }
+    // 加密镜像（docs/30 §9）：常驻菜单在**开机阶段**执行，那一刻没人能输密码 →
+    // 「安装到启动」一律拒绝（A 引擎的「解压并安装」也不允许，机器重启后没人给口令）。
+    if (sysrecover::ImageIsEncrypted(m_wimPath)) {
+        SetStatus(Tr(L"加密镜像不能安装到启动菜单"));
+        MessageBoxW(
+            m_hWnd,
+            std::wstring(Tr(L"这是加密镜像：开机阶段无法输入密码，\n"
+                            L"因此不能安装到启动菜单。\n\n"
+                            L"请改用「开始恢复」（解压并安装 / 还原后重启），或在 PE 中就地还原。"))
+                .c_str(),
+            Tr(L"安装到启动"), MB_OK | MB_ICONINFORMATION);
         return;
     }
     {
@@ -1606,6 +1640,15 @@ void CMainForm::ShowMoreMenu() {
     // 「清除」只在真装了东西时可点（否则点了也是空转，用户会以为没生效）。
     // 「镜像检查」只在镜像已解析成功时可点（对坏镜像做全量校验没有意义）。
     const bool canVerify = !m_backupMode && !m_wimPath.empty() && m_imageOk;
+    // 增量备份（2026-10-28 用户规格）：只在备份模式、且保存位置是**已存在的**
+    // .wim/.esd 时可点（没有镜像就无从"追加"）。
+    bool canAppend = false;
+    if (m_backupMode && !m_backupPath.empty() &&
+        GetFileAttributesW(m_backupPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        const wchar_t* dot = wcsrchr(m_backupPath.c_str(), L'.');
+        canAppend = dot && (_wcsicmp(dot, L".wim") == 0 ||
+                            _wcsicmp(dot, L".esd") == 0);
+    }
     ::AppendMenuW(hMenu,
                   MF_STRING | (IsUniversalChecked() ? MF_CHECKED : 0u), 1,
                   Tr(L"使用异机还原"));
@@ -1614,6 +1657,12 @@ void CMainForm::ShowMoreMenu() {
                   Tr(L"清除启动中还原菜单"));
     ::AppendMenuW(hMenu, MF_STRING | (canVerify ? 0u : MF_GRAYED), 4,
                   Tr(L"镜像检查（完整校验）"));
+    ::AppendMenuW(hMenu, MF_STRING | (canAppend ? 0u : MF_GRAYED), 5,
+                  Tr(L"增量备份（追加到当前镜像）"));
+    // 加密备份（docs/30）：勾选态 = 已设置口令；只保护**下一次**备份（输出 .zje）。
+    const bool encOn = !m_backupPassword.empty();
+    ::AppendMenuW(hMenu, MF_STRING | (encOn ? MF_CHECKED : 0u), 6,
+                  Tr(L"加密备份（输出 .zje，一个密码保护整个镜像）"));
 
     // MoreBtn 是顶层 float 控件 → GetPos() 已是客户区坐标；换屏幕坐标再弹。
     RECT rc{};
@@ -1645,6 +1694,24 @@ void CMainForm::ShowMoreMenu() {
         ClearBootMenuEntry();
     } else if (cmd == 4) {
         StartVerifyImage();
+    } else if (cmd == 5) {
+        StartIncrementalBackup();
+    } else if (cmd == 6) {
+        if (!m_backupPassword.empty()) {
+            m_backupPassword.clear();
+            SetStatus(Tr(L"已关闭备份加密"));
+            LogInfo("GUI backup encryption: off");
+            return;
+        }
+        std::wstring pwd;
+        if (!CPasswordDlg::Ask(
+                m_hWnd, Tr(L"加密备份"),
+                Tr(L"请设置备份密码（忘记后无法恢复镜像）："), pwd,
+                Tr(L"启用加密")))
+            return;
+        m_backupPassword = pwd;
+        SetStatus(Tr(L"已启用备份加密（下次备份输出 .zje，请牢记密码）"));
+        LogInfo("GUI backup encryption: on");
     }
 }
 
@@ -1723,7 +1790,20 @@ void CMainForm::VerifyImageAsync() {
         return false;
     };
     WimEngine wim;
-    int rc = wim.ok() ? wim.Verify(img, progressFn) : -1;
+    int rc = -1;
+    if (wim.ok()) {
+        std::wstring perr;
+        bool ptmp = false;
+        const std::wstring plain =
+            sysrecover::ResolveImagePlain(img, progressFn, perr, &ptmp);
+        if (!plain.empty()) {
+            rc = wim.Verify(plain, progressFn);
+            if (ptmp)
+                sysrecover::ReleaseImagePlain(img);
+        } else {
+            m_verifyMsg = W2U(perr);
+        }
+    }
     if (rc == 0)
         m_verifyMsg.clear();
     else
@@ -1919,7 +1999,7 @@ void CMainForm::BrowseWimFile() {
                                   CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pDlg));
     if (FAILED(hr) || !pDlg) { SetStatus(Tr(L"文件对话框创建失败")); return; }
     COMDLG_FILTERSPEC filters[] = {
-        {Tr(L"WIM/ESD 镜像"), L"*.wim;*.esd"},
+        {Tr(L"WIM/ESD 镜像"), L"*.wim;*.esd;*.zje"},
         {Tr(L"所有文件"), L"*.*"},
     };
     pDlg->SetFileTypes(2, filters);
@@ -2080,8 +2160,8 @@ void CMainForm::HandleDroppedFiles(WPARAM wParam) {
     std::wstring ext =
         dropped.size() >= 4 ? dropped.substr(dropped.size() - 4) : L"";
     for (auto& c : ext) c = (wchar_t)towlower(c);
-    if (ext != L".esd" && ext != L".wim") {
-        SetStatus(Tr(L"只支持拖入 .esd / .wim 镜像文件"));
+    if (ext != L".esd" && ext != L".wim" && ext != L".zje") {
+        SetStatus(Tr(L"只支持拖入 .esd / .wim / .zje 镜像文件"));
         return;
     }
     std::wstring& active = ActivePath();
@@ -2104,20 +2184,29 @@ void CMainForm::LoadWimImages(const std::wstring& path) {
     if (!pCombo) { UpdateMainAction(); return; }
     pCombo->RemoveAll();
     m_imgIdx.clear();
-    WimEngine wim;
-    if (!wim.ok()) {
-        SetStatus(Tr(L"wimlib 初始化失败"));
-        UpdateMainAction();
-        return;
+    // 加密镜像（docs/30）：先要口令（同一次运行内记住，不再反复问），
+    // 再读容器 meta 列出子镜像 —— 不需要解密几十 GB 正文。
+    if (sysrecover::ImageIsEncrypted(path) &&
+        sysrecover::GetImagePassword(path).empty()) {
+        std::wstring pwd;
+        if (!CPasswordDlg::Ask(m_hWnd, Tr(L"加密镜像"),
+                               Tr(L"该镜像已加密，请输入密码："), pwd)) {
+            SetStatus(Tr(L"已取消输入密码"));
+            UpdateMainAction();
+            return;
+        }
+        sysrecover::SetImagePassword(path, pwd);
     }
     std::vector<ImageDesc> images;
-    int rc = wim.ListImages(path, images);
+    int rc = sysrecover::ImageList(path, images);
     if (rc != 0 || images.empty()) {
         // 关键：读取失败（例如上次备份中途退出留下"写入未完成"的坏镜像）
         // 时必须保持 m_imageOk=false 并刷新按钮，否则主按钮的状态会停在
         // 上一次的可用态（用户看到"灰色按钮切一下模式又能点了"的怪象）。
-        SetStatus(std::wstring(Tr(L"镜像不可用（可能上次备份未完成，请重新备份）: ")) +
-                  WimEngine::ErrorString(rc));
+        SetStatus(std::wstring(Tr(L"镜像不可用（可能上次备份未完成，请重新备份）")) +
+                  (sysrecover::ImageIsEncrypted(path)
+                       ? Tr(L"：密码错误或加密镜像损坏")
+                       : std::wstring(L": ") + WimEngine::ErrorString(rc)));
         UpdateMainAction();
         return;
     }
@@ -2409,6 +2498,9 @@ void CMainForm::StartRestoreAsync() {
     req.engine = m_restoreEngine;       // "swap"=还原后重启 / "block"=重启后还原
     req.keepOld = m_restoreKeepOld;     // swap 时 true=保留 ~old 可返回；block 恒 false
     req.universal = IsUniversalChecked();  // 异机还原（2026-10-21）
+    // 加密镜像：口令来自本次运行输入（LoadWimImages 里问过并记在 imgsrc 表里）。
+    if (sysrecover::ImageIsEncrypted(req.image))
+        req.password = sysrecover::GetImagePassword(req.image);
     if (req.universal) {
         // 只认程序目录下的 Drivers\（用户放驱动包的位置）；没有 .inf 就仅内置。
         std::wstring drivers = ExeDir() + L"\\Drivers";
@@ -2471,6 +2563,21 @@ void CMainForm::StartBackup() {
                (fmt == 0 ? L".esd" : L".wim");
     }
     // 「ESP」勾选（备份专属）：只读状态，起线程前定格到 m_workerEsp
+    // 加密备份（docs/30）：口令非空 → 输出改成 .zje（容器），落盘后不留明文。
+    const std::wstring pwd = m_backupPassword;
+    if (!pwd.empty()) {
+        size_t slash = dest.find_last_of(L"\\/");
+        size_t base = (slash == std::wstring::npos) ? 0 : slash + 1;
+        size_t dot = dest.find_last_of(L'.');
+        dest = (dot != std::wstring::npos && dot > base)
+                   ? dest.substr(0, dot) + L".zje"
+                   : dest + L".zje";
+    } else if (dest.size() >= 4 &&
+               _wcsicmp(dest.c_str() + dest.size() - 4, L".zje") == 0) {
+        // 关掉加密后再备份：文件名要回到 .wim/.esd，否则会出现"名叫 .zje
+        // 但内容其实是明文 WIM"的怪文件（虽然按 magic 能认出来）。
+        dest = dest.substr(0, dest.size() - 4) + (fmt == 0 ? L".esd" : L".wim");
+    }
     m_backupPath = dest;
     SetImagePathEdit(m_backupPath);
     bool esp = IsEspChecked();
@@ -2504,14 +2611,108 @@ void CMainForm::StartBackup() {
             source = part.letter + L":/";
         }
     }
-    m_workerSource   = source;
-    m_workerDest    = dest;
+    BeginBackupWorker(source, dest, compress, name, esp, /*append=*/false, pwd);
+}
+
+// ── 增量备份（追加到当前镜像，2026-10-28 用户规格 / docs/31）──────────────
+// WIM/ESD 的多子镜像 = **文件级去重快照**：未变更的文件在各时间点之间共享，
+// 改动过的文件整份重存；旧时间点保留（只增不减）。入口按用户要求放「更多功能>>」。
+void CMainForm::StartIncrementalBackup() {
+    if (m_busy) return;
+    if (!m_backupMode) {
+        SetStatus(Tr(L"增量备份请在「系统→文件」模式使用"));
+        return;
+    }
+    const std::wstring dest = m_backupPath;
+    if (dest.empty()) {
+        SetStatus(Tr(L"请先选择已存在的镜像文件"));
+        return;
+    }
+    if (GetFileAttributesW(dest.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        SetStatus(Tr(L"增量备份需要一个已存在的镜像文件"));
+        MessageBoxW(m_hWnd, Tr(L"增量备份需要一个已存在的镜像文件。\n请先把「保存位置」指向已备份过的 .wim/.esd。"),
+                    Tr(L"增量备份"), MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    const wchar_t* dot = wcsrchr(dest.c_str(), L'.');
+    if (!dot || (_wcsicmp(dot, L".wim") != 0 && _wcsicmp(dot, L".esd") != 0)) {
+        SetStatus(Tr(L"增量备份只支持 .wim / .esd 镜像"));
+        return;
+    }
+    // 秒级快检 + 现有时间点数（只读元数据、不解压数据）
+    sysrecover::WimEngine eng;
+    std::wstring why;
+    std::vector<sysrecover::ImageDesc> imgs;
+    if (!eng.ok() || eng.Probe(dest, why) != 0 ||
+        eng.ListImages(dest, imgs) != 0 || imgs.empty()) {
+        std::wstring msg = Tr(L"该文件不是可用的镜像：") +
+                           (why.empty() ? dest : why);
+        SetStatus(msg);
+        MessageBoxW(m_hWnd, msg.c_str(), Tr(L"增量备份"),
+                    MB_OK | MB_ICONERROR);
+        return;
+    }
+    const int n = static_cast<int>(imgs.size());
+    // 单个时间点的含义必须先讲清（避免用户以为"只存差异块"）。
+    wchar_t head[768] = {};
+    swprintf(head, 768,
+             Tr(L"将把当前分区的新状态作为第 %d 个时间点追加到：\n%ls\n\n"
+                L"未变更的文件不重复占空间；改动过的文件会整份重存。\n"
+                L"旧时间点全部保留（镜像只增不减），还原时可选任一版本。\n\n"
+                L"确定开始追加吗？"),
+             n + 1, dest.c_str());
+    if (CConfirmDlg::Ask2(m_hWnd, Tr(L"增量备份"), head, Tr(L"取消"),
+                          Tr(L"开始追加"), /*defaultIsRight=*/false) != 1)
+        return;
+
+    const char* compress =
+        BackupFmt() == 0 ? "recovery" : (BackupFmt() == 1 ? "maximum" : "fast");
+    // 子镜像名沿用 "Backup"（wimlib 自动去重为 "Backup (N)"）。
+    std::wstring name = L"Backup";
+    CControlUI* pNote = m_PaintManager.FindControl(_T("NoteInput"));
+    if (pNote) {
+        CDuiString txt = pNote->GetText();
+        if (!txt.IsEmpty()) name = txt.GetData();
+    }
+    std::wstring source = L"C:/";
+    if (m_selPart >= 0 && m_selPart < (int)m_parts.size()) {
+        const auto& part = m_parts[m_selPart];
+        if (!part.letter.empty()) source = part.letter + L":/";
+    }
+    m_skippedFiles.clear();
+    m_busy = true;
+    UpdateMainAction();
+    SetStatus(Tr(L"正在追加时间点..."));
+    SetProgress(0);
+    m_start = std::chrono::steady_clock::now();
+    SetTimer(m_hWnd, 1, 1000, nullptr);
+    LogInfo(std::string("GUI incremental backup start: ") + W2U(dest) +
+            " (timepoint " + std::to_string(n + 1) + ")");
+    if (m_worker.joinable()) m_worker.join();
+    m_cancel = false;
+    // ESP 子镜像不参与增量（每次追加会再塞一个 ESP 子镜像，把 esp_index 弄乱）。
+    BeginBackupWorker(source, dest, compress, name, /*esp=*/false,
+                      /*append=*/true, std::wstring());
+}
+
+// 备份/增量共用：起线程前把参数定格到成员（busy 期间 UI 已锁，防漂移）。
+void CMainForm::BeginBackupWorker(const std::wstring& source,
+                                  const std::wstring& dest,
+                                  const std::string& compress,
+                                  const std::wstring& name, bool esp,
+                                  bool append, const std::wstring& password) {
+    m_workerSource = source;
+    m_workerDest = dest;
     m_workerCompress = compress;
-    m_workerName    = name;
-    m_workerCpuCap  = m_cpuCap;  // 起线程前定格（备份中再改走 SetCpuCap 直接生效）
-    m_workerEsp     = esp;
+    m_workerName = name;
+    m_workerPassword = password;
+    m_workerCpuCap = m_cpuCap;  // 起线程前定格（备份中再改走 SetCpuCap 直接生效）
+    m_workerEsp = esp;
+    m_workerAppend = append;
     m_lastProgressPost = std::chrono::steady_clock::now();
     m_lastStageRaw.clear();
+    m_backupTimepoints = 0;
+    m_backupTotalBytes = 0;
     try {
         m_worker = std::thread(&CMainForm::StartBackupAsync, this);
     } catch (...) {
@@ -2530,9 +2731,10 @@ void CMainForm::StartBackupAsync() {
     req.dest    = m_workerDest;
     req.compress = m_workerCompress;
     req.name    = m_workerName;
-    req.append  = false;
+    req.append  = m_workerAppend;
     req.cpuCap  = m_workerCpuCap;
     req.esp     = m_workerEsp;
+    req.password = m_workerPassword;
     auto progressFn = [this](int pct, const std::string& stage) -> bool {
         if (m_cancel) return true;  // 取消信号
         auto now = std::chrono::steady_clock::now();
@@ -2551,6 +2753,22 @@ void CMainForm::StartBackupAsync() {
     int rc = RunBackup(req, progressFn, err, &last_adv_, &skipped);
     m_skippedFiles = skipped;
     last_err_ = err;
+    // 加密备份成功后把口令登记到进程表：切到还原页即可直接列出子镜像。
+    if (rc == 0 && !m_workerPassword.empty())
+        sysrecover::SetImagePassword(m_workerDest, m_workerPassword);
+    // 增量完成后回主线程显示"第 N 个时间点 / 合计 X"（只读元数据，秒级）。
+    if (rc == 0 && m_workerAppend) {
+        sysrecover::WimEngine eng;
+        std::vector<sysrecover::ImageDesc> imgs;
+        if (eng.ok() && eng.ListImages(m_workerDest, imgs) == 0)
+            m_backupTimepoints = static_cast<int>(imgs.size());
+        WIN32_FILE_ATTRIBUTE_DATA fad = {};
+        if (GetFileAttributesExW(m_workerDest.c_str(), GetFileExInfoStandard,
+                                 &fad))
+            m_backupTotalBytes =
+                (static_cast<unsigned long long>(fad.nFileSizeHigh) << 32) |
+                fad.nFileSizeLow;
+    }
     PostMessage(WM_TASK_COMPLETE, (WPARAM)rc, 0);
 }
 

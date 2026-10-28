@@ -25,7 +25,8 @@ bool IsImageFile(const std::wstring& p) {
     size_t dot = p.find_last_of(L'.');
     if (dot == std::wstring::npos) return false;
     return _wcsicmp(p.c_str() + dot, L".esd") == 0 ||
-           _wcsicmp(p.c_str() + dot, L".wim") == 0;
+           _wcsicmp(p.c_str() + dot, L".wim") == 0 ||
+           _wcsicmp(p.c_str() + dot, L".zje") == 0;
 }
 
 // 去尾 '\'; 取父目录；已在盘根（如 D:\ ）返回空（没有"上一级"可扫）。

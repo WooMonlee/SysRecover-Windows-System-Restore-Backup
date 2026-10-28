@@ -5,6 +5,7 @@
 //   * zip    ：CRC-32 标准测试向量
 //   * advice ：建议码/退出码 → "下一步怎么办"（i18n 解耦，PLAN §14 M1）
 // 这些都是把纯逻辑从 Windows 调用里抽出来后才可测的（见各头文件注释）。
+#include <cstdio>
 #include <cstring>
 
 #include <windows.h>
@@ -20,6 +21,7 @@
 #include "boot/bootself.h"
 #include "boot/task.h"
 #include "boot/uefi.h"
+#include "common/crypt.h"
 #include "common/i18n.h"
 #include "common/bioskey.h"
 #include "common/pathutil.h"
@@ -1492,4 +1494,117 @@ TEST(bcd_file_looks_usable) {
     del(p2);
     del(p3);
     deldir();
+}
+
+// ── 镜像加密容器 ZJENC1（docs/30）────────────────────────────────────────
+namespace {
+std::wstring CryptTempPath(const wchar_t* tag) {
+    wchar_t dir[MAX_PATH] = {};
+    GetTempPathW(MAX_PATH, dir);
+    std::wstring p = dir;
+    p += L"zjenc-";
+    p += tag;
+    p += L".bin";
+    return p;
+}
+bool CryptWriteBytes(const std::wstring& path,
+                     const std::vector<unsigned char>& v) {
+    FILE* f = _wfopen(path.c_str(), L"wb");
+    if (!f) return false;
+    bool ok = fwrite(v.data(), 1, v.size(), f) == v.size();
+    fclose(f);
+    return ok;
+}
+bool CryptReadBytes(const std::wstring& path, std::vector<unsigned char>& v) {
+    FILE* f = _wfopen(path.c_str(), L"rb");
+    if (!f) return false;
+    v.clear();
+    unsigned char buf[65536];
+    size_t n = 0;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+        v.insert(v.end(), buf, buf + n);
+    fclose(f);
+    return true;
+}
+}  // namespace
+
+// 加密→读元数据→解密→逐字节比对；错密码/篡改必须 fail-closed 且不留明文。
+TEST(crypt_zje_roundtrip_meta_and_failclosed) {
+    // 3MB + 12345 字节：跨 4 个块，最后一块不整（验证尾块 CTR 处理）
+    std::vector<unsigned char> plain((size_t)3 * 1024 * 1024 + 12345);
+    for (size_t i = 0; i < plain.size(); ++i)
+        plain[i] = (unsigned char)((i * 131u + 7u) & 0xFF);
+    const std::wstring src = CryptTempPath(L"src");
+    const std::wstring enc = CryptTempPath(L"enc");
+    const std::wstring dec = CryptTempPath(L"dec");
+    DeleteFileW(src.c_str());
+    DeleteFileW(enc.c_str());
+    DeleteFileW(dec.c_str());
+    CHECK(CryptWriteBytes(src, plain));
+
+    std::vector<sysrecover::ZjeImage> imgs;
+    sysrecover::ZjeImage im;
+    im.index = 1;
+    im.name = L"Backup";
+    im.description = L"测试镜像";
+    im.sizeBytes = 123456789;
+    im.creationTime = 42;
+    im.hasWinload = true;
+    imgs.push_back(im);
+
+    std::wstring err;
+    CHECK_EQ(sysrecover::ZjeEncryptFile(src, enc, L"P@ss word", imgs, {}, err),
+             0);
+    CHECK(sysrecover::ZjeIsFile(enc));
+    CHECK(!sysrecover::ZjeIsFile(src));
+
+    sysrecover::ZjeInfo info;
+    std::vector<sysrecover::ZjeImage> got;
+    CHECK_EQ(sysrecover::ZjeReadMeta(enc, L"P@ss word", &info, &got, err), 0);
+    CHECK_EQ(info.plainSize, (unsigned long long)plain.size());
+    CHECK_EQ(got.size(), (size_t)1);
+    CHECK_EQ(got[0].name, std::wstring(L"Backup"));
+    CHECK_EQ(got[0].description, std::wstring(L"测试镜像"));
+    CHECK(got[0].hasWinload);
+    CHECK_EQ(got[0].sizeBytes, (unsigned long long)123456789);
+
+    // 错密码：头 MAC 失败，且不产生明文文件
+    CHECK(sysrecover::ZjeDecryptFile(enc, dec, L"wrong", {}, err) != 0);
+    CHECK(GetFileAttributesW(dec.c_str()) == INVALID_FILE_ATTRIBUTES);
+    CHECK(!sysrecover::ZjeCheckPassword(enc, L"wrong"));
+    CHECK(sysrecover::ZjeCheckPassword(enc, L"P@ss word"));
+
+    // 正确密码：逐字节一致
+    CHECK_EQ(sysrecover::ZjeDecryptFile(enc, dec, L"P@ss word", {}, err), 0);
+    std::vector<unsigned char> back;
+    CHECK(CryptReadBytes(dec, back));
+    CHECK_EQ(back.size(), plain.size());
+    CHECK(back == plain);
+
+    // 篡改正文 1 字节 → 拒绝，且不留半截明文
+    {
+        HANDLE h = CreateFileW(enc.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+                               nullptr, OPEN_EXISTING, 0, nullptr);
+        CHECK(h != INVALID_HANDLE_VALUE);
+        if (h != INVALID_HANDLE_VALUE) {
+            LARGE_INTEGER li;
+            li.QuadPart = 4096;  // meta 区内（必然被校验覆盖）
+            SetFilePointerEx(h, li, nullptr, FILE_BEGIN);
+            unsigned char b = 0;
+            DWORD got2 = 0, wr = 0;
+            if (ReadFile(h, &b, 1, &got2, nullptr) && got2 == 1) {
+                b ^= 0x5A;
+                SetFilePointerEx(h, li, nullptr, FILE_BEGIN);
+                WriteFile(h, &b, 1, &wr, nullptr);
+            }
+            CloseHandle(h);
+        }
+        DeleteFileW(dec.c_str());
+        CHECK(sysrecover::ZjeDecryptFile(enc, dec, L"P@ss word", {}, err) != 0);
+        CHECK(GetFileAttributesW(dec.c_str()) == INVALID_FILE_ATTRIBUTES);
+    }
+
+    DeleteFileW(src.c_str());
+    DeleteFileW(enc.c_str());
+    DeleteFileW(dec.c_str());
 }

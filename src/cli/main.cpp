@@ -15,6 +15,7 @@
 #include "wimlib.h"
 #include "../common/version.h"
 #include "../common/zip.h"
+#include "../app/imgsrc.h"
 #include "../app/ops.h"
 #include "../app/safety.h"
 #include "../app/selfdiag.h"
@@ -181,23 +182,23 @@ bool ValidateCommandArgs(const std::vector<std::string>& a) {
     if (cmd == "backup") {
         flags = {"--append", "--verify", "--snapshot", "--no-snapshot", "--esp",
                  "--yes", "-y"};
-        values = {"--dest", "--source", "--compress", "--name"};
+        values = {"--dest", "--source", "--compress", "--name", "--password"};
     } else if (cmd == "restore") {
         flags = {"--no-repair-boot", "--universal", "--yes", "-y"};
         values = {"--image", "--disk", "--part", "--index", "--engine",
-                  "--drivers"};
+                  "--drivers", "--password"};
     } else if (cmd == "verify") {
-        values = {"--image"};
+        values = {"--image", "--password"};
     } else if (cmd == "repair-boot") {
         values = {"--disk", "--part"};
     } else if (cmd == "returnold") {
         flags = {"--yes", "-y"};
         values = {"--disk", "--part"};
     } else if (cmd == "images") {
-        values = {"--file"};
+        values = {"--file", "--password"};
     } else if (cmd == "extract") {
         flags = {"--all"};
-        values = {"--file", "--image", "--path", "--dest", "--index"};
+        values = {"--file", "--image", "--path", "--dest", "--index", "--password"};
     } else if (cmd == "diag") {
         flags = {"--zip"};
         values = {"--out"};
@@ -298,7 +299,9 @@ int CmdBackup(const std::vector<std::string>& a) {
     req.verify = Has(a, "--verify");
     req.snapshot = Has(a, "--snapshot");
     req.noSnapshot = Has(a, "--no-snapshot");  // 冷备：PE/离线卷/VHD 卷上 VSS 不可用
-    req.esp = Has(a, "--esp");  // ESP 并入主镜像（方案 C：子镜像名 ESP，用户 2026-09-30）
+    req.esp = Has(a, "--esp");
+    // 加密备份（docs/30）：口令非空 → RunBackup 收尾加密成 .zje（删明文）
+    req.password = ToWide(Opt(a, "--password"));  // ESP 并入主镜像（方案 C：子镜像名 ESP，用户 2026-09-30）
     DWORD attr = GetFileAttributesW(req.dest.c_str());
     if (attr != INVALID_FILE_ATTRIBUTES && !req.append && !Has(a, "--yes") &&
         !Has(a, "-y")) {
@@ -375,6 +378,7 @@ int CmdRestore(const std::vector<std::string>& a) {
     if (req.engine.empty()) req.engine = "swap";
     // 异机还原（0.9）：仅 Win10/11；--drivers 可选（用户驱动文件夹）。
     req.universal = Has(a, "--universal");
+    req.password = ToWide(Opt(a, "--password"));
     if (req.universal) {
         req.driverDir = ToWide(Opt(a, "--drivers"));
         if (req.engine != "swap")
@@ -538,6 +542,17 @@ int CmdVerify(const std::vector<std::string>& a) {
         std::printf(Tr("缺少 --image\n"));
         return 2;
     }
+    const std::wstring wimg = ToWide(image);
+    if (sysrecover::ImageIsEncrypted(wimg))
+        sysrecover::SetImagePassword(wimg, ToWide(Opt(a, "--password")));
+    std::wstring perr;
+    bool ptmp = false;
+    const std::wstring plain =
+        sysrecover::ResolveImagePlain(wimg, {}, perr, &ptmp);
+    if (plain.empty()) {
+        std::printf(Tr("打开镜像失败：%ls\n"), perr.c_str());
+        return 1;
+    }
     sysrecover::WimEngine engine;
     if (!engine.ok()) {
         std::printf(Tr("wimlib 初始化失败\n"));
@@ -548,7 +563,9 @@ int CmdVerify(const std::vector<std::string>& a) {
     // 打开阶段（CHECK_INTEGRITY 全文件扫描）注册不了回调 → 先手动亮一次阶段名，
     // 否则大镜像前几十秒毫无输出（PIT-098）。
     ConsoleProgress(0, "verify");
-    int rc = engine.Verify(ToWide(image), ConsoleProgress);
+    int rc = engine.Verify(plain, ConsoleProgress);
+    if (ptmp)
+        sysrecover::ReleaseImagePlain(wimg);
     std::printf("\n");
     std::printf(rc == 0 ? Tr("校验通过\n") : Tr("校验失败\n"));
     return rc == 0 ? 0 : 5;
@@ -560,16 +577,14 @@ int CmdImages(const std::vector<std::string>& a) {
         std::printf(Tr("缺少 --file\n"));
         return 2;
     }
-    sysrecover::WimEngine engine;
-    if (!engine.ok()) {
-        std::printf(Tr("wimlib 初始化失败\n"));
-        return 1;
-    }
+    const std::wstring wfile = ToWide(file);
+    if (sysrecover::ImageIsEncrypted(wfile))
+        sysrecover::SetImagePassword(wfile, ToWide(Opt(a, "--password")));
     std::vector<sysrecover::ImageDesc> list;
-    int rc = engine.ListImages(ToWide(file), list);
+    // 加密镜像走容器 meta（只需密码，不必先解密整个文件）
+    int rc = sysrecover::ImageList(wfile, list);
     if (rc != 0) {
-        std::printf(Tr("读取失败：%ls\n"),
-                    sysrecover::WimEngine::ErrorString(rc));
+        std::printf(Tr("读取失败：%d（加密镜像请用 --password 提供口令）\n"), rc);
         return 1;
     }
     for (const auto& img : list) {
@@ -636,14 +651,26 @@ int CmdExtract(const std::vector<std::string>& a) {
             return 1;
         }
     }
+    const std::wstring wfile = ToWide(file);
+    if (sysrecover::ImageIsEncrypted(wfile))
+        sysrecover::SetImagePassword(wfile, ToWide(Opt(a, "--password")));
+    std::wstring perr2;
+    bool ptmp2 = false;
+    const std::wstring plain =
+        sysrecover::ResolveImagePlain(wfile, {}, perr2, &ptmp2);
+    if (plain.empty()) {
+        std::printf(Tr("打开镜像失败：%ls\n"), perr2.c_str());
+        return 1;
+    }
     sysrecover::WimEngine engine;
     if (!engine.ok()) {
         std::printf(Tr("wimlib 初始化失败\n"));
         return 1;
     }
-    int rc = all ? engine.Apply(ToWide(file), index, ToWide(dest), {})
-                 : engine.ExtractPaths(ToWide(file), index, paths,
-                                       ToWide(dest));
+    int rc = all ? engine.Apply(plain, index, ToWide(dest), {})
+                 : engine.ExtractPaths(plain, index, paths, ToWide(dest));
+    if (ptmp2)
+        sysrecover::ReleaseImagePlain(wfile);
     if (rc != 0) {
         std::printf(Tr("提取失败：%ls\n"), sysrecover::WimEngine::ErrorString(rc));
         return 1;

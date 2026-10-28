@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 加密镜像口令框（src/gui/passwd_dlg.cpp）。
+     尺寸 420x196，无系统外框 + 圆角（同 confirm.xml）。
+     只用于：选中 .zje 后输入口令 / 备份加密时设置口令。 -->
+<Window size="420,196" caption="0,0,0,44" roundcorner="24,24" mininfo="420,196">
+  <Font id="1" name="Microsoft YaHei UI" size="14" />
+  <VerticalLayout bkcolor="#FFEEF1F6" inset="1,1,1,1">
+    <VerticalLayout name="Panel" bkcolor="#FFFFFFFF" bordersize="1" bordercolor="#FFE1E7EF" borderround="24,24" inset="1,1,1,1">
+      <VerticalLayout name="Content">
+        <Control name="TopBarBg" float="true" pos="0,0,416,44" bkcolor="#FFF7F9FC" />
+        <SkinLabel name="DlgTitle" float="true" pos="22,12,300,38" text="镜像密码" fontsize="15" bold="true" color="#FF1B2432" />
+        <WinBtn name="DlgClose" float="true" pos="372,2,414,42" glyph="close" />
+        <SkinLabel name="DlgMsg1" float="true" pos="22,56,398,78" text="" fontsize="13" color="#FF5F6C80" />
+        <SkinEdit name="PwdEdit" float="true" pos="22,84,398,122" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFC9D6F2" borderround="16,16" textcolor="#FF1B2432" nativebkcolor="#FFFFFFFF" textpadding="10,9,10,9" />
+        <SkinLabel name="DlgMsg2" float="true" pos="22,128,398,148" text="" fontsize="12" color="#FF8A93A3" />
+        <SkinButton name="BtnCancel" float="true" pos="106,150,232,188" text="取消" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFE4E8EF" borderround="14,14" textcolor="#FF1B2432" />
+        <SkinButton name="BtnOK" float="true" pos="242,150,398,188" text="确定" fontsize="14" bkcolor="#FF8CA0DE" bordercolor="#FF8CA0DE" borderround="14,14" textcolor="#FFFFFFFF" />
+      </VerticalLayout>
+    </VerticalLayout>
+  </VerticalLayout>
+</Window>

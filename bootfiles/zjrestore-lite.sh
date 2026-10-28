@@ -135,6 +135,10 @@ case "$ESP_INDEX" in ''|0) ESP_INDEX="" ;; esac
 # （PIT-138：原实现在脚本尾部才读 → 前面判不到）。
 EA_INDEX=$(get_task ea_index)
 case "$EA_INDEX" in ''|0) EA_INDEX="" ;; esac
+# 加密镜像（ZJENC1）：Windows 暂存阶段已把 ESP/EA 子镜像解到**目标分区**的
+# ZJRESTORE/{espfix,eafix}，救援层只做拷贝（它读不了加密容器）。空 = 旧行为。
+ESP_FIX_DIR=$(get_task esp_fix_dir)
+EA_FIX_DIR=$(get_task ea_fix_dir)
 REPAIR_BOOT=$(get_task repair_boot)
 PT_TYPE=$(get_task pt_type)
 TARGET_OFFSET=$(get_task target_offset)
@@ -743,6 +747,10 @@ caps_selfcheck(){
         [ -f /zjswap.sh ] || _bad="$_bad zjswap.sh"
         if [ -n "$ESP_INDEX" ] || [ -n "$EA_INDEX" ]; then
             _wim_ok || _bad="$_bad wimlib-imagex(needed-by-esp/ea)"
+        fi
+        # 加密镜像：ESP/EA 已由 Windows 暂存到目标盘，只需 cp（不读密文镜像）
+        if [ -n "$ESP_FIX_DIR" ] || [ -n "$EA_FIX_DIR" ]; then
+            command -v cp >/dev/null 2>&1 || _bad="$_bad cp(needed-by-encrypted-esp/ea)"
         fi
     else
         # B 引擎：wimlib + mkntfs
@@ -1623,7 +1631,42 @@ find_esp_dev(){
     done
     return 1
 }
-if [ -n "$ESP_INDEX" ]; then
+if [ -n "$ESP_FIX_DIR" ]; then
+    # 加密镜像（ZJENC1）：ESP 子镜像已由 Windows 解到目标盘的 $ESP_FIX_DIR，
+    # 这里只做目录拷贝（救援层没有解密器，读不了 .zje）。
+    STEP=esp
+    ESP_DEV=$(find_esp_dev)
+    if [ -n "$ESP_DEV" ]; then
+        ESPM=/tmp/zj_esp_m
+        mkdir -p "$ESPM"
+        if mnt_dev "$ESP_DEV" "$ESPM"; then
+            TGTM=/tmp/zj_tgt_fix
+            mkdir -p "$TGTM"
+            if mnt_dev "$TARGET_DEV" "$TGTM"; then
+                SRC="$TGTM/$ESP_FIX_DIR"
+                if [ -d "$SRC" ]; then
+                    say "restore esp fix (copy) $ESP_FIX_DIR -> $ESP_DEV"
+                    if cp -a "$SRC/." "$ESPM/" 2>/tmp/espfix.err; then
+                        sync
+                        say "esp restored (copy rc=0)"
+                    else
+                        say "ERROR: esp copy failed: $(tr '\n' ' ' < /tmp/espfix.err 2>/dev/null | head -c 200)"
+                    fi
+                else
+                    say "WARN: esp fix dir not found: $SRC (skip)"
+                fi
+                umount "$TGTM" 2>/dev/null
+            else
+                say "ERROR: target mount failed for esp fix copy"
+            fi
+            umount "$ESPM" 2>/dev/null
+        else
+            say "ERROR: esp mount failed: $(cat /tmp/zjmnt.err 2>/dev/null | tr '\n' ' ')"
+        fi
+    else
+        say "WARN: task has esp fix dir but no ESP partition found (skip)"
+    fi
+elif [ -n "$ESP_INDEX" ]; then
     STEP=esp
     ESP_DEV=$(find_esp_dev)
     if [ -n "$ESP_DEV" ]; then
@@ -1658,12 +1701,30 @@ fi
 # 同步策略 / 预登录执行 / 每引导重跑 / 文件可写性）已 QEMU 全链实测（PIT-123）。
 # 没有 ea_index 时整段不跑（绝大多数任务不带）。
 # （EA_INDEX 在脚本开头与 ESP_INDEX 一起解析，见契约解析段。）
-if [ -n "$EA_INDEX" ]; then
+if [ -n "$EA_FIX_DIR" ] || [ -n "$EA_INDEX" ]; then
     STEP=ea
-    say "ea subimage: index=$EA_INDEX (deploy first-boot EA restore)"
     EAD=/tmp/zj_ea
     mkdir -p "$EAD"
-    if "$WIMLIB" apply "$IMG_FILE" "$EA_INDEX" "$EAD" > /tmp/ea.out 2>&1; then
+    # 加密镜像：ZJEA 子镜像已由 Windows 解到目标盘，拷过来即可（不读密文镜像）；
+    # 旧行为：从镜像子镜像 apply 出来。
+    if [ -n "$EA_FIX_DIR" ]; then
+        say "ea fix: copy $EA_FIX_DIR from target (encrypted image)"
+        EAFTM=/tmp/zj_ea_src
+        mkdir -p "$EAFTM"
+        if mnt_dev "$TARGET_DEV" "$EAFTM"; then
+            cp -a "$EAFTM/$EA_FIX_DIR/." "$EAD/" 2>/tmp/eafix.err
+            _earc=$?
+            umount "$EAFTM" 2>/dev/null
+        else
+            _earc=1
+            cp /tmp/zjmnt.err /tmp/eafix.err 2>/dev/null
+        fi
+    else
+        say "ea subimage: index=$EA_INDEX (deploy first-boot EA restore)"
+        "$WIMLIB" apply "$IMG_FILE" "$EA_INDEX" "$EAD" > /tmp/ea.out 2>&1
+        _earc=$?
+    fi
+    if [ "$_earc" -eq 0 ]; then
         # PIT-132：载荷 = 补写器（必需）+ eapack.dat（可选：无 EA 的
         # "悬空引用清理"任务只有补写器）。
         if [ -s "$EAD/zj-ea-apply.exe" ]; then
@@ -1813,7 +1874,7 @@ if [ -n "$EA_INDEX" ]; then
             say "ERROR: ea payload incomplete in subimage (files: $(ls "$EAD" 2>/dev/null | tr '\n' ' '))"
         fi
     else
-        say "ERROR: ea subimage apply rc=$?: $(tail -n 3 /tmp/ea.out 2>/dev/null | tr '\n' ' ')"
+        say "ERROR: ea extract failed rc=$_earc: $(tail -n 3 /tmp/ea.out 2>/dev/null | tr '\n' ' ') $(tr '\n' ' ' < /tmp/eafix.err 2>/dev/null | head -c 160)"
     fi
 fi
 # 镜像分区到此才卸载（ESP/EA 子镜像 apply 直接读 $IMG_FILE，见上面的注释）

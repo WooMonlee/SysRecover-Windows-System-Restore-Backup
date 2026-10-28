@@ -55,17 +55,17 @@ INCLUDES = -Ithird_party/wimlib -Isrc
 # -s = 链接时剥符号表：发布体积显著下降（实测 x64 CLI -838KB / GUI -1.1MB /
 # EA 补写器 -495KB）；崩溃处理只用"模块+偏移"（PIT-084），不依赖符号表。
 LDFLAGS  = -static -mconsole -s
-LDLIBS   = -L$(WIMLIB) -l:libwim-15.dll -ladvapi32 -lole32 -lshell32 -luuid -lgdi32 -lntdll -lversion
+LDLIBS   = -L$(WIMLIB) -l:libwim-15.dll -ladvapi32 -lole32 -lshell32 -luuid -lgdi32 -lntdll -lversion -lbcrypt
 
 # ---- 应用模块静态库（CLI 与 GUI 共用，避免双份编译 ODR 问题） ----
 APP_SRC = src/disk/disk.cpp src/disk/partinit.cpp src/disk/partscript.cpp src/disk/mbrcode.cpp src/wim/wim.cpp src/wim/exclude.cpp \
       src/common/process.cpp src/common/logger.cpp src/common/progress.cpp \
       src/common/singleton.cpp src/common/sysinfo.cpp src/common/zip.cpp \
-      src/common/selfarch.cpp src/common/crash.cpp src/common/vss.cpp src/common/i18n.cpp \
+      src/common/selfarch.cpp src/common/crash.cpp src/common/vss.cpp src/common/i18n.cpp src/common/crypt.cpp \
       src/common/relocate.cpp src/common/pathutil.cpp src/common/cpucap.cpp src/common/ea.cpp src/common/refscan.cpp src/common/bioskey.cpp src/boot/bcd.cpp src/boot/grub.cpp \
       src/boot/uefi.cpp src/boot/bcd_parse.cpp src/boot/bootpath.cpp src/boot/bootself.cpp src/boot/task.cpp src/boot/bootfix.cpp \
       src/app/safety.cpp src/app/advice.cpp \
-      src/app/shortcut.cpp src/app/ops.cpp src/app/selfdiag.cpp src/app/universal.cpp \
+      src/app/shortcut.cpp src/app/ops.cpp src/app/imgsrc.cpp src/app/selfdiag.cpp src/app/universal.cpp \
       src/app/swapleft.cpp
 APP_OBJS = $(patsubst src/%.cpp,$(OBJDIR)/app/%.o,$(APP_SRC))
 APP_LIB  = $(OBJDIR)/libapp.a
@@ -92,11 +92,11 @@ DUI_LIB = $(OBJDIR)/libduilib.a
 include build/duilib.mk
 
 # ---- GUI（windows，经典 Duilib） ----
-GUI_SRC = src/gui/main_win.cpp src/gui/main_form.cpp src/gui/ui_skin.cpp src/gui/instance_dlg.cpp src/gui/confirm_dlg.cpp src/gui/imgsearch.cpp src/gui/initdisk_dlg.cpp
+GUI_SRC = src/gui/main_win.cpp src/gui/main_form.cpp src/gui/ui_skin.cpp src/gui/instance_dlg.cpp src/gui/confirm_dlg.cpp src/gui/passwd_dlg.cpp src/gui/imgsearch.cpp src/gui/initdisk_dlg.cpp
 GUI_OUT = $(DISTDIR)/$(GUI_NAME)
 GUI_INCLUDES = -Isrc -I$(DUI_ROOT) -I$(DUI_ROOT)/Control -I$(DUI_ROOT)/Core -I$(DUI_ROOT)/Layout -I$(DUI_ROOT)/Utils
 GUI_FLAGS = -std=c++17 -O1 -fpermissive -DUNICODE -D_UNICODE -DWIN32 -D_WIN32_WINNT=0x0601 -D_stdcall=__stdcall -DUILIB_STATIC
-GUI_LDLIBS = -lgdi32 -lcomctl32 -limm32 -lole32 -luuid -lmsimg32 -lshlwapi -luxtheme -ldwmapi -lwinmm -lgdiplus -loleaut32 -ladvapi32 -lshell32 -lntdll -lversion -lversion
+GUI_LDLIBS = -lgdi32 -lcomctl32 -limm32 -lole32 -luuid -lmsimg32 -lshlwapi -luxtheme -ldwmapi -lwinmm -lgdiplus -loleaut32 -ladvapi32 -lshell32 -lntdll -lversion -lversion -lbcrypt
 
 # ---- 提权清单（requireAdministrator）：windres 编成 .o 再链入 ----
 # 备份/还原核心功能（枚举分区、写 BCD/引导、wimlib 挂载）全需管理员权限，
@@ -226,12 +226,12 @@ $(BOOT_CLEANUP_OUT): $(BOOT_CLEANUP_SRC) src/boot/bcd.h src/boot/bootnames.h | $
 #      源码复验全绿后原样恢复，另补 0.7 新纯逻辑 DecideSwapLeftover 决策表用例）----
 TEST_SRC   = tests/tiny_test.cpp tests/unit_tests.cpp tests/main.cpp
 TEST_UNITS = src/common/sysinfo.cpp src/wim/exclude.cpp src/boot/task.cpp src/common/zip.cpp src/app/advice.cpp \
-      src/common/i18n.cpp src/common/selfarch.cpp src/common/relocate.cpp src/common/pathutil.cpp src/boot/bcd_parse.cpp src/boot/bootpath.cpp \
+      src/common/i18n.cpp src/common/crypt.cpp src/common/selfarch.cpp src/common/relocate.cpp src/common/pathutil.cpp src/boot/bcd_parse.cpp src/boot/bootpath.cpp \
       src/common/ea.cpp src/common/refscan.cpp src/app/swapleft.cpp src/common/logger.cpp src/common/bioskey.cpp \
       src/disk/partscript.cpp src/boot/bootself.cpp src/common/process.cpp
 TEST_BIN   = $(OBJDIR)/tests.exe
 $(TEST_BIN): $(TEST_SRC) $(TEST_UNITS) src/common/rescue_decision.h src/common/version.h tests/tiny_test.h | $(OBJDIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) $(TEST_SRC) $(TEST_UNITS) -o $(TEST_BIN) -static -mconsole -ladvapi32 -lole32 -luuid -lntdll
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(TEST_SRC) $(TEST_UNITS) -o $(TEST_BIN) -static -mconsole -ladvapi32 -lole32 -luuid -lntdll -lbcrypt
 
 # 崩溃探针（不进 make check —— 它会真的崩）。产物在 tests\crash-out\（gitignore）。
 CRASH_PROBE = $(OBJDIR)/crash_probe.exe
@@ -308,6 +308,7 @@ package: ea-apply boot-cleanup launchers
 	@copy /Y skin\main.xml dist\skin\ >nul
 	@copy /Y skin\instance.xml dist\skin\ >nul
 	@copy /Y skin\confirm.xml dist\skin\ >nul
+	@copy /Y skin\passwd.xml dist\skin\ >nul
 # 词典（i18n）：AppDir() 定位 <root>\lang\ —— x64\ 会自动上移到 dist\，两套 exe 共用
 	@if not exist dist\lang mkdir dist\lang
 	@copy /Y lang\*.lang dist\lang\ >nul

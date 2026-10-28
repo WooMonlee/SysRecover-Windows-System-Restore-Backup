@@ -2,9 +2,9 @@
 # 只许降不许升；确需升级 = 先在 AGENTS/PIT 里完成 A/B 分类审查再更新本文件。
 # 格式：次数 路径
 
-161	bootfiles/zjrestore-lite.sh
+168	bootfiles/zjrestore-lite.sh
 12	bootfiles/zjswap.sh
 18	bootfiles/zjswap-undo.sh
 3	bootfiles/setup-swap.sh
 1	bootfiles/zjlog.sh
-60	bootfiles/alpine/init
+59	bootfiles/alpine/init

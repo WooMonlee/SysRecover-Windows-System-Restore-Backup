@@ -300,6 +300,7 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 - PIT-135 · 客户 20261008 两问题 · [正文](docs/25-PIT坑位册.md#pit-135)
 
 - PIT-187 · AGENTS 体积：PIT 正文写 docs/25，本文件 ≤80KB · [正文](docs/25-PIT坑位册.md#pit-187)
+- PIT-188 · 加密镜像只能整包解到临时明文（wimlib 只收路径） · [正文](docs/25-PIT坑位册.md#pit-188)
 
 ### 13.2 未闭环（正文带 🚧，别当"已经好了"）
 

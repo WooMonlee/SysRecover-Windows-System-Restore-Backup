@@ -62,10 +62,13 @@ WRAP_FILES = [
     "src/common/bioskey.cpp",
     "src/boot/uefi.cpp",
     "src/boot/grub.cpp",
+    "src/common/crypt.cpp",
+    "src/app/imgsrc.cpp",
+    "src/gui/passwd_dlg.cpp",
     "src/wim/wim.cpp",
     "src/tools/wimcheck_main.cpp",
 ]
-SKIN_FILES = ["skin/main.xml", "skin/confirm.xml", "skin/instance.xml"]
+SKIN_FILES = ["skin/main.xml", "skin/confirm.xml", "skin/instance.xml", "skin/passwd.xml"]
 
 # 日志 / 历史 / 进度（机器可读，不翻）
 SKIP_CALLS = {

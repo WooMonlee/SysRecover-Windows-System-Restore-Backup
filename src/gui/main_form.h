@@ -115,6 +115,14 @@ private:
     void LoadWimImages(const std::wstring& path);
     void StartRestore();   // UI 校验 + 确认 → StartRestoreAsync
     void StartBackup();    // UI 校验 + 确认 → StartBackupAsync
+    // 增量备份（2026-10-28 用户规格，docs/31）：入口在「更多功能>>」，
+    // 把当前分区的新状态作为**新时间点追加**到已存在的 .wim/.esd（同文件多快照）。
+    void StartIncrementalBackup();
+    // 备份/增量共用的 worker 启动段（起线程前定格参数，避免 UI 改动漂移）。
+    void BeginBackupWorker(const std::wstring& source, const std::wstring& dest,
+                           const std::string& compress,
+                           const std::wstring& name, bool esp, bool append,
+                           const std::wstring& password = std::wstring());
     void StartRestoreAsync();  // worker 线程：StageRestore
     void StartBackupAsync();   // worker 线程：RunBackup
     // 还原引擎选择（2026-10-14 用户规格：确认框三选）：
@@ -200,6 +208,8 @@ private:
     bool m_imageOk = false;    // 还原模式：当前镜像可读/可用（否则主按钮保持灰）
     std::wstring m_wimPath;       // 还原镜像
     std::wstring m_backupPath;    // 备份保存位置（与还原路径分离）
+    // 备份加密（docs/30）：非空 = 下次备份写成 .zje 容器（只在本进程内存里）。
+    std::wstring m_backupPassword;
     std::wstring m_lastLoadedWim;  // 上次已解析过子镜像的路径（避免手动输入时反复解析）
     sysrecover::SystemDescription m_sysDesc;  // 运行中系统的描述（InitWindow 里取）
     int m_selPart = -1;
@@ -234,8 +244,14 @@ private:
     std::wstring      m_workerDest;     // StartBackupAsync 用：目标路径
     std::string       m_workerCompress; // StartBackupAsync 用：压缩方式
     std::wstring      m_workerName;     // StartBackupAsync 用：子镜像名
+    std::wstring      m_workerPassword; // StartBackupAsync 用：加密口令（空=不加密）
     int               m_workerCpuCap = 0;  // StartBackupAsync 用：CPU 上限（起线程前定格）
     bool              m_workerEsp = false;
+    // 增量备份（追加到已有镜像）：true = 本次走 wimlib append（多时间点）。
+    bool              m_workerAppend = false;
+    // 增量完成后回主线程显示用：第 N 个时间点 + 合计字节数。
+    int               m_backupTimepoints = 0;
+    unsigned long long m_backupTotalBytes = 0;
     std::vector<std::wstring> m_skippedFiles; // StartBackupAsync 用：是否把 ESP 并入主镜像
     std::string       last_err_;        // worker 错误回传
     sysrecover::ErrAdvice last_adv_ = sysrecover::ADV_NONE;  // worker 建议码回传

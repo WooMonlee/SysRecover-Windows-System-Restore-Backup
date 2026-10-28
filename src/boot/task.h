@@ -31,6 +31,12 @@ struct RestoreTask {
     // 暂存时从镜像内容发现后写进 conf + _zjresy 日志；救援层把它连同补写器
     // 投放进目标并安装首启钩子（纯增量键，不升 contract_version，同 esp_index）。
     int eaIndex = 0;
+    // 加密镜像（ZJENC1）专用：Windows 暂存阶段已把 ESP/EA 子镜像解到
+    // **目标分区**的相对目录（Linux 救援层读不了加密容器，只做拷贝）。
+    // 空 = 旧行为（救援层用 wimlib 直接 apply esp_index/ea_index）。
+    // 增量键，不升 contract_version。
+    std::wstring espFixDir;
+    std::wstring eaFixDir;
     // 镜像文件字节数（1019 案，2026-10-19）：救援层"契约认证"用 —— 与暂存侧
     // 完全一致才走快路径（跳过救援层自带的重解析点扫描）。增量键。
     uint64_t imageSize = 0;

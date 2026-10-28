@@ -20,6 +20,7 @@
 #include "../boot/task.h"
 #include "../boot/uefi.h"
 #include "../common/ea.h"
+#include "../common/crypt.h"
 #include "../common/logger.h"
 #include "../common/pathutil.h"
 #include "../common/cpucap.h"
@@ -36,6 +37,7 @@
 #include "../wim/exclude.h"
 #include "safety.h"
 #include "selfdiag.h"
+#include "imgsrc.h"
 
 namespace sysrecover {
 namespace {
@@ -946,6 +948,13 @@ bool CanRestoreInLinuxOnly(const std::wstring& image, int index,
                            std::string& err) {
     if (badReparse) *badReparse = 0;
     if (encrypted) *encrypted = 0;
+    // 加密镜像（ZJENC1）：救援层没有解密器 → **不能用 B 引擎**（恒为"需要解压"）。
+    // GUI 会在调用本函数之前就识别出来；这里再兜一层，避免新调用方漏判。
+    if (ImageIsEncrypted(image)) {
+        err = Tr("这是加密镜像：救援层无法直接还原，只能「解压并安装」或 PE 就地还原。");
+        LogInfo("menu scan: encrypted image -> linux-only restore disabled");
+        return false;
+    }
     WimEngine eng;
     std::vector<std::wstring> bad;
     size_t enc = 0;
@@ -1050,11 +1059,9 @@ bool CanRestoreInPlace(const PartitionInfo& t, std::string& why,
 // 还原前空间预检（P1）—— 见 ops.h。**必须在格式化之前**调用。
 int CheckRestoreSpace(const std::wstring& imagePath, int index,
                       const PartitionInfo& target, std::string& err) {
-    WimEngine engine;
-    if (!engine.ok())
-        return 0;  // wimlib 起不来：不阻断（后面 apply 自己会报错）
     unsigned long long bytes = 0;
-    int rc = engine.ImageSize(imagePath, index < 1 ? 1 : index, &bytes);
+    // 加密镜像走容器 meta（不解密正文）；普通镜像走 wimlib。两者同一口径。
+    int rc = ImageContentSize(imagePath, index < 1 ? 1 : index, &bytes);
     if (rc != 0 || bytes == 0) {
         LogError("space precheck: cannot read image size (rc=" +
                  std::to_string(rc) + ") -> skip");
@@ -1375,15 +1382,43 @@ static bool ProbeBackupDest(const std::wstring& dest, std::string& err) {
     return true;
 }
 
-int RunBackup(const BackupRequest& req, ProgressFn progress,
+int RunBackup(const BackupRequest& reqIn, ProgressFn progress,
               std::string& err, ErrAdvice* adv,
               std::vector<std::wstring>* skipped) {
     if (adv) *adv = ADV_NONE;
     if (skipped) skipped->clear();
     std::vector<std::wstring> skippedList;
-    if (req.dest.empty()) {
+    if (reqIn.dest.empty()) {
         err = Tr("缺少目标镜像路径");
         return 1;
+    }
+    // ── 加密备份（ZJENC1，docs/30）──
+    // 明文先写到 <目标>.plain.tmp（沿用现有 stage/原子写/Probe 全流程），
+    // 收尾再加密成 <目标>.zje 并**删除明文**。任何失败都不留明文镜像。
+    BackupRequest req = reqIn;
+    const bool encrypt = !reqIn.password.empty();
+    // 兜底：任何提前 return 都把明文中转删掉（加密备份的红线是"绝不留明文"）。
+    struct PlainGuard {
+        std::wstring p;
+        bool on = false;
+        ~PlainGuard() {
+            if (on)
+                DeleteFileW(p.c_str());
+        }
+    } plainGuard{reqIn.dest, false};
+    if (encrypt) {
+        if (reqIn.append) {
+            err = Tr("加密备份不支持追加（增量请用未加密的 .wim/.esd）");
+            return 2;
+        }
+        if (reqIn.dest.size() < 4 ||
+            _wcsicmp(reqIn.dest.c_str() + reqIn.dest.size() - 4, L".zje") != 0) {
+            err = Tr("加密备份的输出文件名必须以 .zje 结尾");
+            return 2;
+        }
+        req.dest = reqIn.dest + L".plain.tmp";
+        plainGuard.p = req.dest;
+        plainGuard.on = true;
     }
     // 源路径归一（2026-09-28 用户 CLI 复现：`--source C:` 备份报 rc=47）：
     //   · Win32 里 `C:` 是“该盘的**当前目录**”，不是根，也不带 wimlib 要求的
@@ -1753,6 +1788,64 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
             return 1;
         }
     }
+    // ── 加密收尾（docs/30）：明文 → .zje，删明文 ──
+    if (encrypt) {
+        if (progress) progress(99, "encrypt");
+        ProgressUpdate("backup", 99, "encrypt");
+        std::vector<ZjeImage> meta;
+        {
+            WimEngine pe;
+            std::vector<ImageDesc> imgs;
+            if (pe.ListImages(req.dest, imgs) == 0) {
+                for (const auto& d : imgs) {
+                    ZjeImage z;
+                    z.index = d.index;
+                    z.name = d.name;
+                    z.description = d.description;
+                    z.sizeBytes = d.sizeBytes;
+                    z.creationTime = d.creationTime;
+                    bool has = false;
+                    if (pe.ImagePathExists(
+                            req.dest, d.index,
+                            L"\\Windows\\system32\\winload.exe", &has) == 0)
+                        z.hasWinload = has;
+                    meta.push_back(std::move(z));
+                }
+            }
+        }
+        CryptProgress cp = [&](unsigned long long done,
+                               unsigned long long total) -> bool {
+            if (!progress)
+                return false;
+            const int pct = total ? (int)(done * 100 / total) : -1;
+            return progress(pct, "encrypt");
+        };
+        std::wstring werr;
+        LogInfo("encrypting backup -> " + W2U(reqIn.dest));
+        const int zrc =
+            ZjeEncryptFile(req.dest, reqIn.dest, reqIn.password, meta, cp, werr);
+        // 明文不论成败都不留（失败时更不能留：用户以为已加密）
+        DeleteFileW(req.dest.c_str());
+        if (zrc != 0) {
+            ReleaseOpLock();
+            ProgressDone("backup", "failed");
+            err = Tr("加密备份失败：") + W2U(werr);
+            LogError(err);
+            return 1;
+        }
+        // 容器可用性（密码 + 元数据 MAC）
+        std::wstring neverr;
+        if (ZjeReadMeta(reqIn.dest, reqIn.password, nullptr, nullptr, neverr) !=
+            0) {
+            DeleteFileW(reqIn.dest.c_str());
+            ReleaseOpLock();
+            ProgressDone("backup", "failed");
+            err = Tr("加密镜像写出后不可用：") + W2U(neverr);
+            LogError(err);
+            return 1;
+        }
+        LogInfo("encrypted backup done: " + W2U(reqIn.dest));
+    }
     // 源文件"异常属性"审计 + EA 修复并入：已在上面的 `ea-scan` 块完成
     // （PIT-122 起审计与 eapack/ZJEA 子镜像一体化，不再单独扫第二遍）。
     if (skipped) *skipped = skippedList;
@@ -1764,7 +1857,7 @@ int RunBackup(const BackupRequest& req, ProgressFn progress,
     ReleaseOpLock();
     ProgressDone("backup", "done");
     LogInfo("backup done");
-    AppendHistory("backup", req.dest, source, GetTickCount64() - t0,
+    AppendHistory("backup", reqIn.dest, source, GetTickCount64() - t0,
                   skippedList.empty() ? "ok" : "ok-skipped");
     return 0;
 }
@@ -1803,13 +1896,39 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
                       "keepOld requested with block engine");
         return 4;
     }
+    // 0.02) 加密镜像（ZJENC1，docs/30 §9 引擎矩阵）：
+    //   · A 引擎（swap，Windows 侧解压 ~new）/ PE 就地还原 → 支持；
+    //   · B 引擎（block，重启后由 Linux wimlib apply）→ **拒绝**（救援层没有解密器）；
+    //   · 常驻菜单（menuEntry）→ **拒绝**（开机阶段没人能输密码）。
+    // 口令只放内存（imgsrc 的进程表），不写日志/契约。
+    const bool encImage = ImageIsEncrypted(req.image);
+    if (encImage) {
+        if (!req.password.empty())
+            SetImagePassword(req.image, req.password);
+        if (menuEntry) {
+            err = Tr("这是加密镜像：不能安装到启动菜单（开机阶段无法输入密码）。"
+                     "请改用「解压并安装」，或只在需要时用「开始恢复」。");
+            LogError(err);
+            return 4;
+        }
+        if (!req.engine.empty() && req.engine == "block") {
+            err = Tr("这是加密镜像：不支持「重启后还原」（救援层没有解密能力）。"
+                     "请改用默认的「还原后重启」（A 引擎）或在 PE 中就地还原。");
+            LogError(err);
+            return 4;
+        }
+        if (GetImagePassword(req.image).empty()) {
+            err = Tr("这是加密镜像，需要先输入密码");
+            LogError(err);
+            return 4;
+        }
+    }
     // 0) 镜像可用性**快检**（秒级，PIT-057 + PIT-106）：只拒绝"上次没写完/
     //    不完整"的镜像（否则 Linux 侧 apply rc=84，而目标分区已被格式化 →
     //    开机黑屏）；**不做全量扫描**（大镜像十几分钟，用户无法忍受）。
     {
-        WimEngine probe;
         std::wstring why;
-        if (probe.Probe(req.image, why) != 0) {
+        if (ImageProbe(req.image, why) != 0) {
             if (adv) *adv = ADV_INCOMPLETE;
             err = Tr("镜像不可用，请重新备份：");
             err += W2U(why);
@@ -1825,10 +1944,9 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
     int espIndex = 0;
     int eaIndex = 0;
     {
-        WimEngine eng;
         std::vector<ImageDesc> imgs;
         const int eff = req.index < 1 ? 1 : req.index;
-        if (eng.ListImages(req.image, imgs) != 0) {
+        if (ImageList(req.image, imgs) != 0) {
             // Probe 刚过 → 这里失败几乎不可能；按 0 处理（不恢复 ESP/不投 EA）
             LogWarn("ListImages failed; esp/ea restore disabled");
         } else {
@@ -1875,13 +1993,9 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
     //   连 ntoskrnl 都没有）、合成/局部镜像（演练盘素材已补 dummy winload.exe）。
     //   ⚠️ 救援层还有同款兜底（双保险；老契约/绕过此检查时仍安全）。
     {
-        WimEngine eng;
         const int eff = req.index < 1 ? 1 : req.index;
         bool winload = false;
-        if (eng.ImagePathExists(req.image, eff,
-                                L"\\Windows\\System32\\winload.exe",
-                                &winload) == 0 &&
-            !winload) {
+        if (ImageHasWinload(req.image, eff, &winload) == 0 && !winload) {
             err = Tr("该镜像不是 Windows 7 及以上的系统镜像（缺少 "
                      "\\Windows\\system32\\winload.exe；Vista 以前系统 / 安装源"
                      "/ 不完整镜像均不支持还原），已中止，未动目标分区。");
@@ -2044,6 +2158,8 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
                 if (adv) *adv = ADV_SPACE;  // 旧关键词版命中的也是"空间不足"（保留原建议）
                 return 4;
             }
+            if (ImageIsEncrypted(imagePath))
+                SetImagePassword(dst, GetImagePassword(imagePath));
             imagePath = dst;
         }
         // 7) 软件在目标分区 → SettleHome（Q1「先落盘后搬家」）：静默整包复制到
@@ -2162,8 +2278,24 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
                 std::to_string(req.disk) + " part=" + std::to_string(req.part));
         LogInfo(std::string("restore mode: in-place (") + inplaceWhy + ")");
         const ULONGLONG t1 = GetTickCount64();
-        int rc = RunDirectRestore(req, target, imagePath, espIndex, eaIndex,
+        // 加密镜像：就地还原是 Windows 侧读 → 解密到同卷临时明文（用完即删）。
+        // 放在"镜像搬出目标分区"之后，避免临时明文被格式化掉。
+        std::wstring plainImage = imagePath;
+        bool plainTemp = false;
+        if (ImageIsEncrypted(imagePath)) {
+            std::wstring perr;
+            plainImage = ResolveImagePlain(imagePath, progress, perr, &plainTemp);
+            if (plainImage.empty()) {
+                err = W2U(perr);
+                ReleaseOpLock();
+                ProgressDone("restore", "failed");
+                return 1;
+            }
+        }
+        int rc = RunDirectRestore(req, target, plainImage, espIndex, eaIndex,
                                   err, progress);
+        if (plainTemp)
+            ReleaseImagePlain(imagePath);
         if (needReboot)
             *needReboot = false;
         ReleaseOpLock();
@@ -2175,6 +2307,10 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
     // 临时引导项的首启清理需要知道 A 引擎的 ~new 位置（B 引擎没有 ~new，
     // 目前只能记录告警；见下方 InstallFirstBootCleanup 调用）。
     std::wstring swapNewDir;
+    // 加密镜像：Windows 侧暂存的 ESP/EA 子镜像相对目录（写进契约 esp_fix_dir/
+    // ea_fix_dir，救援层只做拷贝）。非加密镜像恒为空。
+    std::wstring espFixRel;
+    std::wstring eaFixRel;
     // ── A 引擎（0.7，docs/21/22/23）：Windows 原生解压到 <目标>:\~new ──
     // 必须在写契约/部署引导之前完成：解压成功才继续。失败/中断 → 报错、不碰
     // 旧系统、清理 ~new（L1 定案：让用户换镜像重试；断电由下次启动清孤儿）。
@@ -2183,9 +2319,8 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             return 4;
         unsigned long long content = 0;
         {
-            WimEngine lw;
             std::vector<ImageDesc> imgs;
-            if (lw.ok() && lw.ListImages(imagePath, imgs) == 0) {
+            if (ImageList(imagePath, imgs) == 0) {
                 int want = req.index < 1 ? 1 : req.index;
                 for (const auto& im : imgs)
                     if (im.index == want) content = im.sizeBytes;
@@ -2195,6 +2330,8 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
         //「刚发生的接着处理」：近期完整 ~new 且 content 与所选镜像一致 → 复用
         // （免重解压）；过期/不完整/镜像已换 → 丢弃重解（docs/23 §5 决策表）。
         bool reuse = false;
+        // 加密镜像：Windows 侧暂存的 ESP/EA 子镜像相对目录（见外层的
+        // espFixRel/eaFixRel 声明）。
         std::wstring newDir = target.letter + L":\\~new";
         swapNewDir = newDir;
         {
@@ -2244,10 +2381,24 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             err = Tr("wimlib 初始化失败");
             return 1;
         }
-        int erc = we.Apply(imagePath, req.index < 1 ? 1 : req.index, newDir,
+        // 加密镜像：Windows 侧解压前解密到同卷临时明文（A 引擎不用 Linux 读镜像）。
+        std::wstring plainImage = imagePath;
+        bool plainTemp = false;
+        if (ImageIsEncrypted(imagePath)) {
+            std::wstring perr;
+            plainImage = ResolveImagePlain(imagePath, progress, perr, &plainTemp);
+            if (plainImage.empty()) {
+                err = W2U(perr);
+                DeleteTreeRec(newDir);
+                return 1;
+            }
+        }
+        int erc = we.Apply(plainImage, req.index < 1 ? 1 : req.index, newDir,
                            progress);
         if (erc != 0) {
             DeleteTreeRec(newDir);
+            if (plainTemp)
+                ReleaseImagePlain(imagePath);
             char b2[160];
             snprintf(b2, sizeof(b2), Tr("A 引擎解压失败(rc=%d): "), erc);
             err = b2;
@@ -2255,6 +2406,52 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             LogError(err);
             return 1;
         }
+        // ── 加密镜像的 ESP / EA 子镜像：Windows 侧暂存（docs/30 §9）──
+        // 救援层读不了加密容器 → 在这里把子镜像解到 ~new\ZJRESTORE\{espfix,eafix}，
+        // 契约改用 esp_fix_dir/ea_fix_dir（esp_index/ea_index 置 0），Linux 只做拷贝。
+        // 非加密镜像保持原行为（Linux 用 wimlib apply esp_index/ea_index）。
+        if (ImageIsEncrypted(imagePath) && (espIndex > 0 || eaIndex > 0)) {
+            const std::wstring zjRoot = newDir + L"\\ZJRESTORE";
+            MakeDirTree(zjRoot);
+            WimEngine xe;
+            if (espIndex > 0) {
+                const std::wstring dst = zjRoot + L"\\espfix";
+                DeleteTreeRec(dst);
+                MakeDirTree(dst);
+                int xrc = xe.Apply(plainImage, espIndex, dst, ProgressFn{});
+                if (xrc == 0) {
+                    espFixRel = L"ZJRESTORE/espfix";
+                    LogInfo("encrypted: ESP subimage staged to ~new\\ZJRESTORE\\espfix");
+                } else {
+                    LogWarn("encrypted: ESP subimage stage failed rc=" +
+                            std::to_string(xrc) +
+                            " (main system continues without ESP restore)");
+                    DeleteTreeRec(dst);
+                }
+            }
+            if (eaIndex > 0) {
+                const std::wstring dst = zjRoot + L"\\eafix";
+                DeleteTreeRec(dst);
+                MakeDirTree(dst);
+                int xrc = xe.Apply(plainImage, eaIndex, dst, ProgressFn{});
+                if (xrc == 0) {
+                    eaFixRel = L"ZJRESTORE/eafix";
+                    LogInfo("encrypted: EA subimage staged to ~new\\ZJRESTORE\\eafix");
+                } else {
+                    LogWarn("encrypted: EA subimage stage failed rc=" +
+                            std::to_string(xrc) +
+                            " (main system continues without EA fix)");
+                    DeleteTreeRec(dst);
+                }
+            }
+            // 暂存成功后才把契约里的 esp_index/ea_index 清掉（避免 Linux 去读密文）
+            if (!espFixRel.empty())
+                espIndex = 0;
+            if (!eaFixRel.empty())
+                eaIndex = 0;
+        }
+        if (plainTemp)
+            ReleaseImagePlain(imagePath);
         // 异机还原（2026-10-21）：交换之前注入启动驱动；失败则丢弃 ~new，
         // 旧系统原样保留（可回退）。
         if (req.universal) {
@@ -2294,6 +2491,22 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
         }
         LogInfo("A-engine: ~new ready (with .zj-done marker)");
         }  // if (!reuse)
+        // 复用旧 ~new 时（reuse=true）不重解子镜像：若上一轮已暂存过，契约照样要写
+        // esp_fix_dir/ea_fix_dir，否则救援层会以为没有 ESP/EA。
+        if (ImageIsEncrypted(imagePath)) {
+            if (espFixRel.empty() &&
+                GetFileAttributesW((newDir + L"\\ZJRESTORE\\espfix").c_str()) !=
+                    INVALID_FILE_ATTRIBUTES)
+                espFixRel = L"ZJRESTORE/espfix";
+            if (eaFixRel.empty() &&
+                GetFileAttributesW((newDir + L"\\ZJRESTORE\\eafix").c_str()) !=
+                    INVALID_FILE_ATTRIBUTES)
+                eaFixRel = L"ZJRESTORE/eafix";
+            if (!espFixRel.empty())
+                espIndex = 0;
+            if (!eaFixRel.empty())
+                eaIndex = 0;
+        }
         // ── keepOld 处理 ─────────────────────────────────────────────
         // keepOld=true  → 写 .zj-keepold 标记 + 部署程序到 ~new\Program Files\SysRecover
         //                 + 建桌面快捷方式（2026-10-15 恢复 e5fb0a7 部署代码；
@@ -2450,6 +2663,9 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
     t.imageIndex = req.index < 1 ? 1 : req.index;
     t.espIndex = espIndex;  // 方案 C：ESP 子镜像 index（0=镜像里没有）
     t.eaIndex = eaIndex;    // PIT-122：EA 修复子镜像 index（0=镜像里没有）
+    // 加密镜像：子镜像已由 Windows 解到目标分区，救援层只拷贝（不读密文镜像）。
+    t.espFixDir = espFixRel;
+    t.eaFixDir = eaFixRel;
     t.reparseScan = reparseScan;  // 1019 案：0=干净 / 2=扫描不可用 / -1=未扫描
     t.efsScan = efsScan;  // 1019 案 W2：同义（EFS 加密内容预检结果）
     {   // 镜像字节数（1019 案）：救援层"契约认证"精确比对用（SIZE 判"镜像未变"）
@@ -3630,11 +3846,8 @@ bool EstimateSwapSpace(const PartitionInfo& target,
 bool QuerySwapSpace(const std::wstring& imagePath, int index,
                     const PartitionInfo& target, SwapSpaceEstimate& out) {
     out = SwapSpaceEstimate{};
-    WimEngine eng;
-    if (!eng.ok())
-        return false;
     unsigned long long bytes = 0;
-    int rc = eng.ImageSize(imagePath, index < 1 ? 1 : index, &bytes);
+    int rc = ImageContentSize(imagePath, index < 1 ? 1 : index, &bytes);
     if (rc != 0 || bytes == 0)
         return false;  // 读不到大小 → 无法判定（按"够"继续，与原行为一致）
     return EstimateSwapSpace(target, bytes, out);
