@@ -28,6 +28,13 @@ bool RemoveUefiBootEntry(std::string& log, bool temporary = false);
 // temporary=true 指向临时条目；false 指向常驻菜单。
 bool SetUefiBootNext(std::string& log, bool temporary = false);
 
+// 确保固件里有指向 Windows 的启动项（描述 "Windows Boot Manager"，路径
+// \EFI\Microsoft\Boot\bootmgfw.efi，挂进 BootOrder 末尾）。
+// 用途：自足 UEFI 引导（2026-10-27，用户反馈 2）—— 极简 PE 里没有 bcdboot，
+// 没人给固件写这个条目；NVRAM 空/无有效项时固件会直接走 PXE/兜底路径。
+// 已存在（描述匹配）则只补 BootOrder；失败仅记日志（返回 false = 非致命）。
+bool EnsureWindowsBootEntry(const std::wstring& espRoot, std::string& log);
+
 // 固件 Secure Boot 是否开启（读 `SecureBoot` 固件变量）。
 // 开着时：固件只加载微软签名的镜像 → 我们的内核（未签名）会被拒，
 // 必须走 shim（微软签名）+ MOK 那条链（见 PIT-062）。

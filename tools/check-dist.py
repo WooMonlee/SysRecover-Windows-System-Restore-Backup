@@ -29,6 +29,12 @@ REQUIRED = [
     "bootfiles/zjlog.sh",
     "bootfiles/zj-ea-apply.exe",
     "bootfiles/zj-restore-boot.exe",
+    # 自足引导资产（2026-10-27，用户反馈 2：极简 PE 无 bootsect/bcdboot/bcdedit）
+    "bootfiles/mbr-boot-code.bin",
+    "bootfiles/ntfs-boot-code.bin",
+    "bootfiles/ntfs-boot-cont.bin",
+    "bootfiles/bcd/bios.bcd",
+    "bootfiles/bcd/uefi.bcd",
     "lang/en.lang", "skin/main.xml",
     "resources/themes/default/global.xml",
     "version.json",

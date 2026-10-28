@@ -1,19 +1,28 @@
 // 引导补全实现（BIOS/MBR）。见 bootfix.h 与 AGENTS.md §7。
+//
+// 2026-10-27（用户反馈 2）：这条链**不再依赖 bcdedit / bcdboot**。极简 WinPE
+// （如 Win8PE）里没有这两个工具，以前 `bcdedit /export` 失败 → "bootfix INCOMPLETE"
+// → 还原后的目标分区没有可用 BCD（开机 0xc000000f / 黑屏）。现在改为全静态资产：
+//   · \bootmgr   ← 目标系统自己（<target>\bootmgr 或 <target>\Windows\Boot\PCAT，
+//                  本机 Windows 只作兜底 —— 本机可能是 UEFI-only 安装，没有 PCAT）
+//   · \Boot\BCD  ← 随包模板 bootfiles\bcd\bios.bcd（{bootmgr}/{default} 都是
+//                  device boot = 机器无关；2026-10-27 QEMU/SeaBIOS 实测可启动）
+//   · 字体/资源/语言/boot.sdi ← 尽力复制（缺则 WARN，精简镜像本来也可能没有）
+// 分区引导区（PBR）不在这里写：Linux 侧在 mkntfs/apply 之后自己写（zjrestore-lite.sh）。
 #include "bootfix.h"
 
 #include <windows.h>
 
 #include <cstdio>
 
-#include "../common/process.h"
-#include "bcd.h"
+#include "../common/selfarch.h"
+#include "bootself.h"
 
 namespace sysrecover {
 namespace {
 
 std::string W2U(const std::wstring& w) {
-    if (w.empty())
-        return {};
+    if (w.empty()) return {};
     int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr,
                                 nullptr);
     std::string s(n > 0 ? n - 1 : 0, 0);
@@ -23,160 +32,26 @@ std::string W2U(const std::wstring& w) {
     return s;
 }
 
-bool Exists(const std::wstring& path) {
-    return GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
-}
-
-bool IsDir(const std::wstring& path) {
-    DWORD a = GetFileAttributesW(path.c_str());
-    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
-}
-
-// 覆盖复制：目标文件若已存在且带只读/隐藏/系统属性（\bootmgr 天生带 Hidden+System，
-// 又由 CopyFile 从源继承），直接 CopyFileW 会被拒（ERROR_ACCESS_DENIED=5）→ 于是
-// **第一次装成功、第二次起必失败**（与 grub.cpp 的 menu.lst 同一个坑）。先归零属性。
-// 失败必须留痕：否则只表现为上一层的 "bootfix INCOMPLETE"，根本排不出是哪个文件。
-bool ForceCopy(const std::wstring& src, const std::wstring& dst,
-               std::string& log) {
-    SetFileAttributesW(dst.c_str(), FILE_ATTRIBUTE_NORMAL);
-    if (CopyFileW(src.c_str(), dst.c_str(), FALSE))
-        return true;
-    log += "copy FAIL " + W2U(src) + " (err=" +
-           std::to_string(GetLastError()) + ")\n";
-    return false;
-}
-
-// 递归复制目录（只做文件与子目录；不处理 ACL，引导文件不需要）。
-// skipBcd=true 时跳过 BCD/BCD.LOG*（运行中被锁，另用 bcdedit /export 生成）。
-bool CopyTree(const std::wstring& src, const std::wstring& dst,
-              std::string& log, bool skipBcd) {
-    if (!IsDir(src)) {
-        log += "copy tree FAIL " + W2U(src) + " (not a dir)\n";
-        return false;
-    }
-    CreateDirectoryW(dst.c_str(), nullptr);
-    WIN32_FIND_DATAW fd;
-    std::wstring pat = src + L"\\*";
-    HANDLE h = FindFirstFileW(pat.c_str(), &fd);
-    if (h == INVALID_HANDLE_VALUE) {
-        log += "copy tree FAIL " + W2U(src) + " (err=" +
-               std::to_string(GetLastError()) + ")\n";
-        return false;
-    }
-    bool ok = true;
-    do {
-        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0)
-            continue;
-        std::wstring s = src + L"\\" + fd.cFileName;
-        std::wstring d = dst + L"\\" + fd.cFileName;
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-            ok &= CopyTree(s, d, log, skipBcd);
-        } else if (skipBcd && (_wcsicmp(fd.cFileName, L"BCD") == 0 ||
-                               _wcsnicmp(fd.cFileName, L"BCD.LOG", 7) == 0)) {
-            // 运行中的 Windows 把 BCD 当注册表 hive 挂着（HKLM\BCD00000000），
-            // 文件被独占 → CopyFile 必失败。跳过，稍后用 bcdedit /export 生成。
-        } else if (!ForceCopy(s, d, log)) {
-            ok = false;
-        }
-    } while (FindNextFileW(h, &fd));
-    FindClose(h);
-    return ok;
-}
-
-bool RunBcdEdit(const std::wstring& store, const std::wstring& args,
-                std::string& log) {
-    std::string out;
-    std::wstring cmd = L"/store \"" + store + L"\" " + args;
-    int rc = RunProcess(SysToolPath(L"bcdedit.exe"), cmd, out);
-    if (rc != 0)
-        log += "bcdedit " + W2U(args) + " rc=" + std::to_string(rc) + ": " + out + "\n";
-    else
-        log += "bcdedit " + W2U(args) + " OK\n";
-    return rc == 0;
-}
-
 }  // namespace
 
 bool PrepareBootFixFiles(const std::wstring& recoveryDir, std::string& log) {
-    wchar_t winDir[MAX_PATH] = {};
-    if (!GetWindowsDirectoryW(winDir, MAX_PATH)) {
-        log += "no windows dir\n";
+    // recoveryDir 形如 "C:\ZJRESTORE"（= 目标盘上的恢复目录）→ 目标盘根 "C:\"。
+    if (recoveryDir.size() < 3 || recoveryDir[1] != L':') {
+        log += "bootfix: bad recovery dir " + W2U(recoveryDir) + "\n";
         return false;
     }
-    std::wstring win = winDir;                  // C:\Windows
-    std::wstring sysRoot = win.substr(0, 3);    // 系统分区根 "C:\"
-    std::wstring srcBootDir = sysRoot + L"Boot";
-    std::wstring srcBcd = srcBootDir + L"\\BCD";
-
-    // 本机没有 BIOS 启动文件（如 UEFI 安装）→ 先用 bcdboot 在系统分区补一份。
-    if (!Exists(srcBcd)) {
-        log += "no C:\\Boot\\BCD -> bcdboot\n";
-        std::string out;
-        RunProcess(SysToolPath(L"bcdboot.exe"),
-                   win + L" /s " + sysRoot.substr(0, 2) + L" /f BIOS", out);
-        log += out;
-    }
+    const std::wstring targetRoot = recoveryDir.substr(0, 3);
+    const std::wstring srcWin = targetRoot + L"Windows";
 
     std::wstring bf = recoveryDir + L"\\bootfix";
     CreateDirectoryW(recoveryDir.c_str(), nullptr);
     CreateDirectoryW(bf.c_str(), nullptr);
 
-    bool ok = true;
-    if (Exists(sysRoot + L"bootmgr")) {
-        // 必须走 ForceCopy：\bootmgr 带 Hidden+System，第二次部署时直接
-        // CopyFileW 覆盖已被拒（旧的静默失败 → "bootfix INCOMPLETE"）。
-        ok &= ForceCopy(sysRoot + L"bootmgr", bf + L"\\bootmgr", log);
-    } else {
-        log += "no \\bootmgr\n";
-        ok = false;
-    }
-    // 复制 \Boot 下的其它文件（字体/资源/memtest 等），跳过被锁的 BCD。
-    if (!CopyTree(srcBootDir, bf + L"\\Boot", log, /*skipBcd=*/true)) {
-        log += "copy \\Boot FAIL\n";
-        ok = false;
-    }
-
-    // BCD：不能直接复制（运行时被锁），用官方导出得到一份完整 store，
-    // 再把设备改成可移植的 "boot"（= bootmgr 所在分区），这样 apply 到任意
-    // 分区都能启动，不依赖原机的 disk/partition 引用。
-    std::wstring store = bf + L"\\Boot\\BCD";
-    {
-        std::string out;
-        std::wstring cmd = L"/export \"" + store + L"\"";
-        int rc = RunProcess(SysToolPath(L"bcdedit.exe"), cmd, out);
-        if (rc != 0) {
-            log += "bcdedit /export rc=" + std::to_string(rc) + ": " + out + "\n";
-            ok = false;
-        } else {
-            log += "bcdedit /export OK\n";
-        }
-    }
-    if (Exists(store)) {
-        ok &= RunBcdEdit(store, L"/set {bootmgr} device boot", log);
-        ok &= RunBcdEdit(store, L"/set {bootmgr} path \\bootmgr", log);
-        // 启动菜单不等待（用户要求：没必要停留）
-        RunBcdEdit(store, L"/set {bootmgr} timeout 0", log);
-        ok &= RunBcdEdit(store, L"/set {default} device boot", log);
-        ok &= RunBcdEdit(store, L"/set {default} osdevice boot", log);
-        ok &= RunBcdEdit(store, L"/set {default} path \\Windows\\system32\\winload.exe", log);
-        // 内存诊断项在目标机上通常没有 memtest.exe，删掉免得菜单里点到报错
-        RunBcdEdit(store, L"/delete {memdiag} /f", log);
-        // 清掉单次启动序列：export 时若暂存阶段已设 bootsequence，会被一并带上，
-        // 目标机重启后又进 GRUB4DOS 恢复环境（"还原完成却回到 Linux"的元凶之一）。
-        RunBcdEdit(store, L"/deletevalue {bootmgr} bootsequence", log);
-        // 删掉 GRUB4DOS 恢复条目（export 连它一起导出了）：先摘 displayorder 引用，
-        // 再删条目。否则目标机多出一个无效恢复菜单项（device=partition=D: 在目标
-        // 机上不存在），BCD 有多个条目时 timeout=0 仍可能弹菜单。
-        // 常驻菜单 + 日常还原临时项都要删（两者 GUID 不同）。
-        for (const wchar_t* guid : {RecoveryGuid(), TemporaryGuid()}) {
-            RunBcdEdit(store,
-                       L"/displayorder " + std::wstring(guid) + L" /remove", log);
-            RunBcdEdit(store, L"/delete " + std::wstring(guid) + L" /f", log);
-        }
-    } else {
-        log += "no bootfix BCD\n";
-        ok = false;
-    }
+    std::string err;
+    // destRoot 必须以反斜杠结尾（bootself 里按 "destRoot + Boot" 拼）。
+    bool ok = StageBiosBootTree(bf + L"\\", srcWin, AppDir(), /*overwriteBcd=*/true,
+                                log, err);
+    if (!ok) log += "bootfix: " + err + "\n";
     log += ok ? "bootfix prepared\n" : "bootfix INCOMPLETE\n";
     return ok;
 }

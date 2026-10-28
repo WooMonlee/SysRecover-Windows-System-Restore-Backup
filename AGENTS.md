@@ -1268,6 +1268,22 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **自动化踩坑（下次直接抄）**：① PS 5.1 里 `[UIntPtr]` 转换会失败（`GlobalAlloc` 的 `size` 只有声明成 **`uint`**、返回的 `IntPtr` 直接当 wParam 传给声明为 `IntPtr` 的 `PostMessageW` 才通）；② `#32768` 菜单不吃 `PostMessage`，必须真实鼠标事件；菜单项纵向位置可用 `(bottom-top)/项数` 估；③ 主窗口类名 `SysRecoverUI`、确认框 `SysRecoverUI.Confirm`，用 `EnumWindows`+`GetClassNameW` 找（`FindWindowW` 传 `$null` 在 PS 5.1 不可靠）。
   · **教训**：① 相邻同类型参数（`title, msg`）**必须在调用方写行内注释**，否则"位置写反"是零成本事故；② 公共对话框要**防御调用方**（归一化 + 截断 + 留日志），不能假设每个调用点都记得约束；③ 界面上"少了一半字"优先查**控件宽度/单行绘制**，不要先怀疑字体或 DPI。
 
+- PIT-184 **极简 Win8PE「分区与 BIOS/UEFI 引导全部免 bootsect / bcdboot / bcdedit」：随包资产自足（`0.9.44`/`0.9.45`，2026-10-27/28）**：用户反馈 2 原文——极简 Win8PE 里「传统（MBR）分区后提示缺少一个分区相关文件并中止（但分区其实已完成并激活）；再次进软件可正常装系统；装完又提示缺少文件、无法做引导恢复，用镜像里的 `fixboot.exe`（918KB）修好」。逐层核实后**三处**都依赖系统工具，全部改为随包资产：
+  · **① 分区向导**（`src/disk/partinit.cpp` + 新 `src/disk/mbrcode.{h,cpp}`）：旧代码在 diskpart 全部成功之后才检查 `bootsect.exe`，缺失就 `return 1` → 用户看到"分区失败"而盘其实已建好并激活。现在优先用随包 `bootfiles\mbr-boot-code.bin`（440B）写磁盘**前 440 字节**（保留 446..509 分区表与 510..511 的 `55AA`；磁盘已有非零代码则**保留**，不破坏 GRUB/第三方引导），`bootsect` 只在资产缺失时兜底，两者都不可用**只 WARN 不中止**；回读校验（代码 + 活动分区）失败也不再让已完成的分区操作报错。**写磁盘用 `\\.\PhysicalDriveN` 在偏移 0 写 512B，实测可写**（磁盘 MBR 区不属于任何已挂载卷）。
+  · **② 自足引导模块**（新 `src/boot/bootself.{h,cpp}`）：
+    - **NTFS 分区引导区**：`ntfs-boot-code.bin`(426B) → offset `0x54`，`ntfs-boot-cont.bin`(4096B) → offset 512（扇区 1..8）。先读扇区 0 判断 0x54 是否已是 `fa 33 c0`，是就不写（见下面"坑 2"）；4Kn（逻辑扇区 >512）跳过并 WARN（微软不支持 4Kn 的 BIOS 引导，PIT-133）；非 NTFS（OEM 名不是 `NTFS    `）跳过。
+    - **BIOS**：`\bootmgr`（源：`<目标>\bootmgr` → `<win>\Boot\PCAT\bootmgr` → 本机 `%windir%\Boot\PCAT\bootmgr` → 本机 `\bootmgr`）+ `\Boot\BCD` ← 随包 `bootfiles\bcd\bios.bcd`（**完全静态**：`{bootmgr} device boot` + `path \bootmgr`；`{default} device/osdevice boot` + `path \Windows\system32\winload.exe`；无 resume 对象，机器无关）+ 字体/资源/语言目录/boot.sdi（尽力复制，缺则 WARN）。
+    - **UEFI**：`\EFI\Microsoft\Boot\*`（把 `<win>\Boot\EFI` 整棵镜像过去，等价 bcdboot 产物）+ `\EFI\BOOT\BOOTX64.EFI`（固件兜底路径）+ `\EFI\Microsoft\Boot\BCD` ← 随包 `bootfiles\bcd\uefi.bcd`，运行时把**两处 16B 分区 GUID 占位**替换成真实值（ESP 5 处 / 系统卷 10 处；GUID 的内存布局 = `IOCTL_DISK_GET_PARTITION_INFO_EX` 的 `Gpt.PartitionId`）+ 固件 `Windows Boot Manager` 条目（`uefi::EnsureWindowsBootEntry`：短格式 HardDrive + FilePath，挂 BootOrder 末尾，写后读回，失败只 WARN）。
+    - **顺序有讲究**：先镜像 `<win>\Boot\EFI` 再补 `bootmgfw.efi` —— 反过来会被镜像里的同机版本覆盖（实测 3,086,848B 被 1,588,608B 覆盖）。
+  · **③ 接线**（`src/app/ops.cpp`）：就地还原（BIOS 与 UEFI）、`repair-boot`（两分支）、暂存的 UEFI 段 —— **bcdboot 可用时照旧**（它还会补 MUI/固件项），**缺失或失败自动回落自足路径**，仍做产物断言（`VerifyEspBcd` / `BiosBcdLooksValid`）。`BiosBcdLooksValid` 在无 `bcdedit.exe` 时改**文件级判定**（BCD 里 UTF-16LE 出现 `winload`）；`bootfix::PrepareBootFixFiles` 改用随包模板 + 目标系统自己的 `bootmgr`（不再 `bcdedit /export`，本机 UEFI-only 安装没有 `\Boot` 也能出 bootfix）。**保留**"BCD 已有效则跳过重建"（PIT-119 第三方启动项）。
+  · **两个 Windows API 坑（都是本轮实测踩到的，务必记住）**：
+    - **坑 1：卷句柄裸读写必须 OVERLAPPED + 扇区对齐**。`\\.\X:` 上用 `SetFilePointerEx` + `ReadFile/WriteFile` 会**失败且 `GetLastError()=0`**（读都是 0）；直接用 `FileSeek(0x54)` 写 426B 因非扇区对齐也必失败。正解：`OVERLAPPED{Offset,OffsetHigh}` 显式给偏移 + 整扇区读改写（读 512 → 改 0x54 处 426B → 写 512）。
+    - **坑 2：已挂载卷的 VBR（第一扇区）被 Windows 拒写** —— `WriteFile` 返回 `ERROR_ACCESS_DENIED(5)`，`FSCTL_LOCK_VOLUME` 成功、`FSCTL_DISMOUNT_VOLUME` 成功**也照样拒写**；而写扇区 1..8 正常。所以 PBR 逻辑改成"**先校验、只在需要时写、写不进只 WARN**"：正常路径 `format.com`（Windows）与 `mkntfs`（Linux 侧，PIT-053 已有自己的写回）本来就写微软代码，不触发；真需要强写时提示 `bootsect /nt60 <盘>: /mbr`。
+  · **验证（QEMU，两个固件都到桌面）**：① 模块级 lab `tools/bootself-lab.cpp`（`mbr|zerombr|dump|pbr|zero|bios|uefi` 模式，不进产品）在真实 Windows 卷上生成引导树，`bcdedit /store` 回显 `{bootmgr} device partition=Y:`、`{default} device/osdevice partition=T:`（GUID 定向正确）；② **BIOS 自足全链**：清掉 `\bootmgr`/`\Boot\BCD` 后由随包资产重建 → SeaBIOS 启动到桌面；③ **UEFI 自足全链**：ESP 只用随包资产（含 `\EFI\BOOT\BOOTX64.EFI` 兜底）→ OVMF 启动到桌面（同一镜像挂 virtio 控制器时蓝屏 `INACCESSIBLE_BOOT_DEVICE` 属控制器驱动缺失，不是引导链问题）；④ MBR 代码"清零 → 写入 → 回读"通过（头 8 字节 `33 C0 8E D0 BC 00 7C 8E`，`55AA` 保留）。两个 BCD 模板的**可启动性**此前已单独在 QEMU 验证（BIOS/SeaBIOS 与 UEFI/OVMF 各一次）。
+  · **回归**：`make check` **63 用例/542 断言**（新增 `bcd_patch_placeholder_guids`、`bcd_file_looks_usable`）+ check-i18n **642/642** + docs/宽度/shell/layers/secrets PASS；`make package` 双架构 + `make sha256`（**357** 文件，新增 5 个资产）+ `dist-check` PASS。（i18n 键数从 650 降到 642：删掉了"缺 bootsect/缺 bcdboot 就失败"那一批已不存在的文案。）
+  · **体积**：+5 个资产（440B + 426B + 4096B + 20KB + 36KB）≈ **61KB**，符合"不新增驱动、体积 +0.1~0.3MB"的约定。
+  · 🚧 **待真机**：极简 Win8PE 全链（分区 → 还原 → 引导修复）。
+
 ## 14. License 合规（SBOM，随版本更新）
 
 | 组件 | 版本/来源 | License | 链接/分发方式 |

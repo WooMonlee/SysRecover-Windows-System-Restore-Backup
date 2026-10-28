@@ -17,6 +17,7 @@
 #include "boot/bcd_parse.h"
 #include "boot/bootnames.h"
 #include "boot/bootpath.h"
+#include "boot/bootself.h"
 #include "boot/task.h"
 #include "boot/uefi.h"
 #include "common/i18n.h"
@@ -1418,4 +1419,77 @@ TEST(same_guid_ascii) {
     CHECK(!SameGuidAscii("{12345678-1234-1234-1234-123456789abcd}", want));
     // 内容不同
     CHECK(!SameGuidAscii("{12345678-1234-1234-1234-123456789abd}", want));
+}
+
+// ── 自足引导（2026-10-27，用户反馈 2）：BCD 模板/占位替换 ────────────
+
+TEST(bcd_patch_placeholder_guids) {
+    // UEFI 模板里两处 16B 分区 GUID 占位要靠它替换（ESP 5 次 / 系统卷 10 次）。
+    std::vector<unsigned char> buf(64, 0xAA);
+    unsigned char from[16];
+    unsigned char to[16];
+    for (int i = 0; i < 16; ++i) {
+        from[i] = (unsigned char)i;
+        to[i] = (unsigned char)(15 - i);
+    }
+    memcpy(buf.data(), from, 16);
+    memcpy(buf.data() + 16, from, 16);
+    CHECK_EQ(PatchBcdBytes(buf, from, to), 2);
+    CHECK(memcmp(buf.data(), to, 16) == 0);
+    CHECK(memcmp(buf.data() + 16, to, 16) == 0);
+    // 已替换完 -> 再跑一次 0 次（幂等）
+    CHECK_EQ(PatchBcdBytes(buf, from, to), 0);
+    // from == to -> 0（不误报）
+    CHECK_EQ(PatchBcdBytes(buf, to, to), 0);
+    // 缓冲不足以容纳一个 GUID -> 不越界、返回 0
+    std::vector<unsigned char> tiny(from, from + 8);
+    CHECK_EQ(PatchBcdBytes(tiny, from, to), 0);
+}
+
+TEST(bcd_file_looks_usable) {
+    // 极简 PE 没有 bcdedit：BCD 只能做文件级判定（UTF-16LE 里有 winload 即算有
+    // 条目）。这里验证判定本身，不依赖真实 BCD。
+    wchar_t tmp[MAX_PATH] = {};
+    GetTempPathW(MAX_PATH, tmp);
+    std::wstring dir = std::wstring(tmp) + L"zj-bcd-unit";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    auto write = [&](const wchar_t* name, const std::vector<unsigned char>& b) {
+        std::wstring p = dir + L"\\" + name;
+        HANDLE h = CreateFileW(p.c_str(), GENERIC_WRITE, 0, nullptr,
+                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE) return std::wstring();
+        DWORD wr = 0;
+        WriteFile(h, b.data(), (DWORD)b.size(), &wr, nullptr);
+        CloseHandle(h);
+        return p;
+    };
+    auto del = [](const std::wstring& p) {
+        if (!p.empty()) DeleteFileW(p.c_str());
+    };
+    auto deldir = [&]() { RemoveDirectoryW(dir.c_str()); };
+
+    std::string detail;
+    // 正常：>=4096B 且含 UTF-16LE "winload"
+    std::vector<unsigned char> good(8192, 0);
+    const char needle[] = "w\0i\0n\0l\0o\0a\0d\0";
+    memcpy(good.data() + 100, needle, sizeof(needle) - 1);
+    std::wstring p1 = write(L"good.bcd", good);
+    CHECK(BcdFileLooksUsable(p1, detail));
+    // 纯 ASCII "winload"（不是 UTF-16LE）-> 不可用
+    std::vector<unsigned char> narrow(8192, 0);
+    memcpy(narrow.data() + 100, "winload", 7);
+    std::wstring p2 = write(L"narrow.bcd", narrow);
+    CHECK(!BcdFileLooksUsable(p2, detail));
+    // 太小（<4096）-> 不可用
+    std::vector<unsigned char> small(1024, 0);
+    memcpy(small.data() + 100, needle, sizeof(needle) - 1);
+    std::wstring p3 = write(L"small.bcd", small);
+    CHECK(!BcdFileLooksUsable(p3, detail));
+    // 文件不存在 -> 不可用
+    CHECK(!BcdFileLooksUsable(dir + L"\\nope.bcd", detail));
+
+    del(p1);
+    del(p2);
+    del(p3);
+    deldir();
 }

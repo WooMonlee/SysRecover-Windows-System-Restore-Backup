@@ -1,6 +1,8 @@
 // 新硬盘初始化（2026-10-20，用户规格）。见 partinit.h 的原则说明。
 #include "common/i18n.h"
 #include "common/process.h"
+#include "common/selfarch.h"
+#include "mbrcode.h"
 #include "partinit.h"
 #include "partscript.h"
 
@@ -299,6 +301,10 @@ int ApplyPartInitPlan(const PartInitPlan& p, std::wstring& err,
     report(5, "partinit-letters");
     const bool gpt = p.scheme == DiskScheme::Gpt;
     const bool needBootsect = !gpt;
+    // MBR 引导代码是否已就位（随包资产写成功，或磁盘本来就有）。
+    // 失败时只告警、不中止 —— 用户 2026-10-27 反馈：极简 PE 里没有 bootsect.exe，
+    // 老代码在分区**已经做完并激活**之后才报"缺少文件"并中止，白折腾一遍。
+    bool mbrCodeOk = true;
     const std::vector<PartScriptStep> steps = BuildDiskpartSteps(
         gpt, p.diskIndex, p.espMb, p.msrMb, p.systemGb, p.createData, letters[0],
         letters[1], letters[2]);
@@ -335,29 +341,34 @@ int ApplyPartInitPlan(const PartInitPlan& p, std::wstring& err,
     }
     if (needBootsect) {
         // MBR 新盘必须写磁盘引导代码 + 活动分区，否则还原完黑屏。
+        // 2026-10-27（用户反馈 2）：**优先用随包引导代码**（bootfiles\mbr-boot-code.bin，
+        // 440B）直接写磁盘前 440 字节，保留分区表与 0x55AA 签名 —— 极简 PE 里没有
+        // bootsect.exe 也能做完；bootsect 只在随包资产缺失时兜底。
         // ⚠️ bootsect 语法必须带 /nt60（2026-10-21 VM 实测踩到）：
-        //   `bootsect /nt60 <盘符>: /mbr` —— 少了 /nt60 会被当成用法错误
-        //   （返回非 0），以前误报成"bootsect 不可用"。
-        const std::wstring bsexe = SysToolPath(L"bootsect.exe");
-        if (GetFileAttributesW(bsexe.c_str()) == INVALID_FILE_ATTRIBUTES) {
-            err = Tr(L"PE 中缺少 bootsect.exe，无法写入 MBR 引导代码。"
-                     L"请改用 GPT 方案，或在 PE 中手动运行："
-                     L"bootsect /nt60 <系统盘>: /mbr");
-            return 1;
-        }
-        std::string bsd;
-        std::wstring args =
-            L"/nt60 " + std::wstring(1, letters[1]) + L": /mbr";
+        //   `bootsect /nt60 <盘符>: /mbr` —— 少了 /nt60 会被当成用法错误。
         report(86, "partinit-bootsect");
-        int brc = RunProcess(bsexe, args, bsd);
-        log += "partinit: bootsect /nt60 " +
-               std::string(1, (char)letters[1]) + ": /mbr rc=" +
-               std::to_string(brc) + "\n" + bsd;
-        if (brc != 0) {
-            err = Tr(L"写入 MBR 引导代码失败（bootsect 返回错误）。"
-                     L"请查看日志，或手动运行："
-                     L"bootsect /nt60 <系统盘>: /mbr");
-            return 1;
+        if (EnsureDiskMbrCode(p.diskIndex, AppDir(), log)) {
+            log += "partinit: mbr boot code ok (bundled asset / already present)\n";
+        } else {
+            const std::wstring bsexe = SysToolPath(L"bootsect.exe");
+            if (GetFileAttributesW(bsexe.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                mbrCodeOk = false;
+                log += "partinit: WARN no bundled MBR code and no bootsect.exe "
+                       "(partitioning continues)\n";
+            } else {
+                std::string bsd;
+                std::wstring args =
+                    L"/nt60 " + std::wstring(1, letters[1]) + L": /mbr";
+                int brc = RunProcess(bsexe, args, bsd);
+                log += "partinit: bootsect /nt60 " +
+                       std::string(1, (char)letters[1]) + ": /mbr rc=" +
+                       std::to_string(brc) + "\n" + bsd;
+                if (brc != 0) {
+                    mbrCodeOk = false;
+                    log += "partinit: WARN bootsect failed (partitioning "
+                           "continues)\n";
+                }
+            }
         }
     }
     // 回读校验：分区风格/数量/ESP/引导代码。
@@ -392,8 +403,13 @@ int ApplyPartInitPlan(const PartInitPlan& p, std::wstring& err,
         return 1;
     }
     if (p.scheme == DiskScheme::Mbr && !HasBootCode(p.diskIndex)) {
-        err = Tr(L"MBR 引导代码/活动分区校验失败");
-        return 1;
+        if (mbrCodeOk) {
+            err = Tr(L"MBR 引导代码/活动分区校验失败");
+            return 1;
+        }
+        // 随包资产与 bootsect 都不可用 → 只告警（分区本身已完成；还原后可用
+        // 「修复引导」或下次进 PE 补写）。
+        log += "partinit: WARN mbr boot code not verified (no writer available)\n";
     }
     log += "partinit: verify ok (style=" +
            std::string(StyleName(di->style)) + " parts=" +

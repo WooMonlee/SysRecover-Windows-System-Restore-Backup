@@ -58,12 +58,12 @@ LDFLAGS  = -static -mconsole -s
 LDLIBS   = -L$(WIMLIB) -l:libwim-15.dll -ladvapi32 -lole32 -lshell32 -luuid -lgdi32 -lntdll -lversion
 
 # ---- 应用模块静态库（CLI 与 GUI 共用，避免双份编译 ODR 问题） ----
-APP_SRC = src/disk/disk.cpp src/disk/partinit.cpp src/disk/partscript.cpp src/wim/wim.cpp src/wim/exclude.cpp \
+APP_SRC = src/disk/disk.cpp src/disk/partinit.cpp src/disk/partscript.cpp src/disk/mbrcode.cpp src/wim/wim.cpp src/wim/exclude.cpp \
       src/common/process.cpp src/common/logger.cpp src/common/progress.cpp \
       src/common/singleton.cpp src/common/sysinfo.cpp src/common/zip.cpp \
       src/common/selfarch.cpp src/common/crash.cpp src/common/vss.cpp src/common/i18n.cpp \
       src/common/relocate.cpp src/common/pathutil.cpp src/common/cpucap.cpp src/common/ea.cpp src/common/refscan.cpp src/common/bioskey.cpp src/boot/bcd.cpp src/boot/grub.cpp \
-      src/boot/uefi.cpp src/boot/bcd_parse.cpp src/boot/bootpath.cpp src/boot/task.cpp src/boot/bootfix.cpp \
+      src/boot/uefi.cpp src/boot/bcd_parse.cpp src/boot/bootpath.cpp src/boot/bootself.cpp src/boot/task.cpp src/boot/bootfix.cpp \
       src/app/safety.cpp src/app/advice.cpp \
       src/app/shortcut.cpp src/app/ops.cpp src/app/selfdiag.cpp src/app/universal.cpp \
       src/app/swapleft.cpp
@@ -228,7 +228,7 @@ TEST_SRC   = tests/tiny_test.cpp tests/unit_tests.cpp tests/main.cpp
 TEST_UNITS = src/common/sysinfo.cpp src/wim/exclude.cpp src/boot/task.cpp src/common/zip.cpp src/app/advice.cpp \
       src/common/i18n.cpp src/common/selfarch.cpp src/common/relocate.cpp src/common/pathutil.cpp src/boot/bcd_parse.cpp src/boot/bootpath.cpp \
       src/common/ea.cpp src/common/refscan.cpp src/app/swapleft.cpp src/common/logger.cpp src/common/bioskey.cpp \
-      src/disk/partscript.cpp
+      src/disk/partscript.cpp src/boot/bootself.cpp
 TEST_BIN   = $(OBJDIR)/tests.exe
 $(TEST_BIN): $(TEST_SRC) $(TEST_UNITS) src/common/rescue_decision.h src/common/version.h tests/tiny_test.h | $(OBJDIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(TEST_SRC) $(TEST_UNITS) -o $(TEST_BIN) -static -mconsole -ladvapi32 -lole32 -luuid -lntdll
@@ -266,6 +266,16 @@ package: ea-apply boot-cleanup launchers
 	$(SELF) -f Makefile ARCH=x86 all
 	@echo === [3/3] 组装共享资源到 dist/ ===
 	@if not exist dist\bootfiles mkdir dist\bootfiles
+	@if not exist dist\bootfiles\bcd mkdir dist\bootfiles\bcd
+# 自足引导资产（2026-10-27，用户反馈 2：极简 PE 无 bootsect/bcdboot/bcdedit）：
+#   mbr-boot-code.bin  磁盘 MBR 引导代码（440B，分区向导用）
+#   ntfs-boot-code.bin / ntfs-boot-cont.bin  微软 NTFS PBR（426B + 4096B）
+#   bcd\bios.bcd / bcd\uefi.bcd  BCD 模板（BIOS 静态；UEFI 运行时替换两处 GUID）
+	@copy /Y bootfiles\mbr-boot-code.bin dist\bootfiles\ >nul
+	@copy /Y bootfiles\ntfs-boot-code.bin dist\bootfiles\ >nul
+	@copy /Y bootfiles\ntfs-boot-cont.bin dist\bootfiles\ >nul
+	@copy /Y bootfiles\bcd\bios.bcd dist\bootfiles\bcd\ >nul
+	@copy /Y bootfiles\bcd\uefi.bcd dist\bootfiles\bcd\ >nul
 	@copy /Y bootfiles\grldr dist\bootfiles\ >nul
 	@copy /Y bootfiles\grldr.mbr dist\bootfiles\ >nul
 	@copy /Y bootfiles\vmlinuz-zjrestore dist\bootfiles\ >nul

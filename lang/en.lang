@@ -56,7 +56,6 @@ ESP 上缺少引导语言资源目录（zh-CN / en-US）=ESP is missing the boot
 ESP 上缺少引导资源：Resources\\bootres.dll=ESP is missing boot resource: Resources\\bootres.dll
 ESP 备份失败(rc\=%d): =ESP backup failed (rc\=%d): 
 ESP 引导校验未通过（未真正修好，已中止，未动目标分区）：=ESP boot verification failed (boot was NOT properly repaired; aborted before touching the target partition): 
-ESP 空间不足（=ESP is out of space (
 ESP 空间不足，无法修复引导（=ESP is out of space; cannot repair the boot (
 ESP 空间不足：需要 %.1fMB，可用 %.1fMB。请缩小 ESP 上的其它文件，或换用更小的 initramfs\n=ESP is too small: needs %.1f MB, %.1f MB free. Remove other files from the ESP or use a smaller initramfs\n
 ESP/MSR 容量不合法=Invalid ESP/MSR size
@@ -67,7 +66,6 @@ MBR 分区表最大支持 2TB 单分区；该磁盘超过 2TB，请改用 GPT（
 MBR 引导代码/活动分区校验失败=MBR boot code / active partition verification failed
 MBR 方案：不创建 ESP / MSR=MBR scheme: no ESP / MSR
 ON (需签名引导)=ON (signed boot required)
-PE 中缺少 bootsect.exe，无法写入 MBR 引导代码。请改用 GPT 方案，或在 PE 中手动运行：bootsect /nt60 <系统盘>: /mbr=bootsect.exe is missing from the PE environment, so the MBR boot code cannot be written. Use the GPT scheme instead, or run manually in the PE: bootsect /nt60 <system drive>: /mbr
 Server 数据中心版=Server Datacenter
 Server 标准版=Server Standard
 SysRecover 九转还原 · 命令行\n\n用法: SysRecover.exe <命令> [选项]      （`SysRecover.exe help <命令>` 看单项）\n\n命令:\n  list                        列出磁盘/分区/文件系统/盘符/ESP/系统标记\n  diag [--zip [--out <zip>]]  自检（固件/Secure Boot/启动项/wimlib）；--zip 导出诊断包\n  support [--out <zip>]       一键收集诊断资料（各盘日志+explorer转储+事件日志）打包\n  images --file <镜像>        列出镜像里的子镜像（含大小/描述）\n  backup --dest <文件> [--source <目录>] [--compress fast|maximum|recovery]\n         [--name <名>] [--append] [--verify] [--esp] [--no-snapshot] [--yes]\n  restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--engine block|swap] [--yes]\n  verify --image <文件>       校验镜像完整性\n  repair-boot [--disk N --part M]   修复引导（ESP 的 BCD/bootmgfw；引导坏了不用重装）\n  returnold [--disk N --part M] [--yes]  返回旧系统（把 ~old 搬回根，重启进救援层执行）\n  extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]\n                              从镜像里取单个/一组文件（支持通配符）\n  history                     列出操作历史（logs/history.jsonl）\n  shortcut --target <exe> [--args <...>] [--name <名>]   建快捷方式\n  version                     显示版本\n  help [命令]                 本帮助\n  --lang <zh|en>              指定界面语言（如: SysRecover.exe --lang en help 用英文）\n\n退出码: 0 成功 / 1 通用失败 / 2 参数错 / 3 需管理员 / 4 危险目标被拒 / 5 镜像校验失败 / 6 取消\n注意: 还原系统盘会重启进救援层，镜像必须放在**本地分区**（救援层访问不到网络）。\n=SysRecover - Command Line\n\nUsage: SysRecover.exe <command> [options]      (run `SysRecover.exe help <command>` for one command)\n\nCommands:\n  list                        list disks/partitions/file systems/drive letters/ESP/system flags\n  diag [--zip [--out <zip>]]  self-check (firmware/Secure Boot/boot entries/wimlib); --zip exports a diag bundle\n  support [--out <zip>]       collect diagnostics (logs of every drive + explorer dump + event logs) into a zip\n  images --file <image>       list sub-images inside an image (size/description)\n  backup --dest <file> [--source <dir>] [--compress fast|maximum|recovery]\n         [--name <name>] [--append] [--verify] [--esp] [--no-snapshot] [--yes]\n  restore --image <file> --disk N --part M [--index N] [--no-repair-boot] [--engine block|swap] [--yes]\n  verify --image <file>       verify image integrity\n  repair-boot [--disk N --part M]   repair boot (ESP BCD/bootmgfw; fixes unbootable machines)\n  returnold [--disk N --part M] [--yes]  return to the old system (move ~old back to root; runs in the rescue layer)\n  extract --file <image> --path <path> [--path ...] --dest <dir> [--index N]\n                              extract single/group of files from an image (wildcards supported)\n  history                     list operation history (logs/history.jsonl)\n  shortcut --target <exe> [--args <...>] [--name <name>]   create a desktop shortcut\n  version                     show version\n  help [command]              this help\n  --lang <zh|en>              set UI language (e.g. SysRecover.exe --lang en help for English)\n\nExit codes: 0 ok / 1 general failure / 2 bad arguments / 3 admin required / 4 dangerous target rejected / 5 image verify failed / 6 cancelled\nNote: restoring the system disk reboots into the rescue layer; the image must sit on a **local partition** (the rescue layer has no network access).\n
@@ -87,7 +85,7 @@ extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]
 history [--last N]\n  列出操作历史（logs/history.jsonl），默认最近 20 条。=history [--last N]\n  List operation history (logs/history.jsonl); default: latest 20.
 images --file <镜像>\n  列出镜像里的子镜像：<index> - <名称>（<大小>）。=images --file <image>\n  List the images inside an image file: <index> - <name> (<size>).
 list\n  列出磁盘/分区/文件系统/盘符/ESP 与系统标记。=list\n  List disks/partitions/filesystems/letters/ESP and system flags.
-repair-boot [--disk N --part M]\n  修复引导（ESP 上的 BCD/bootmgfw）：给**引导坏了的机器**用，不必重装。\n  不给 --disk/--part 时自动找系统盘；流程 \= bcdboot + 产物校验（docs/15）。=repair-boot [--disk N --part M]\n  Repair boot (BCD/bootmgfw on the ESP): for a machine that will not boot, without reinstalling.\n  Without --disk/--part the system disk is found automatically; the flow is bcdboot + artifact verification (docs/15).
+repair-boot [--disk N --part M]\n  修复引导（ESP 上的 BCD/bootmgfw）：给**引导坏了的机器**用，不必重装。\n  不给 --disk/--part 时自动找系统盘；流程 \= bcdboot（缺失时用内置引导资产）+ 产物校验（docs/15）。=repair-boot [--disk N --part M]\n  Repair boot (BCD/bootmgfw on the ESP): for a machine that will not boot, without reinstalling.\n  Without --disk/--part the system disk is found automatically; the flow is bcdboot (or the built-in boot assets when it is missing) plus artifact verification (docs/15).
 restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--engine block|swap] [--universal [--drivers <目录>]] [--yes]\n  目标是正在运行的系统盘 → 暂存并重启进救援层；否则就地还原（不重启）。\n  用 `list` 先确认磁盘号/分区号；镜像必须在**本地分区**。\n  --universal 异机还原（仅 Win10/11；仅 A 引擎/PE 就地）：启用内置启动存储驱动，\n  --drivers 额外注入用户驱动文件夹（DISM，离线，不随包内置厂商驱动）。=restore --image <file> --disk N --part M [--index N] [--no-repair-boot] [--engine block|swap] [--universal [--drivers <dir>]] [--yes]\n  Target is the running system disk -> stage and reboot into the rescue layer; otherwise restore in place (no reboot).\n  Use `list` to confirm disk/partition; the image must be on a **local partition**.\n  --universal dissimilar-hardware restore (Win10/11 only; A engine / PE in-place): enable built-in boot storage drivers;\n  --drivers additionally inject a user driver folder (DISM, offline; no vendor packs bundled).
 returnold [--disk N --part M] [--yes]\n  返回旧系统：把 ~old 的旧系统搬回根目录，当前新系统被丢弃。\n  暂存后重启进 Linux 救援层执行反向交换（在 Windows 里改名正在运行\n  的系统树不可回滚）；不给 --disk/--part 时自动找带 ~old\\Windows 的盘。\n  非交互式（批处理/管道）必须加 --yes；交互式会先问一次，取消\=退出码 6。=returnold [--disk N --part M] [--yes]\n  Return to the old system: move the old system in ~old back to the root directory;\n  the current new system is discarded.\n  The task is staged, then the machine reboots into the Linux rescue layer to run the\n  reverse swap (renaming a running system tree inside Windows cannot be rolled back);\n  without --disk/--part it auto-detects the drive that has ~old\\Windows.\n  Non-interactive runs (batch/pipes) must pass --yes; interactive runs ask once,\n  cancel returns exit code 6.
 shortcut --target <exe> [--args <...>] [--name <名>] [--startmenu]\n  在桌面建快捷方式；--startmenu 改放开始菜单。=shortcut --target <exe> [--args <...>] [--name <name>] [--startmenu]\n  Create a desktop shortcut; --startmenu puts it in the Start Menu instead.
@@ -146,13 +144,12 @@ wimlib 初始化失败\n=wimlib initialization failed\n
 保留不动=Keep As Is
 修复 Windows 引导（自动找系统盘与 ESP，重建启动文件）=Repair Windows boot (find the system disk and ESP automatically, rebuild boot files)
 修复引导=Fix boot
-修复引导失败（bcdboot rc\==Boot repair failed (bcdboot rc\=
 修复引导失败，请打开日志查看详情。=Boot repair failed; please open the log for details.
+修复引导失败：=Boot repair failed: 
 修复引导未完全成功=Boot repair did not fully succeed
 内置驱动已启用=In-box drivers enabled
 写入=Writing
-写入 ESP 引导失败（bcdboot rc\==Failed to write the ESP boot files (bcdboot rc\=
-写入 MBR 引导代码失败（bootsect 返回错误）。请查看日志，或手动运行：bootsect /nt60 <系统盘>: /mbr=Failed to write the MBR boot code (bootsect returned an error). Check the log, or run manually: bootsect /nt60 <system drive>: /mbr
+写入 ESP 引导失败（无法生成引导配置）：=Failed to write the ESP boot files (cannot generate the boot configuration): 
 写入引导文件=Writing boot files
 写恢复日志失败（需管理员权限写 =Failed to write the restore log (admin rights required to write 
 写诊断包失败=Failed to write the diagnostics bundle
@@ -255,11 +252,10 @@ wimlib 初始化失败\n=wimlib initialization failed\n
 将自动查找系统盘与 ESP，重建并校验引导文件。\n确定继续吗？=The system disk and ESP will be located automatically, and boot files rebuilt and verified.\nContinue?
 将重启进入恢复环境，把旧系统搬回根目录。=The machine will reboot into the recovery environment and move the old system back to the root directory.
 就地还原已完成，但 ESP 引导校验未通过：=In-place restore finished, but ESP boot verification failed: 
-就地还原已完成，但写入 ESP 引导失败（bcdboot rc\==In-place restore finished, but writing the ESP boot files failed (bcdboot rc\=
-就地还原已完成，但写入引导失败（bcdboot rc\==In-place restore finished, but writing the boot files failed (bcdboot rc\=
+就地还原已完成，但写入 ESP 引导失败：=In-place restore finished, but writing the ESP boot files failed: 
+就地还原已完成，但写入引导失败：=In-place restore finished, but writing the boot files failed: 
 就地还原已完成，但异机还原准备失败：=In-place restore completed, but dissimilar-hardware preparation failed: 
 就地还原已完成，但找不到可用的 ESP 引导分区，无法修复引导：\n=In-place restore finished, but no usable ESP boot partition was found, so the boot cannot be repaired:\n
-就地还原已完成，但目标系统缺少引导模板（=In-place restore finished, but the target system is missing the boot template (
 就地还原：应用镜像失败 rc\==In-place restore: failed to apply the image, rc\=
 就地还原：格式化目标分区失败（=In-place restore: failed to format the target partition (
 已关闭异机还原=Universal restore disabled
@@ -429,7 +425,7 @@ wimlib 初始化失败\n=wimlib initialization failed\n
 检测到还原残留 %s：%s\n  y \= 返回旧系统（暂存并重启），其它键 \= 保留不动\n选择 [y/N]: =Detected restore leftover %s: %s\n  y \= return to old system (stage + reboot), any other key \= keep as is\nChoice [y/N]: 
 正在为新硬盘创建分区...=Creating partitions on the new disk...
 正在修复引导...=Repairing boot...
-正在修复引导（bcdboot + 产物校验）……=Repairing boot (bcdboot + artifact verification)...
+正在修复引导（bcdboot，缺失时用内置引导资产）……=Repairing the boot (bcdboot, or the built-in boot assets when it is missing)...
 正在写入引导代码=Writing boot code
 正在准备异机还原=Preparing universal restore
 正在分配盘符=Assigning drive letters
@@ -514,7 +510,6 @@ wimlib 初始化失败\n=wimlib initialization failed\n
 系统盘大小（GB）：=System partition size (GB):
 系统盘容量太小（至少 20GB）=System partition is too small (at least 20GB)
 系统盘容量超过可用空间（约 %lluGB）=System partition exceeds the available space (about %lluGB)
-系统盘缺少引导模板（=The system disk is missing the boot template (
 系统缺少服务「=Required service "
 系统还原已完成，用时 =System restore is complete, time taken 
 系统镜像=System images
@@ -640,14 +635,11 @@ wimlib 初始化失败\n=wimlib initialization failed\n
 ）。\r\n=).\r\n
 ）。Win7/8.1 请使用同机还原、PE 就地还原或新装系统。=). Win7/8.1: use same-hardware restore, in-place restore from PE, or a clean install.
 ）健康状态异常 —— 该盘可能已出现坏道，还原后系统仍可能无法启动。=) reports a health problem -- the drive may already have bad sectors, and the system may still fail to boot after the restore.
-），无法生成引导。请换用完整系统镜像。=), so boot files cannot be generated. Use a complete system image.
-），无法生成引导。请换用完整系统镜像或修复该文件。=), so boot files cannot be generated. Use a complete system image, or repair that file.
 ），正在重启...=), rebooting...
 ），请重新执行「返回旧系统」=); please run "Return to old system" again
 ）：=): 
 ）：bcdboot 无法生成引导。多见于第三方精简/万能镜像，请换用完整系统镜像。=): bcdboot cannot generate boot files. This is common with trimmed/universal images; use a complete system image.
 ）：请先在 Windows 里点「删除启动还原」清掉 \\EFI\\ZJRESTORE\\ 旧版残留，或用 diskpart 扩大 ESP。=): first click "Remove boot install" in Windows to delete the old \\EFI\\ZJRESTORE\\ leftovers, or enlarge the ESP with diskpart.
-）：请先清理 \\EFI\\ZJRESTORE\\ 旧版残留，或扩大 ESP。=): first clean up the old \\EFI\\ZJRESTORE\\ leftovers, or enlarge the ESP.
 ，版本 =, version 
 ，目标 =, target 
 ：=: 

@@ -15,6 +15,7 @@
 #include "../boot/bcd.h"
 #include "../boot/bootfix.h"
 #include "../boot/bootpath.h"
+#include "../boot/bootself.h"
 #include "../boot/grub.h"
 #include "../boot/task.h"
 #include "../boot/uefi.h"
@@ -31,6 +32,7 @@
 #include "../common/vss.h"
 #include "../common/version.h"
 #include "../disk/disk.h"
+#include "../disk/mbrcode.h"
 #include "../wim/exclude.h"
 #include "safety.h"
 #include "selfdiag.h"
@@ -457,25 +459,45 @@ bool AcquireEspRoot(std::wstring& espRoot, bool& guidMatched, std::string& log,
 
 // BIOS 就地还原：目标自身已有可引导的 BCD（bootmgr + \Boot\BCD + winload 条目）
 // → 跳过 bcdboot，保住第三方启动项（0.6.35，与 UEFI 路径同规则）。
+// 2026-10-27（用户反馈 2）：极简 PE 没有 bcdedit.exe → **退化为文件级判定**
+// （BCD 里 UTF-16LE 出现 winload 即认为有条目），否则永远判 invalid、
+// 白白去跑不存在的 bcdboot。
 bool BiosBcdLooksValid(wchar_t letter, std::string& detail) {
     std::wstring root = std::wstring(1, letter) + L":\\";
     bool bootmgr = GetFileAttributesW((root + L"bootmgr").c_str()) !=
                    INVALID_FILE_ATTRIBUTES;
-    bool bcd = GetFileAttributesW((root + L"Boot\\BCD").c_str()) !=
-               INVALID_FILE_ATTRIBUTES;
+    std::wstring bcdPath = root + L"Boot\\BCD";
+    bool bcd = GetFileAttributesW(bcdPath.c_str()) != INVALID_FILE_ATTRIBUTES;
     std::string out;
     int rc = 0;
     bool winload = false;
+    bool haveBcdEdit = false;
     if (bcd) {
-        rc = RunProcess(SysToolPath(L"bcdedit.exe"),
-                        L"/store " + root + L"Boot\\BCD /enum {default}", out);
-        winload = rc == 0 && out.find("winload") != std::string::npos;
+        const std::wstring bcdedit = SysToolPath(L"bcdedit.exe");
+        haveBcdEdit = GetFileAttributesW(bcdedit.c_str()) != INVALID_FILE_ATTRIBUTES;
+        if (haveBcdEdit) {
+            rc = RunProcess(bcdedit,
+                            L"/store " + bcdPath + L" /enum {default}", out);
+            winload = rc == 0 && out.find("winload") != std::string::npos;
+        } else {
+            std::string fd;
+            winload = BcdFileLooksUsable(bcdPath, fd);
+            out = fd;
+        }
     }
     detail = "bootmgr=" + std::to_string((int)bootmgr) +
              " bcd=" + std::to_string((int)bcd) +
+             " bcdedit=" + std::to_string((int)haveBcdEdit) +
              " enum_rc=" + std::to_string(rc) +
-             " winload=" + std::to_string((int)winload);
+             " winload=" + std::to_string((int)winload) +
+             (out.empty() ? "" : " (" + out + ")");
     return bootmgr && bcd && winload;
+}
+
+// 系统工具是否可用。极简 PE（Win8PE/NewBee 等）里 bcdboot / bcdedit / bootsect
+// 常常一个都没有 —— 引导必须能靠随包资产自足（2026-10-27，用户反馈 2）。
+bool ToolAvailable(const wchar_t* exe) {
+    return GetFileAttributesW(SysToolPath(exe).c_str()) != INVALID_FILE_ATTRIBUTES;
 }
 
 // 就地还原：快速格式化 → wimlib 目录模式应用（PIT-008）→ 镜像带 ESP 子镜像
@@ -646,44 +668,58 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
                 }
                 if (!guidMatched)
                     LogWarn("ESP partition type is not EFI System; used fallback");
-                if (!TargetBcdTemplateOk(letter[0], detail)) {
-                    err = Tr("就地还原已完成，但目标系统缺少引导模板（") + detail +
-                          Tr("），无法生成引导。请换用完整系统镜像。");
-                    UnmountEsp(espRoot, blog);
-                    LogError(err);
-                    ProgressDone("restore", "failed");
-                    return 1;
-                }
                 // 0.6.35（用户 2026-10-05 规格）：**ESP BCD 已经有效就跳过 bcdboot**
                 // —— bcdboot 会把 BCD 重建成只剩 Windows 条目，第三方启动项（易数
                 // 一键还原等）被抹掉（客户实测投诉）。同机还原时原 BCD 本就指向同
                 // 一块 C:；只有缺失/损坏时才重建（重建前导出备份）。
+                // 2026-10-27（用户反馈 2）：bcdboot **缺失或失败**时用随包资产自足
+                // （极简 PE 里根本没有 bcdboot；以前这里直接失败、只能拿 fixboot.exe 修）。
                 std::string vd;
                 if (VerifyEspBcd(espRoot, winDir, vd)) {
                     LogInfo("ESP BCD already valid -> skip bcdboot (preserve "
                             "third-party boot entries): " + vd);
                 } else {
-                    LogInfo("ESP BCD invalid -> rebuild via bcdboot: " + vd);
-                    std::wstring ldir = LogBaseDir() + L"\\logs";
-                    CreateDirectoryW(ldir.c_str(), nullptr);
-                    BcdExport(ldir + L"\\bcd-backup-before-bcdboot");
-                    int brc = RunProcess(
-                        SysToolPath(L"bcdboot.exe"),
-                        winDir + L" /s " + std::wstring(1, espRoot[0]) +
-                            L": /f UEFI",
-                        out);
-                    LogInfo("bcdboot (UEFI) rc=" + std::to_string(brc) + " / " +
+                    LogInfo("ESP BCD invalid -> rebuild: " + vd);
+                    bool rebuilt = false;
+                    if (ToolAvailable(L"bcdboot.exe") &&
+                        TargetBcdTemplateOk(letter[0], detail) &&
+                        EspHasRoomForBcdboot(espRoot, detail)) {
+                        std::wstring ldir = LogBaseDir() + L"\\logs";
+                        CreateDirectoryW(ldir.c_str(), nullptr);
+                        BcdExport(ldir + L"\\bcd-backup-before-bcdboot");
+                        int brc = RunProcess(
+                            SysToolPath(L"bcdboot.exe"),
+                            winDir + L" /s " + std::wstring(1, espRoot[0]) +
+                                L": /f UEFI",
                             out);
-                    if (brc != 0) {
-                        // 目标分区**已经格式化并写好系统**了 → 只能明确报错 + 指路
-                        //（`repair-boot` 可在 PE/正常系统里再修，不必重装）
-                        err = Tr("就地还原已完成，但写入 ESP 引导失败（bcdboot rc=") +
-                              std::to_string(brc) + Tr("）：") + out +
-                              Tr("\n可进入 PE 用 `SysRecover.exe repair-boot` 重试修复引导。");
-                        UnmountEsp(espRoot, blog);
-                        LogError(err);
-                        ProgressDone("restore", "failed");
-                        return 1;
+                        LogInfo("bcdboot (UEFI) rc=" + std::to_string(brc) +
+                                " / " + out);
+                        rebuilt = brc == 0;
+                    } else {
+                        LogInfo("bcdboot unavailable/not applicable -> "
+                                "self-contained ESP boot");
+                    }
+                    if (!rebuilt) {
+                        std::string slog, serr;
+                        const bool sok = EnsureUefiBootFiles(
+                            espRoot, std::wstring(1, letter[0]) + L":\\", winDir,
+                            AppDir(), /*overwriteBcd=*/true, slog, serr);
+                        LogInfo(std::string("ESP self-contained boot: ") +
+                                (sok ? "ok" : "FAILED") + "\n" + slog);
+                        std::string wlog;
+                        if (EnsureWindowsBootEntry(espRoot, wlog))
+                            LogInfo("firmware Windows boot entry: " + wlog);
+                        else
+                            LogWarn("firmware Windows boot entry (non-fatal): " +
+                                    wlog);
+                        if (!sok) {
+                            err = Tr("就地还原已完成，但写入 ESP 引导失败：") + serr +
+                                  Tr("\n可进入 PE 用 `SysRecover.exe repair-boot` 重试修复引导。");
+                            UnmountEsp(espRoot, blog);
+                            LogError(err);
+                            ProgressDone("restore", "failed");
+                            return 1;
+                        }
                     }
                     if (!VerifyEspBcd(espRoot, winDir, detail)) {
                         err = Tr("就地还原已完成，但 ESP 引导校验未通过：") + detail +
@@ -697,28 +733,61 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
                 UnmountEsp(espRoot, blog);
             } else {
                 // BIOS：目标自身已有可引导 BCD（bootmgr + \Boot\BCD + winload 条目）
-                // → 跳过 bcdboot，保住第三方启动项（同 UEFI 规则，0.6.35）。
+                // → 跳过重建，保住第三方启动项（同 UEFI 规则，0.6.35）。
+                // 2026-10-27（用户反馈 2）：没有 bcdboot 时用随包模板自足。
                 std::string vd;
                 if (BiosBcdLooksValid(letter[0], vd)) {
-                    LogInfo("BIOS BCD already valid -> skip bcdboot (preserve "
+                    LogInfo("BIOS BCD already valid -> skip rebuild (preserve "
                             "third-party boot entries): " + vd);
                 } else {
-                    LogInfo("BIOS BCD invalid -> repair via bcdboot: " + vd);
-                    std::wstring ldir = LogBaseDir() + L"\\logs";
-                    CreateDirectoryW(ldir.c_str(), nullptr);
-                    BcdExport(ldir + L"\\bcd-backup-before-bcdboot");
-                    int brc = RunProcess(SysToolPath(L"bcdboot.exe"),
-                                         winDir + L" /s " + letter + L": /f BIOS",
-                                         out);
-                    LogInfo("bcdboot (BIOS) rc=" + std::to_string(brc) + " / " +
-                            out);
-                    if (brc != 0) {
-                        err = Tr("就地还原已完成，但写入引导失败（bcdboot rc=") +
-                              std::to_string(brc) + Tr("）：") + out;
-                        LogError(err);
-                        ProgressDone("restore", "failed");
-                        return 1;
+                    LogInfo("BIOS BCD invalid -> rebuild: " + vd);
+                    bool rebuilt = false;
+                    if (ToolAvailable(L"bcdboot.exe")) {
+                        std::wstring ldir = LogBaseDir() + L"\\logs";
+                        CreateDirectoryW(ldir.c_str(), nullptr);
+                        BcdExport(ldir + L"\\bcd-backup-before-bcdboot");
+                        int brc = RunProcess(
+                            SysToolPath(L"bcdboot.exe"),
+                            winDir + L" /s " + letter + L": /f BIOS", out);
+                        LogInfo("bcdboot (BIOS) rc=" + std::to_string(brc) +
+                                " / " + out);
+                        rebuilt = brc == 0;
+                    } else {
+                        LogInfo("bcdboot.exe missing -> self-contained BIOS boot");
                     }
+                    if (!rebuilt) {
+                        std::string slog, serr;
+                        const bool sok = EnsureBiosBootFiles(
+                            std::wstring(1, letter[0]) + L":\\", winDir,
+                            AppDir(), /*overwriteBcd=*/true, slog, serr);
+                        LogInfo(std::string("BIOS self-contained boot: ") +
+                                (sok ? "ok" : "FAILED") + "\n" + slog);
+                        if (!sok) {
+                            err = Tr("就地还原已完成，但写入引导失败：") + serr +
+                                  Tr("\n可进入 PE 用 `SysRecover.exe repair-boot` 重试修复引导。");
+                            LogError(err);
+                            ProgressDone("restore", "failed");
+                            return 1;
+                        }
+                    }
+                    if (!BiosBcdLooksValid(letter[0], vd))
+                        LogWarn("BIOS boot verify note: " + vd);
+                }
+                // 分区引导区/磁盘 MBR 代码：format.com 之后不保证是微软引导代码，
+                // 而 BIOS 引导缺了它就是黑屏光标闪（PIT-053）。**非致命**：Windows
+                // 会拒写已挂载卷的 VBR（实测）——写不进去只告警，不把还原判失败。
+                std::string prlog;
+                if (EnsureNtfsBootRegion(std::wstring(1, letter[0]) + L":\\",
+                                         AppDir(), prlog))
+                    LogInfo("pbr: " + prlog);
+                else
+                    LogWarn("pbr not fully written (non-fatal): " + prlog);
+                if (DiskStyleOf(target.diskIndex) == PartitionStyle::MBR) {
+                    std::string mrlog;
+                    if (EnsureDiskMbrCode(target.diskIndex, AppDir(), mrlog))
+                        LogInfo("mbr: " + mrlog);
+                    else
+                        LogWarn("mbr boot code (non-fatal): " + mrlog);
                 }
             }
         } else {
@@ -2559,21 +2628,41 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
                     LogInfo("ESP BCD already valid -> skip bcdboot (preserve "
                             "third-party boot entries): " + vd);
                 } else {
-                    LogInfo("ESP BCD invalid -> rebuild via bcdboot: " + vd);
-                    std::wstring args = winDir + L" /s " +
-                                        std::wstring(1, espRoot[0]) + L": /f UEFI";
-                    int brc = RunProcess(SysToolPath(L"bcdboot.exe"), args, out);
-                    LogInfo("bcdboot (UEFI) rc=" + std::to_string(brc) + " / " +
-                            out);
-                    if (brc != 0) {
-                        // 返回码曾经被丢弃（静默失败）→ 现在 fail-closed（docs/15 · P1）
-                        UnmountEsp(espRoot, blog);
-                        ReleaseOpLock();
-                        ProgressDone("restore", "failed");
-                        err = Tr("写入 ESP 引导失败（bcdboot rc=") +
-                              std::to_string(brc) + Tr("）：") + out;
-                        LogError(err);
-                        return 1;
+                    LogInfo("ESP BCD invalid -> rebuild: " + vd);
+                    // 2026-10-27（用户反馈 2）：bcdboot 缺失/失败 → 随包资产自足
+                    // （极简 PE 里没有 bcdboot；以前这里直接失败、只能拿 fixboot.exe 修）。
+                    bool rebuilt = false;
+                    if (ToolAvailable(L"bcdboot.exe")) {
+                        std::wstring args = winDir + L" /s " +
+                                            std::wstring(1, espRoot[0]) + L": /f UEFI";
+                        int brc = RunProcess(SysToolPath(L"bcdboot.exe"), args, out);
+                        LogInfo("bcdboot (UEFI) rc=" + std::to_string(brc) + " / " +
+                                out);
+                        rebuilt = brc == 0;
+                    } else {
+                        LogInfo("bcdboot.exe missing -> self-contained ESP boot");
+                    }
+                    if (!rebuilt) {
+                        std::string slog, serr;
+                        const bool sok = EnsureUefiBootFiles(
+                            espRoot, std::wstring(1, target.letter[0]) + L":\\",
+                            winDir, exeDir, /*overwriteBcd=*/true, slog, serr);
+                        LogInfo(std::string("ESP self-contained boot: ") +
+                                (sok ? "ok" : "FAILED") + "\n" + slog);
+                        std::string wlog;
+                        if (EnsureWindowsBootEntry(espRoot, wlog))
+                            LogInfo("firmware Windows boot entry: " + wlog);
+                        else
+                            LogWarn("firmware Windows boot entry (non-fatal): " +
+                                    wlog);
+                        if (!sok) {
+                            UnmountEsp(espRoot, blog);
+                            ReleaseOpLock();
+                            ProgressDone("restore", "failed");
+                            err = Tr("写入 ESP 引导失败（无法生成引导配置）：") + serr;
+                            LogError(err);
+                            return 1;
+                        }
                     }
                     // ④ 产物断言：displayorder 非空 + 有 winload 条目 + 关键文件齐全
                     if (!VerifyEspBcd(espRoot, winDir, detail)) {
@@ -3332,16 +3421,44 @@ int RepairBoot(int disk, int part, std::string& msg) {
     std::string out;
     std::string blog;
     if (!UseUefiBootFor(target)) {
-        // BIOS/MBR：bcdboot 把 bootmgr/BCD 写到系统分区自身
-        int rc = RunProcess(SysToolPath(L"bcdboot.exe"),
-                            winDir + L" /s " + target.letter + L": /f BIOS", out);
-        LogInfo("repair-boot bcdboot (BIOS) rc=" + std::to_string(rc) + " / " + out);
-        if (rc != 0) {
-            msg = Tr("修复引导失败（bcdboot rc=") + std::to_string(rc) +
-                  Tr("）：") + out;
-            LogError(msg);
-            return 1;
+        // BIOS/MBR：优先 bcdboot（可用时最省事），缺失/失败 → 随包资产自足
+        //（2026-10-27，用户反馈 2：极简 PE 没有 bcdboot）。
+        const std::wstring root = target.letter + L":\\";
+        bool done = false;
+        if (ToolAvailable(L"bcdboot.exe")) {
+            int rc = RunProcess(SysToolPath(L"bcdboot.exe"),
+                                winDir + L" /s " + target.letter + L": /f BIOS",
+                                out);
+            LogInfo("repair-boot bcdboot (BIOS) rc=" + std::to_string(rc) + " / " +
+                    out);
+            done = rc == 0;
+        } else {
+            LogInfo("repair-boot: bcdboot.exe missing -> self-contained BIOS boot");
         }
+        if (!done) {
+            std::string slog, serr;
+            const bool sok =
+                StageBiosBootTree(root, winDir, AppDir(),
+                                  /*overwriteBcd=*/false, slog, serr);
+            LogInfo(std::string("repair-boot self-contained BIOS: ") +
+                    (sok ? "ok" : "FAILED") + "\n" + slog);
+            if (!sok) {
+                msg = Tr("修复引导失败：") + serr;
+                LogError(msg);
+                return 1;
+            }
+        }
+        // 分区引导区 / 磁盘 MBR 代码：运行中的系统盘可能锁不住 → 只告警
+        std::string prlog;
+        if (EnsureNtfsBootRegion(root, AppDir(), prlog))
+            LogInfo("repair-boot pbr: " + prlog);
+        else
+            LogWarn("repair-boot pbr (non-fatal): " + prlog);
+        std::string mrlog;
+        if (EnsureDiskMbrCode(target.diskIndex, AppDir(), mrlog))
+            LogInfo("repair-boot mbr: " + mrlog);
+        else
+            LogWarn("repair-boot mbr (non-fatal): " + mrlog);
         msg = Tr("引导已修复（BIOS）。");
         return 0;
     }
@@ -3359,29 +3476,39 @@ int RepairBoot(int disk, int part, std::string& msg) {
     }
     if (!guidMatched)
         LogWarn("repair-boot: ESP partition type is not EFI System; used fallback");
-    if (!TargetBcdTemplateOk(target.letter[0], detail)) {
-        UnmountEsp(espRoot, blog);
-        msg = Tr("系统盘缺少引导模板（") + detail +
-              Tr("），无法生成引导。请换用完整系统镜像或修复该文件。");
-        LogError(msg);
-        return 1;
+    // 2026-10-27（用户反馈 2）：bcdboot 缺失/失败 → 随包资产自足（含 GUID 替换与
+    // 固件 "Windows Boot Manager" 条目）。模板/空间预检只对 bcdboot 这条路生效。
+    bool rebuilt = false;
+    if (ToolAvailable(L"bcdboot.exe") && TargetBcdTemplateOk(target.letter[0], detail) &&
+        EspHasRoomForBcdboot(espRoot, detail)) {
+        int rc = RunProcess(
+            SysToolPath(L"bcdboot.exe"),
+            winDir + L" /s " + std::wstring(1, espRoot[0]) + L": /f UEFI", out);
+        LogInfo("repair-boot bcdboot (UEFI) rc=" + std::to_string(rc) + " / " +
+                out);
+        rebuilt = rc == 0;
+    } else {
+        LogInfo("repair-boot: bcdboot unavailable/not applicable -> "
+                "self-contained ESP boot (" + detail + ")");
     }
-    if (!EspHasRoomForBcdboot(espRoot, detail)) {
-        UnmountEsp(espRoot, blog);
-        msg = Tr("ESP 空间不足（") + detail +
-              Tr("）：请先清理 \\EFI\\ZJRESTORE\\ 旧版残留，或扩大 ESP。");
-        LogError(msg);
-        return 1;
-    }
-    int rc = RunProcess(
-        SysToolPath(L"bcdboot.exe"),
-        winDir + L" /s " + std::wstring(1, espRoot[0]) + L": /f UEFI", out);
-    LogInfo("repair-boot bcdboot (UEFI) rc=" + std::to_string(rc) + " / " + out);
-    if (rc != 0) {
-        UnmountEsp(espRoot, blog);
-        msg = Tr("修复引导失败（bcdboot rc=") + std::to_string(rc) + Tr("）：") + out;
-        LogError(msg);
-        return 1;
+    if (!rebuilt) {
+        std::string slog, serr;
+        const bool sok = EnsureUefiBootFiles(
+            espRoot, std::wstring(1, target.letter[0]) + L":\\", winDir, AppDir(),
+            /*overwriteBcd=*/false, slog, serr);
+        LogInfo(std::string("repair-boot self-contained ESP: ") +
+                (sok ? "ok" : "FAILED") + "\n" + slog);
+        std::string wlog;
+        if (EnsureWindowsBootEntry(espRoot, wlog))
+            LogInfo("repair-boot firmware entry: " + wlog);
+        else
+            LogWarn("repair-boot firmware entry (non-fatal): " + wlog);
+        if (!sok) {
+            UnmountEsp(espRoot, blog);
+            msg = Tr("修复引导失败：") + serr;
+            LogError(msg);
+            return 1;
+        }
     }
     if (!VerifyEspBcd(espRoot, winDir, detail)) {
         UnmountEsp(espRoot, blog);

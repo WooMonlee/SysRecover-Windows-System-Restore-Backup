@@ -24,6 +24,9 @@
   · 纯 x64 PE（例如 NewBee 20210523）没有 WOW64：请直接运行根目录
     SysRecoverUI.exe（它是 x64 总入口，带图标，调用 x64\SysRecoverUI.exe）。
     该 PE 也没有 dism.exe，无法做异机驱动注入；异机还原请用带 DISM 的完整 PE/Windows。
+  · 极简 PE 缺少 bootsect.exe / bcdboot.exe / bcdedit.exe 也能用：新硬盘分区的
+    磁盘引导代码、BIOS 的 bootmgr+BCD、UEFI 的 ESP 引导文件都由随包资产直接写入
+    （不需要这些系统工具）。
   · 32 位 Windows 请运行 SysRecoverUI_x86.exe（或 CLI 的 SysRecover_x86.exe）。
   · 不支持 Windows 2003 / XP / Vista 及更早系统。
 

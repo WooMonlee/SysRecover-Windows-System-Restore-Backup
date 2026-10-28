@@ -858,6 +858,91 @@ bool SetUefiBootNext(std::string& log, bool temporary) {
     return false;
 }
 
+bool EnsureWindowsBootEntry(const std::wstring& espRoot, std::string& log) {
+    // 自足 UEFI 引导（2026-10-27）：没有 bcdboot 时，固件里那条 "Windows Boot
+    // Manager" 得我们自己写。已存在就只确保它在 BootOrder 里，不重复创建。
+    if (!EnableEnvPrivilege(log))
+        return false;
+    GUID sig{};
+    DWORD partNum = 0;
+    unsigned long long start = 0, size = 0;
+    if (!QueryEspGpt(espRoot, sig, partNum, start, size, log)) {
+        log += "windows boot entry: ESP GPT info unavailable\n";
+        return false;
+    }
+    const wchar_t* kDesc = L"Windows Boot Manager";
+    const std::wstring kPath = L"\\EFI\\Microsoft\\Boot\\bootmgfw.efi";
+
+    // 1) 已有同名条目？直接复用（固件启动菜单里可能还有别的自定义描述）
+    int found = -1;
+    std::vector<BYTE> order;
+    ReadVar(L"BootOrder", order);
+    const int n = (int)(order.size() / 2);
+    for (int i = 0; i < n; ++i) {
+        WORD v = 0;
+        memcpy(&v, &order[i * 2], 2);
+        std::vector<BYTE> b;
+        if (!ReadVar(VarName(v), b))
+            continue;
+        std::wstring d, dev;
+        if (!ParseOption(b, d, dev))
+            continue;
+        if (d == kDesc && dev.find(L"bootmgfw.efi") != std::wstring::npos) {
+            found = v;
+            break;
+        }
+    }
+    if (found >= 0) {
+        char line[96];
+        snprintf(line, sizeof(line),
+                 "windows boot entry: exists Boot%04X (kept)\n", found);
+        log += line;
+        return true;
+    }
+
+    // 2) 新建一条（短格式 HardDrive + FilePath，与救援项同法）
+    const int num = FindFreeEntry();
+    if (num < 0) {
+        log += "windows boot entry: no free Boot#### slot\n";
+        return false;
+    }
+    if (!BuildAndWrite(num, sig, partNum, start, size, kPath, nullptr, kDesc,
+                       log)) {
+        log += "windows boot entry: write failed\n";
+        return false;
+    }
+    // 3) 挂到 BootOrder 末尾（默认仍先走原有顺序）
+    std::vector<BYTE> ord;
+    ReadVar(L"BootOrder", ord);
+    WORD v = (WORD)num;
+    ord.push_back((BYTE)(v & 0xFF));
+    ord.push_back((BYTE)(v >> 8));
+    SetLastError(0);
+    if (!SetVarW(L"BootOrder", kGlobalGuid, ord.data(), (DWORD)ord.size())) {
+        log += "windows boot entry: BootOrder write failed err=" +
+               std::to_string(GetLastError()) + "\n";
+        return false;
+    }
+    // 写后读回（安全软件可能吞写，用户 2026-10-27 反馈）
+    std::vector<BYTE> back;
+    bool inOrder = false;
+    if (ReadVar(L"BootOrder", back))
+        for (size_t i = 0; i + 1 < back.size(); i += 2) {
+            WORD w = 0;
+            memcpy(&w, &back[i], 2);
+            if (w == v) {
+                inOrder = true;
+                break;
+            }
+        }
+    char line[128];
+    snprintf(line, sizeof(line),
+             "windows boot entry: Boot%04X created (order_verified=%d)\n", num,
+             (int)inOrder);
+    log += line;
+    return inOrder;
+}
+
 bool IsSecureBootEnabled() {
     // 固件全局命名空间里的 `SecureBoot`：1 = 开启（User Mode），0 = 关闭。
     BYTE v = 0;

@@ -434,14 +434,15 @@ int CmdRestore(const std::vector<std::string>& a) {
 }
 
 // repair-boot（docs/15 · P5）：修"引导坏了、起不来"的机器 —— 不用重装。
-// 全流程 = 找系统盘 → 找 ESP（含回退）→ 模板/空间预检 → bcdboot → 产物断言。
+// 全流程 = 找系统盘 → 找 ESP（含回退）→ bcdboot（可用时）→ 失败/缺失则用随包
+// 资产自足（2026-10-27，PIT-184）→ 产物断言。
 int CmdRepairBoot(const std::vector<std::string>& a) {
     int disk = -1, part = -1;
     if (!OptInt(a, "--disk", -1, disk) || !OptInt(a, "--part", -1, part)) {
         std::printf(Tr("--disk/--part 必须是有效数字\n"));
         return 2;
     }
-    std::printf("%s\n", Tr("正在修复引导（bcdboot + 产物校验）……"));
+    std::printf("%s\n", Tr("正在修复引导（bcdboot，缺失时用内置引导资产）……"));
     std::string msg;
     int rc = sysrecover::RepairBoot(disk, part, msg);
     std::printf("%s\n", msg.c_str());
@@ -914,7 +915,7 @@ const CmdHelp* CmdHelpTable(size_t* n) {
      Tr("restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--engine block|swap] [--universal [--drivers <目录>]] [--yes]\n" "  目标是正在运行的系统盘 → 暂存并重启进救援层；否则就地还原（不重启）。\n" "  用 `list` 先确认磁盘号/分区号；镜像必须在**本地分区**。\n" "  --universal 异机还原（仅 Win10/11；仅 A 引擎/PE 就地）：启用内置启动存储驱动，\n" "  --drivers 额外注入用户驱动文件夹（DISM，离线，不随包内置厂商驱动）。")},
     {"verify", Tr("verify --image <文件>\n  校验镜像完整性（成功 0，失败 5）。")},
     {"repair-boot",
-     Tr("repair-boot [--disk N --part M]\n" "  修复引导（ESP 上的 BCD/bootmgfw）：给**引导坏了的机器**用，不必重装。\n" "  不给 --disk/--part 时自动找系统盘；流程 = bcdboot + 产物校验（docs/15）。")},
+     Tr("repair-boot [--disk N --part M]\n" "  修复引导（ESP 上的 BCD/bootmgfw）：给**引导坏了的机器**用，不必重装。\n" "  不给 --disk/--part 时自动找系统盘；流程 = bcdboot（缺失时用内置引导资产）+ 产物校验（docs/15）。")},
     {"returnold",
      Tr("returnold [--disk N --part M] [--yes]\n"
         "  返回旧系统：把 ~old 的旧系统搬回根目录，当前新系统被丢弃。\n"
