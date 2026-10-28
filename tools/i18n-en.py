@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：640/642 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：642/643 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n建议：以管理员身份运行（本程序要读写分区与引导）。': '\n\nAdvice: run as administrator (this program reads and writes partitions and boot data).',
@@ -26,6 +26,7 @@ EN = {
     '\n提示：请检查机器名/共享名是否正确、网络是否可达。': '\nHint: check that the computer/share name is correct and the network is reachable.',
     '\n提示：路径格式不正确（应为 \\\\机器名\\共享名\\...）。': '\nHint: invalid path format (expected \\\\computer\\share\\...).',
     '\n提示：路径过长。': '\nHint: path too long.',
+    '\n注意：分区引导区（PBR）未能写入 —— 可能被安全软件拦写。请临时退出火绒/360 的「写磁盘保留扇区」保护（或把本程序加入信任）后重试，或在 PE 里修复。': '\nNote: the partition boot region (PBR) could not be written - security software may be blocking it. Temporarily turn off Huorong/360 "protect disk reserved sectors" (or trust this program), then retry, or repair it from a PE environment.',
     '\r  %3d%%  %s   已用 %s   ': '\r  %3d%%  %s   elapsed %s   ',
     '    已用 ': '    elapsed ',
     '  1) Win+R 输入 services.msc → 找到「': '  1) Press Win+R, type services.msc, find "',

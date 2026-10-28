@@ -30,6 +30,11 @@ bool IsNtfsVolume(const std::wstring& volRoot, std::string& detail);
 
 // 确保分区引导区是**微软** NTFS 引导代码：0x54 处 426B + 扇区 1..8（4096B）。
 // 幂等，format.com / mkntfs 之后每次都要跑（它们会写自己的占位代码）。
+// 实现要点（2026-10-27/28 实测）：
+//   · 卷句柄裸读写必须 OVERLAPPED + 扇区对齐；
+//   · **安全软件会拦卷句柄写引导扇区**（火绒「写磁盘保留扇区」→
+//     ERROR_ACCESS_DENIED）→ 自动改走 `\\.\PhysicalDriveN` 直写兜底；
+//   · 0x54 已是 `fa 33 c0` 就不写第一扇区（不必惊动安全软件）。
 // 返回 false = 没写成（log 里是原因）；非 NTFS 分区会跳过并返回 true。
 bool EnsureNtfsBootRegion(const std::wstring& volRoot,
                           const std::wstring& exeDir, std::string& log);

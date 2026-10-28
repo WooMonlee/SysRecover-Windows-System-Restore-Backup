@@ -228,7 +228,7 @@ TEST_SRC   = tests/tiny_test.cpp tests/unit_tests.cpp tests/main.cpp
 TEST_UNITS = src/common/sysinfo.cpp src/wim/exclude.cpp src/boot/task.cpp src/common/zip.cpp src/app/advice.cpp \
       src/common/i18n.cpp src/common/selfarch.cpp src/common/relocate.cpp src/common/pathutil.cpp src/boot/bcd_parse.cpp src/boot/bootpath.cpp \
       src/common/ea.cpp src/common/refscan.cpp src/app/swapleft.cpp src/common/logger.cpp src/common/bioskey.cpp \
-      src/disk/partscript.cpp src/boot/bootself.cpp
+      src/disk/partscript.cpp src/boot/bootself.cpp src/common/process.cpp
 TEST_BIN   = $(OBJDIR)/tests.exe
 $(TEST_BIN): $(TEST_SRC) $(TEST_UNITS) src/common/rescue_decision.h src/common/version.h tests/tiny_test.h | $(OBJDIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(TEST_SRC) $(TEST_UNITS) -o $(TEST_BIN) -static -mconsole -ladvapi32 -lole32 -luuid -lntdll

@@ -6,6 +6,14 @@
 //   bootself-lab.exe pbr  <卷根，如 Y:\>
 //   bootself-lab.exe bios <目标根，如 T:\>
 //   bootself-lab.exe uefi <ESP 根，如 Y:\> <系统卷根，如 T:\>
+//   bootself-lab.exe mbr|zerombr|dump <磁盘号>
+//   bootself-lab.exe zero|zerophys <卷根>     （造"PBR 被写坏"的靶子）
+//
+// 编译（bootself 现在会调 bootsect，需要 process/logger；输出到 dist\ 才有 bootfiles 资产）：
+//   g++ -O2 -std=c++17 -D_WIN32_WINNT=0x0601 -DUNICODE -D_UNICODE -Isrc \
+//       tools/bootself-lab.cpp src/boot/bootself.cpp src/disk/mbrcode.cpp \
+//       src/common/process.cpp src/common/logger.cpp src/common/selfarch.cpp \
+//       -o dist/bootself-lab.exe -static -mconsole
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -55,6 +63,95 @@ int main(int argc, char** argv) {
         for (int i = 0x54; i < 0x5C; ++i) std::printf("%02X ", b[i]);
         std::printf("sig=%02X%02X\n", b[510], b[511]);
         return rd ? 0 : 1;
+    }
+    if (mode == "zerophys") {
+        // 经物理盘把分区引导区代码清零（绕开火绒的「写磁盘保留扇区」卷保护），
+        // 用来造"PBR 被写坏"的靶子，验证 EnsureNtfsBootRegion 的物理盘兜底。
+        const std::wstring dev = L"\\\\.\\" + a.substr(0, 2);
+        HANDLE hv = CreateFileW(dev.c_str(), GENERIC_READ,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                OPEN_EXISTING, 0, nullptr);
+        if (hv == INVALID_HANDLE_VALUE) {
+            std::printf("open %ls failed err=%lu\n", dev.c_str(), GetLastError());
+            return 1;
+        }
+        VOLUME_DISK_EXTENTS ext{};
+        DWORD ret = 0;
+        int disk = -1;
+        if (DeviceIoControl(hv, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, nullptr, 0,
+                            &ext, sizeof(ext), &ret, nullptr) &&
+            ext.NumberOfDiskExtents >= 1)
+            disk = (int)ext.Extents[0].DiskNumber;
+        PARTITION_INFORMATION_EX pi{};
+        unsigned long long base = 0;
+        if (DeviceIoControl(hv, IOCTL_DISK_GET_PARTITION_INFO_EX, nullptr, 0, &pi,
+                            sizeof(pi), &ret, nullptr))
+            base = (unsigned long long)pi.StartingOffset.QuadPart;
+        CloseHandle(hv);
+        if (disk < 0 || base == 0) {
+            std::printf("disk/offset unavailable (disk=%d base=%llu)\n", disk,
+                        base);
+            return 1;
+        }
+        wchar_t pd[64] = {};
+        swprintf(pd, 64, L"\\\\.\\PhysicalDrive%d", disk);
+        HANDLE h = CreateFileW(pd, GENERIC_READ | GENERIC_WRITE,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                               OPEN_EXISTING, 0, nullptr);
+        if (h == INVALID_HANDLE_VALUE) {
+            std::printf("open %ls failed err=%lu\n", pd, GetLastError());
+            return 1;
+        }
+        auto ovAt = [&](unsigned long long off) {
+            OVERLAPPED ov{};
+            const unsigned long long abs = base + off;
+            ov.Offset = (DWORD)(abs & 0xFFFFFFFFull);
+            ov.OffsetHigh = (DWORD)(abs >> 32);
+            return ov;
+        };
+        unsigned char sec0[512] = {};
+        OVERLAPPED ov0 = ovAt(0);
+        DWORD rd = 0;
+        bool rok = ReadFile(h, sec0, 512, &rd, &ov0) && rd == 512;
+        memset(sec0 + 0x54, 0, 426);
+        OVERLAPPED ov1 = ovAt(0);
+        DWORD wr = 0;
+        SetLastError(0);
+        bool w1 = rok && WriteFile(h, sec0, 512, &wr, &ov1) && wr == 512;
+        const DWORD e1 = GetLastError();
+        std::printf("zerophys: plain phys write w1=%d(e=%lu)\n", (int)w1,
+                    (unsigned long)e1);
+        if (!w1) {
+            // 试：先把卷 LOCK + DISMOUNT，再经物理盘写（部分安全软件/存储栈
+            // 只保护"已挂载卷"的元数据区）。
+            HANDLE hv2 = CreateFileW(dev.c_str(), GENERIC_READ | GENERIC_WRITE,
+                                     FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                     nullptr, OPEN_EXISTING, 0, nullptr);
+            bool lk = false, dm = false;
+            if (hv2 != INVALID_HANDLE_VALUE) {
+                DWORD r2 = 0;
+                lk = DeviceIoControl(hv2, FSCTL_LOCK_VOLUME, nullptr, 0, nullptr,
+                                     0, &r2, nullptr) != 0;
+                dm = DeviceIoControl(hv2, FSCTL_DISMOUNT_VOLUME, nullptr, 0,
+                                     nullptr, 0, &r2, nullptr) != 0;
+                CloseHandle(hv2);
+            }
+            OVERLAPPED ov3 = ovAt(0);
+            SetLastError(0);
+            w1 = rok && WriteFile(h, sec0, 512, &wr, &ov3) && wr == 512;
+            std::printf("zerophys: after lock=%d dismount=%d -> w1=%d(e=%lu)\n",
+                        (int)lk, (int)dm, (int)w1, (unsigned long)GetLastError());
+        }
+        std::vector<unsigned char> zeros(4096, 0);
+        OVERLAPPED ov2 = ovAt(512);
+        SetLastError(0);
+        bool w2 = WriteFile(h, zeros.data(), 4096, &wr, &ov2) && wr == 4096;
+        const DWORD e2 = GetLastError();
+        FlushFileBuffers(h);
+        CloseHandle(h);
+        std::printf("zerophys: disk=%d base=%llu cont w2=%d(e=%lu)\n", disk, base,
+                    (int)w2, (unsigned long)e2);
+        return (w1 && w2) ? 0 : 1;
     }
     if (mode == "mbr" || mode == "zerombr") {
         // 磁盘 MBR 引导代码（前 440B）：zero 先清零（模拟"空盘"），再 mbr 验证写入。

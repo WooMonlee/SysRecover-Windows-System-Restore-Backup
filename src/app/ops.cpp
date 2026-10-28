@@ -774,8 +774,9 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
                         LogWarn("BIOS boot verify note: " + vd);
                 }
                 // 分区引导区/磁盘 MBR 代码：format.com 之后不保证是微软引导代码，
-                // 而 BIOS 引导缺了它就是黑屏光标闪（PIT-053）。**非致命**：Windows
-                // 会拒写已挂载卷的 VBR（实测）——写不进去只告警，不把还原判失败。
+                // 而 BIOS 引导缺了它就是黑屏光标闪（PIT-053）。**非致命**：安全软件
+                // 可能拦写（火绒「写磁盘保留扇区」；bootself 内部已自动走物理盘兜底），
+                // 写不进去只告警，不把还原判失败。
                 std::string prlog;
                 if (EnsureNtfsBootRegion(std::wstring(1, letter[0]) + L":\\",
                                          AppDir(), prlog))
@@ -3448,12 +3449,16 @@ int RepairBoot(int disk, int part, std::string& msg) {
                 return 1;
             }
         }
-        // 分区引导区 / 磁盘 MBR 代码：运行中的系统盘可能锁不住 → 只告警
+        // 分区引导区 / 磁盘 MBR 代码：运行中的系统盘可能锁不住、安全软件也可能拦写
+        //（火绒「写磁盘保留扇区」）。bootself 内部已按「先查 → bootsect → 自足写」，
+        // 到这一步还失败 = 确实写不进去 → 如实告诉用户怎么办，而不是假装成功。
         std::string prlog;
-        if (EnsureNtfsBootRegion(root, AppDir(), prlog))
+        if (EnsureNtfsBootRegion(root, AppDir(), prlog)) {
             LogInfo("repair-boot pbr: " + prlog);
-        else
+        } else {
             LogWarn("repair-boot pbr (non-fatal): " + prlog);
+            msg += Tr("\n注意：分区引导区（PBR）未能写入 —— 可能被安全软件拦写。请临时退出火绒/360 的「写磁盘保留扇区」保护（或把本程序加入信任）后重试，或在 PE 里修复。");
+        }
         std::string mrlog;
         if (EnsureDiskMbrCode(target.diskIndex, AppDir(), mrlog))
             LogInfo("repair-boot mbr: " + mrlog);

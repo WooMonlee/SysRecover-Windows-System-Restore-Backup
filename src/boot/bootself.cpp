@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <cstring>
 
+#include "../common/process.h"
+
 namespace sysrecover {
 namespace {
 
@@ -208,8 +210,172 @@ unsigned long long DirSize(const std::wstring& dir, int depth = 0) {
 
 }  // namespace
 
-bool IsNtfsVolume(const std::wstring& volRoot, std::string& detail) {
-    std::wstring dev = VolumeDev(volRoot);
+// ── 物理盘直写兜底（2026-10-28，火绒实测）────────────────────────
+// 安全软件（火绒「写磁盘保留扇区」、360 等）会拦**卷句柄**对引导扇区的写：
+// WriteFile 直接返回 ERROR_ACCESS_DENIED，而 `\\.\PhysicalDriveN` 的直写不受
+// 这套保护（实测同一台机器上 MBR 代码写盘成功、卷 VBR 写被拦）。
+// 故卷写失败时按「分区起始偏移 + 相对偏移」经物理盘重试一次。
+int VolumeDiskNumber(const std::wstring& volRoot) {
+    const std::wstring dev = VolumeDev(volRoot);
+    if (dev.empty()) return -1;
+    HANDLE h = CreateFileW(dev.c_str(), GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                           OPEN_EXISTING, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return -1;
+    VOLUME_DISK_EXTENTS ext{};
+    DWORD ret = 0;
+    int disk = -1;
+    if (DeviceIoControl(h, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, nullptr, 0,
+                        &ext, sizeof(ext), &ret, nullptr) &&
+        ext.NumberOfDiskExtents >= 1)
+        disk = (int)ext.Extents[0].DiskNumber;
+    CloseHandle(h);
+    return disk;
+}
+
+unsigned long long VolumeStartOffset(const std::wstring& volRoot) {
+    const std::wstring dev = VolumeDev(volRoot);
+    if (dev.empty()) return 0;
+    HANDLE h = CreateFileW(dev.c_str(), GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                           OPEN_EXISTING, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    PARTITION_INFORMATION_EX pi{};
+    DWORD ret = 0;
+    unsigned long long off = 0;
+    if (DeviceIoControl(h, IOCTL_DISK_GET_PARTITION_INFO_EX, nullptr, 0, &pi,
+                        sizeof(pi), &ret, nullptr))
+        off = (unsigned long long)pi.StartingOffset.QuadPart;
+    CloseHandle(h);
+    return off;
+}
+
+// 以物理盘为通道读写卷内偏移（off = 卷内相对偏移）。
+class PhysVolume {
+public:
+    ~PhysVolume() {
+        if (h_ != INVALID_HANDLE_VALUE) CloseHandle(h_);
+    }
+    bool valid() const { return h_ != INVALID_HANDLE_VALUE; }
+
+    bool open(const std::wstring& volRoot, std::string& log) {
+        if (h_ != INVALID_HANDLE_VALUE) return true;
+        const int disk = VolumeDiskNumber(volRoot);
+        base_ = VolumeStartOffset(volRoot);
+        if (disk < 0 || base_ == 0) {
+            log += "phys: layout unavailable (disk=" + std::to_string(disk) +
+                   " offset=" + std::to_string(base_) +
+                   "); spanned/unusual volume?\n";
+            return false;
+        }
+        wchar_t dev[64] = {};
+        swprintf(dev, 64, L"\\\\.\\PhysicalDrive%d", disk);
+        h_ = CreateFileW(dev, GENERIC_READ | GENERIC_WRITE,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                         OPEN_EXISTING, 0, nullptr);
+        if (h_ == INVALID_HANDLE_VALUE) {
+            log += "phys: open PhysicalDrive" + std::to_string(disk) +
+                   " failed err=" + std::to_string(GetLastError()) + "\n";
+            return false;
+        }
+        log += "phys: using PhysicalDrive" + std::to_string(disk) +
+               " (partition offset " + std::to_string(base_) + ")\n";
+        return true;
+    }
+
+    bool read(unsigned long long off, void* buf, DWORD n) const {
+        if (!valid()) return false;
+        OVERLAPPED ov = MakeOv(off);
+        DWORD rd = 0;
+        return ReadFile(h_, buf, n, &rd, &ov) != 0 && rd == n;
+    }
+
+    bool write(unsigned long long off, const void* buf, DWORD n) {
+        if (!valid()) return false;
+        OVERLAPPED ov = MakeOv(off);
+        DWORD wr = 0;
+        const bool ok = WriteFile(h_, buf, n, &wr, &ov) != 0 && wr == n;
+        if (ok) FlushFileBuffers(h_);
+        return ok;
+    }
+
+private:
+    OVERLAPPED MakeOv(unsigned long long off) const {
+        OVERLAPPED ov{};
+        const unsigned long long abs = base_ + off;
+        ov.Offset = (DWORD)(abs & 0xFFFFFFFFull);
+        ov.OffsetHigh = (DWORD)(abs >> 32);
+        return ov;
+    }
+    HANDLE h_ = INVALID_HANDLE_VALUE;
+    unsigned long long base_ = 0;
+};
+
+// 只读读卷内偏移（卷句柄读不受安全软件拦；也不需要锁）。
+bool ReadVolRaw(const std::wstring& volRoot, unsigned long long off, void* buf,
+                DWORD n) {
+    const std::wstring dev = VolumeDev(volRoot);
+    if (dev.empty()) return false;
+    HANDLE h = CreateFileW(dev.c_str(), GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                           OPEN_EXISTING, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    OVERLAPPED ov{};
+    ov.Offset = (DWORD)(off & 0xFFFFFFFFull);
+    ov.OffsetHigh = (DWORD)(off >> 32);
+    DWORD rd = 0;
+    const bool ok = ReadFile(h, buf, n, &rd, &ov) != 0 && rd == n;
+    CloseHandle(h);
+    return ok;
+}
+
+// 引导区现状：0x54 是微软代码（fa 33 c0）且**续段有实质内容**（两者是配套的一对，
+// 只写其一会黑屏，见 PIT-052/053）。
+bool PbrLooksMicrosoft(const std::wstring& volRoot, std::string& detail) {
+    unsigned char sec0[512] = {};
+    if (!ReadVolRaw(volRoot, 0, sec0, (DWORD)sizeof(sec0))) {
+        detail = "read sector 0 failed";
+        return false;
+    }
+    const bool codeOk =
+        sec0[0x54] == 0xFA && sec0[0x55] == 0x33 && sec0[0x56] == 0xC0;
+    std::vector<unsigned char> cont(4096, 0);
+    int nz = 0;
+    bool contOk = false;
+    if (ReadVolRaw(volRoot, 512, cont.data(), 4096)) {
+        for (size_t i = 0; i < 512; ++i)
+            if (cont[i]) ++nz;
+        contOk = nz >= 64;
+    }
+    detail = std::string("code=") + (codeOk ? "ok" : "bad") + " cont=" +
+             (contOk ? "ok" : "bad") + " (cont_nonzero=" + std::to_string(nz) +
+             ")";
+    return codeOk && contOk;
+}
+
+// 系统自带 bootsect（**微软签名** → 火绒/360 信任它）。2026-10-28 实测：
+// 同一台装了火绒的机器上，bootsect 写卷引导代码 **rc=0 成功**，而我们自己的
+// 进程写同一扇区（卷句柄、物理盘、LOCK+DISMOUNT 三条路）全部 err=5 被拦。
+// 所以：先用系统工具，写不进再上我们自己的实现。
+bool RunBootsect(const std::wstring& volRoot, std::string& log) {
+    if (volRoot.size() < 2 || volRoot[1] != L':') {
+        log += "bootsect: no drive letter, skipped\n";
+        return false;
+    }
+    const std::wstring exe = SysToolPath(L"bootsect.exe");
+    if (GetFileAttributesW(exe.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        log += "bootsect: not available\n";
+        return false;
+    }
+    std::string out;
+    const std::wstring args = L"/nt60 " + volRoot.substr(0, 2);
+    const int rc = RunProcess(exe, args, out);
+    log += "bootsect /nt60 " + std::string(1, (char)volRoot[0]) +
+           ": rc=" + std::to_string(rc) + "\n" + out;
+    return rc == 0;
+}
+
+bool IsNtfsVolume(const std::wstring& volRoot, std::string& detail) {    std::wstring dev = VolumeDev(volRoot);
     if (dev.empty()) {
         detail = "bad volume root";
         return false;
@@ -274,6 +440,26 @@ bool EnsureNtfsBootRegion(const std::wstring& volRoot,
         return false;
     }
 
+    // ── ① 只读检查：已经是微软引导区（代码 + 续段都在）→ 一个字节都不写 ──
+    // 用户 2026-10-28 规格：尽量少动盘、少惊动安全软件。format.com 正常写过后
+    // 走的就是这条路（无写入 → 无拦截 → 无提示）。
+    std::string st;
+    if (PbrLooksMicrosoft(volRoot, st)) {
+        log += "pbr: already Microsoft (" + st + "), no write\n";
+        return true;
+    }
+    log += "pbr: needs repair (" + st + ")\n";
+
+    // ── ② 系统自带工具优先：bootsect（微软签名，安全软件信得过）──
+    if (RunBootsect(volRoot, log)) {
+        if (PbrLooksMicrosoft(volRoot, st)) {
+            log += "pbr: ok via bootsect (" + st + ")\n";
+            return true;
+        }
+        log += "pbr: bootsect ran but state still bad (" + st + ")\n";
+    }
+
+    // ── ③ 自足实现（bootsect 缺失/失败时才走到这里）──
     std::wstring dev = VolumeDev(volRoot);
     HANDLE h = CreateFileW(dev.c_str(), GENERIC_READ | GENERIC_WRITE,
                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
@@ -292,7 +478,8 @@ bool EnsureNtfsBootRegion(const std::wstring& volRoot,
                         std::to_string(GetLastError()) + "\n";
 
     bool w1 = false, w2 = false;
-    // ⚠️ Windows 对**卷句柄**的裸读写有两条硬要求（2026-10-27 实测）：    //   ① 偏移必须扇区对齐（直接 seek 0x54 写 426B 会失败）；
+    // ⚠️ 卷句柄裸读写有两条硬要求（2026-10-27 实测）：
+    //   ① 偏移必须扇区对齐（直接 seek 0x54 写 426B 会失败）；
     //   ② 偏移要用 **OVERLAPPED** 显式给出（卷句柄不是普通可 seek 文件，
     //      SetFilePointerEx + ReadFile 在这里返回失败且 GetLastError=0）。
     // 因此：读整扇区 → 改 0x54 处 426B → 整扇区写回。
@@ -319,37 +506,53 @@ bool EnsureNtfsBootRegion(const std::wstring& volRoot,
         CloseHandle(h);
         return false;
     }
-    // 先看现状：0x54 处已是微软引导代码（fa 33 c0 8e）就不必写第一个扇区 ——
-    // Windows 会**拒写已挂载卷的 VBR**（实测 ERROR_ACCESS_DENIED=5，即使
-    // LOCK+DISMOUNT 也不行）；而 format.com 本来就写微软代码，正常路径不会触发。
-    const bool codeOk = sec0[0x54] == 0xFA && sec0[0x55] == 0x33 &&
-                        sec0[0x56] == 0xC0;
-    w1 = codeOk;
-    if (!codeOk) {
+    // 安全软件（火绒「写磁盘保留扇区」、360 等）会**拦本进程**写引导扇区：
+    // 卷句柄、物理盘、甚至 LOCK+DISMOUNT 之后都是 ERROR_ACCESS_DENIED（2026-10-28
+    // 实测三条路全拦；只有微软签名的 bootsect 放行）。物理盘仍作为兜底尝试。
+    PhysVolume phys;
+    bool physUsed = false;
+
+    // 走到这里说明引导区**确有缺陷**：代码段与续段是配套的一对，必须**整对**写，
+    // 绝不"只补一半"（只写 426B 会黑屏，PIT-052）。
+    {
         unsigned char patched[512];
         memcpy(patched, sec0, sizeof(patched));
         memcpy(patched + 0x54, code.data(), 426);
         SetLastError(0);
         w1 = volWrite(0, patched, (DWORD)sizeof(patched));
-        if (!w1)
-            log += "pbr: WARN cannot write boot sector err=" +
+        if (!w1) {
+            log += "pbr: volume write of boot sector denied err=" +
                    std::to_string(GetLastError()) +
-                   " (mounted volume VBR is write-protected by Windows; "
-                   "run bootsect /nt60 <drive>: /mbr)\n";
-    } else {
-        log += "pbr: sector 0 boot code already Microsoft\n";
+                   " (security software?); trying physical-disk fallback\n";
+            w1 = phys.open(volRoot, log) && phys.write(0, patched, 512);
+            if (w1) {
+                physUsed = true;
+                log += "pbr: boot sector written via physical disk\n";
+            }
+        }
     }
-    // 扇区 1..8（引导代码续段）：这一段是普通数据区，卷句柄可写；每次都写，
-    // 保证 mkntfs/format 留下的占位代码被覆盖（PIT-053）。
+    // 扇区 1..8（引导代码续段）：每次都写，保证 mkntfs/format 留下的占位代码
+    // 被覆盖（PIT-053）。
     w2 = volWrite(512, cont.data(), 4096);
-    if (!w2) log += "pbr: write boot continuation failed\n";
+    if (!w2) {
+        log += "pbr: volume write of boot continuation denied; trying "
+               "physical-disk fallback\n";
+        w2 = phys.open(volRoot, log) && phys.write(512, cont.data(), 4096);
+        if (w2) physUsed = true;
+    }
     FlushFileBuffers(h);
 
     unsigned char back[512] = {};
-    const bool rok = volRead(0, back, (DWORD)sizeof(back));
+    bool rok = volRead(0, back, (DWORD)sizeof(back));
     std::vector<unsigned char> backCont(4096, 0);
-    const bool cok = volRead(512, backCont.data(), 4096) &&
-                     memcmp(backCont.data(), cont.data(), 4096) == 0;
+    bool cok = volRead(512, backCont.data(), 4096) &&
+               memcmp(backCont.data(), cont.data(), 4096) == 0;
+    // 物理直写后卷缓存可能还是旧值 → 用物理通道复核，避免误报 INCOMPLETE
+    if (physUsed && (!rok || !cok)) {
+        if (phys.read(0, back, 512)) rok = true;
+        if (phys.read(512, backCont.data(), 4096))
+            cok = memcmp(backCont.data(), cont.data(), 4096) == 0;
+    }
     if (locked)
         DeviceIoControl(h, FSCTL_UNLOCK_VOLUME, nullptr, 0, nullptr, 0, &ret,
                         nullptr);
@@ -364,6 +567,11 @@ bool EnsureNtfsBootRegion(const std::wstring& volRoot,
              ok ? "ok" : "INCOMPLETE", (int)w1, (int)w2, (int)cok, back[0x54],
              back[0x55], back[0x56]);
     log += line;
+    if (!ok)
+        log += "pbr: BLOCKED by security software (reserved-sector protection). "
+               "Ask the user to exit/whitelist it (e.g. Huorong 'protect disk "
+               "reserved sectors'), or repair from a PE / use 'restore then "
+               "reboot' (Linux side writes the PBR without Windows AV).\n";
     return ok;
 }
 
@@ -555,9 +763,9 @@ bool EnsureBiosBootFiles(const std::wstring& targetRoot,
                          bool overwriteBcd, std::string& log, std::string& err) {
     bool ok = StageBiosBootTree(targetRoot, winDir, exeDir, overwriteBcd, log,
                                 err);
-    // ④ 分区引导区（PBR）：BIOS 引导的最后一步。**非致命**——Windows 会拒写已
-    //    挂载卷的 VBR（实测 ERROR_ACCESS_DENIED），而 format.com 本来就会写微软
-    //    引导代码；真写不进去时把原因留在日志里（可用 bootsect 或 PE 补）。
+    // ④ 分区引导区（PBR）：BIOS 引导的最后一步。**非致命**——安全软件
+    //    可能拦写（火绒「写磁盘保留扇区」；代码里已自动改走物理盘兜底），
+    //    且 format.com 本来就会写微软引导代码；真写不进去时把原因留在日志里。
     if (!EnsureNtfsBootRegion(targetRoot, exeDir, log))
         log += "bios: WARN PBR not fully written (see pbr: lines above)\n";
     log += ok ? "bios: self-contained boot files ready\n"
