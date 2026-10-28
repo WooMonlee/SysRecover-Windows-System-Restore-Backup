@@ -257,7 +257,7 @@ namespace {
 const int kWndW   = 745;
 const int kWndH   = 410;
 const int kCorner = 24;  // 圆角直径（radius 12；Duilib 的 roundcorner/borderround
-                         // 都是「椭圆宽高」= 直径，见 AGENTS.md §13）
+                         // 都是「椭圆宽高」= 直径，见 docs/25-PIT坑位册.md）
 
 const wchar_t* kWndClass = L"SysRecoverUI";  // = CMainForm::GetWindowClassName()
 

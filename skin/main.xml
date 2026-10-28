@@ -5,7 +5,7 @@
        右边界与左边界各 -125，靠左元素不动。见 docs/ui-design.md §6 与
        src/gui/ui_skin.cpp、src/gui/main_form.cpp ApplyModeUi()。
 
-     经典 Duilib 语义提醒（与 nim_duilib / WPF 不同，详见 AGENTS.md §13）：
+     经典 Duilib 语义提醒（与 nim_duilib / WPF 不同，详见 docs/25-PIT坑位册.md）：
        1) float 子控件：pos="left,top,right,bottom"（后两个是右下角坐标，不是宽高）
        2) 控件级圆角用 borderround="cx,cy"（椭圆直径 = 2×半径），roundcorner 只认 <Window>
        3) inset 是「给子元素的内边距」，不是外边距

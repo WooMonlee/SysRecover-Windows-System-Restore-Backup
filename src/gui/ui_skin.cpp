@@ -832,7 +832,7 @@ bool CSkinButtonUI::DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopContr
     (void)pStopControl;
     if (!IsVisible()) return true;
     const RECT rc = m_rcItem;
-    // borderround 是「椭圆宽高」= 直径（见 AGENTS.md §13），半径 = /2
+    // borderround 是「椭圆宽高」= 直径（见 docs/25-PIT坑位册.md），半径 = /2
     const int radius = m_cxyBorderRound.cx > 0 ? m_cxyBorderRound.cx / 2 : 0;
 
     const bool en = IsEnabled();

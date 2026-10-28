@@ -222,7 +222,7 @@ private:
 // 为什么必须自绘：经典 CButtonUI::PaintText 走 CRenderEngine::DrawText +
 // CPaintManagerUI 字体表，且 PaintText 是在 borderround 的圆角裁剪区**内**
 // 被调用的 —— 实测结果是字体回退成默认宋体、字号偏小、文字贴顶（详见
-// AGENTS.md §13）。本类改为「底色 + 边框 + GDI 文字」全部自己画，字号/
+// docs/25-PIT坑位册.md）。本类改为「底色 + 边框 + GDI 文字」全部自己画，字号/
 // 粗细/颜色/垂直居中才可控。
 // 属性：text / fontsize / bold / bkcolor / textcolor / bordercolor / borderround
 // ────────────────────────────────────────────────────────────

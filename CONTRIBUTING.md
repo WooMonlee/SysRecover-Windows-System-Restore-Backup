@@ -6,7 +6,7 @@ regressions can be destructive. Please keep changes focused and testable.
 ## Before you start
 
 1. Read [README](README.md) and [AGENTS.md](AGENTS.md) (especially the red
-   lines in §0 and the pitfall register in §13).
+   lines in §0 and the pitfall register in `docs/25-PIT坑位册.md`).
 2. Build with MinGW-w64 GCC 14.2 and run the checks:
 
 ```powershell
@@ -21,7 +21,7 @@ mingw32-make -f Makefile package
 
 - Keep one logical change per commit.
 - Do not add customer data, support bundles, disk images, dumps, or logs.
-- Add or update a PIT entry in `AGENTS.md` when fixing a field bug or adding a
+- Add or update a PIT entry in `docs/25-PIT坑位册.md` when fixing a field bug or adding a
   non-obvious workaround.
 - User-facing strings must use `Tr()`; update `tools/i18n-en.py` and run
   `python tools/i18n-wrap.py --gen-lang` instead of editing `lang/en.lang`.

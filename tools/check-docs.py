@@ -22,7 +22,8 @@ VERSION_H = ROOT / "src" / "common" / "version.h"
 TASK_CPP = ROOT / "src" / "boot" / "task.cpp"
 RESCUE = [ROOT / "bootfiles" / "zjrestore-lite.sh",
           ROOT / "bootfiles" / "alpine" / "init"]
-DOCS_CONTRACT = [ROOT / "AGENTS.md", ROOT / "docs" / "04-跨层契约.md"]
+DOCS_CONTRACT = [ROOT / "AGENTS.md", ROOT / "docs" / "04-跨层契约.md",
+                  ROOT / "docs" / "25-PIT坑位册.md"]
 
 fails = []
 # dist/version.json 是**构建产物**（`make package` 才刷新）；`make check` 可能跑在打包之前，
@@ -101,6 +102,15 @@ def main():
         if mm and int(mm.group(1)) != cver:
             fails.append("%s: ZJ_CONTRACT=%s 与 version.h 的 %d 不一致（只改了一头？）"
                          % (p.relative_to(ROOT), mm.group(1), cver))
+    # 6) AGENTS.md 体积闸门（2026-10-28，PIT-187）：它是"每次会话都注入上下文"的文件，
+    #    曾经因为把 PIT 正文堆在里面涨到 422 KB。PIT 正文一律写 docs/25，
+    #    §13 只加"活跃约束"一行 —— 超过 80 KB 直接失败，逼新内容去 docs/25。
+    agents = ROOT / "AGENTS.md"
+    if agents.exists():
+        kb = agents.stat().st_size / 1024.0
+        if kb > 80:
+            fails.append("AGENTS.md 过大（%.1f KB > 80 KB）：PIT 正文请追加到 "
+                         "docs/25-PIT坑位册.md，AGENTS §13 只登记活跃约束" % kb)
     return report()
 
 
