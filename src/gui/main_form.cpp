@@ -1303,28 +1303,27 @@ void CMainForm::ToggleBootMenu() {
         wchar_t msg[512];
         if (UseUefiBootFor(part))
             swprintf(msg, 512,
-                     Tr(L"重启后按 %ls 选「SysRecover」还原？\n"
+                     Tr(L"重启后按 %ls 选「SysRecover」还原\n"
                         L"镜像：%ls（第 %d 个）\n"
                         L"目标：%ls: 盘 —— 选中即格式化该分区"),
                      BootMenuKeyHint().c_str(), name.c_str(), m_selImageIndex,
                      part.letter.empty() ? L"?" : part.letter.c_str());
         else
             swprintf(msg, 512,
-                     Tr(L"重启后在启动菜单选「SysRecover」还原？\n"
+                     Tr(L"重启后在启动菜单选「SysRecover」还原\n"
                         L"镜像：%ls（第 %d 个）\n"
                         L"目标：%ls: 盘 —— 选中即格式化该分区"),
                      name.c_str(), m_selImageIndex,
                      part.letter.empty() ? L"?" : part.letter.c_str());
         // 与"确认还原"一致：右按钮（动作）高亮且为回车默认项，ESC 一律取消。
         // 2026-10-28（用户规格）：「安装到启动」给两个选项 ——
-        //   「扫描」= 只检查镜像能否**只靠救援层**还原（block 引擎，不占 C 盘）；
-        //   「解压」= 现在就解压到 C 盘（A 引擎，EFS/特殊重解析点必须走这条）。
-        // 三按钮：扫描 / 解压 / 取消；回车=扫描（用户指定默认），ESC=取消（escIdx=2，
-        // 否则 ESC 会误触发扫描）。
+        //   「扫描后安装」= 只检查镜像能否**只靠救援层**还原（block 引擎，不另占空间），
+        //                  通过就直接装启动项；
+        //   「解压并安装」= 现在就解压到 C:\~new 再装启动项（A 引擎；EFS/特殊重解析点必须走这条）。
         std::wstring full = msg;
-        full += Tr(L"\n「扫描」= 只检查救援层能否直接还原（不占空间）\n「解压」= 现在解压到 C 盘（EFS/重解析点镜像必须）");
+        full += Tr(L"\n「扫描」= 检查镜像条件并安装恢复选项（不另占空间）\n「解压」= 解压到 C:\\~new 并安装恢复选项（占 C 盘空间）");
         const int pick = CConfirmDlg::Ask3(
-            m_hWnd, Tr(L"安装到启动"), full, Tr(L"扫描"), Tr(L"解压"),
+            m_hWnd, Tr(L"安装到启动"), full, Tr(L"扫描后安装"), Tr(L"解压并安装"),
             Tr(L"取消"), /*defaultIdx=*/0, /*midDisabled=*/false, /*escIdx=*/2);
         if (pick == 2) return;
         if (pick == 1) {
@@ -1444,7 +1443,7 @@ void CMainForm::OnMenuScanDone(bool linuxOnly) {
         StartMenuToggle(/*install=*/true, /*engine=*/"block");
         return;
     }
-    // 不能 → 说明为什么，并把「解压」放到默认项（回车=解压、ESC=取消）
+    // 不能 → 说明为什么，并把「解压并安装」放到默认项（回车=解压、ESC=取消）
     std::wstring why;
     if (m_scanBad > 0)
         why = Tr(L"镜像含特殊重解析点，救援层无法写回。");
@@ -1454,7 +1453,7 @@ void CMainForm::OnMenuScanDone(bool linuxOnly) {
         why = Tr(L"镜像无法只在救援层中还原。");
     why += Tr(L"\n要现在解压到 C 盘吗？（约需与镜像内容等量的空间）");
     if (CConfirmDlg::Ask2(m_hWnd, Tr(L"该镜像需要先解压"), why, Tr(L"取消"),
-                          Tr(L"解压"), /*defaultIsRight=*/true) == 1) {
+                          Tr(L"解压并安装"), /*defaultIsRight=*/true) == 1) {
         StartMenuToggle(/*install=*/true, /*engine=*/"swap");
         return;
     }
