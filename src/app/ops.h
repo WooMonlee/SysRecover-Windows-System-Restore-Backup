@@ -210,6 +210,16 @@ bool UseUefiBootFor(const PartitionInfo& target);
 // 返回：0 成功；1 失败（msg 为 UTF-8，含分区表摘要等诊断）。
 int RepairBoot(int disk, int part, std::string& msg);
 
+// 「安装到启动」前的能力扫描（2026-10-28 用户规格：先「扫描」再决定要不要
+// 「解压」）。判断该镜像能否**只靠 Linux 救援层**还原（block 引擎，Windows 侧
+// 不解压）——只读镜像元数据（秒级、不动任何分区）：
+//   返回 true  = 可以在救援层直接还原（安装时无需解压）；
+//   返回 false = 需要先在 Windows 侧解压（A 引擎），原因见 badReparse/encrypted
+//                （重解析点个数 / EFS 加密文件个数）；err 只在读不出镜像时给原因。
+bool CanRestoreInLinuxOnly(const std::wstring& image, int index,
+                           size_t* badReparse, size_t* encrypted,
+                           std::string& err);
+
 // ── 「被安全软件拦截」的结构化信号（2026-10-28，用户规格）──────────
 // 火绒/360 会拦本进程写引导区/启动项（实测：`bootsect` 这类微软签名工具放行，
 // 我们自己的进程一律 ERROR_ACCESS_DENIED）。GUI 要据此弹「请退出防护 → 重试」，

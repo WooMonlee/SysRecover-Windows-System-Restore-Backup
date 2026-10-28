@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：647/648 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：655/656 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n建议：以管理员身份运行（本程序要读写分区与引导）。': '\n\nAdvice: run as administrator (this program reads and writes partitions and boot data).',
@@ -17,6 +17,7 @@ EN = {
     '\n  - 驱动器自报：即将故障（SMART 阈值已超）': '\n  - drive reports imminent failure (SMART threshold exceeded)',
     '\n… 另有 %d 个文件\n': '\n... and %d more file(s)\n',
     '\n… 另有 %d 个文件，完整清单见日志：\n': '\n... and %d more file(s); full list:\n',
+    '\n「扫描」= 只检查救援层能否直接还原（不占空间）\n「解压」= 现在解压到 C 盘（EFS/重解析点镜像必须）': '\n"Scan" = only check whether the rescue layer can restore it directly (no extra space)\n"Extract" = extract to C: now (required for images with EFS / reparse points)',
     '\n可进入 PE 用 `SysRecover.exe repair-boot` 重试修复引导。': '\nEnter PE and run `SysRecover.exe repair-boot` to retry the boot repair.',
     '\n如果你没有对应的密码 / 恢复密钥，这些卷的数据在还原后，\n将无法恢复。是否继续还原？': '\nIf you do not have the matching password / recovery key, the data on these volumes\nwill be unrecoverable after the restore.\nContinue restoring?',
     '\n完整清单见日志：\n': '\nFull list:\n',
@@ -27,6 +28,7 @@ EN = {
     '\n提示：路径格式不正确（应为 \\\\机器名\\共享名\\...）。': '\nHint: invalid path format (expected \\\\computer\\share\\...).',
     '\n提示：路径过长。': '\nHint: path too long.',
     '\n注意：分区引导区（PBR）未能写入 —— 可能被安全软件拦写。请临时退出火绒/360 的「写磁盘保留扇区」保护（或把本程序加入信任）后重试，或在 PE 里修复。': '\nNote: the partition boot region (PBR) could not be written - security software may be blocking it. Temporarily turn off Huorong/360 "protect disk reserved sectors" (or trust this program), then retry, or repair it from a PE environment.',
+    '\n要现在解压到 C 盘吗？（约需与镜像内容等量的空间）': '\nExtract to C: now? (needs roughly as much space as the image content)',
     '\r  %3d%%  %s   已用 %s   ': '\r  %3d%%  %s   elapsed %s   ',
     '    已用 ': '    elapsed ',
     '  1) Win+R 输入 services.msc → 找到「': '  1) Press Win+R, type services.msc, find "',
@@ -234,7 +236,6 @@ EN = {
     '子镜像「': 'Sub-image "',
     '安全模式设置失败：': 'Failed to set Safe Mode: ',
     '安全门禁拒绝': 'Safety Gate Rejected',
-    '安装': 'Install',
     '安装 UEFI 引导层失败: ': 'Failed to install the UEFI boot layer: ',
     '安装到启动': 'Add to boot',
     '安装启动还原菜单失败': 'Failed to install the boot restore menu',
@@ -453,6 +454,7 @@ EN = {
     '正在校验分区': 'Verifying partitions',
     '正在校验镜像...': 'Verifying image...',
     '正在校验镜像并暂存还原任务...': 'Verifying the image and staging the restore task...',
+    '正在检查镜像能否由救援层直接还原...': 'Checking whether the rescue layer can restore this image directly...',
     '正在注入驱动包': 'Injecting driver pack',
     '正在清除旧分区': 'Clearing old partition table',
     '正在生成脚本': 'Generating script',
@@ -534,6 +536,7 @@ EN = {
     '缺少目标镜像路径': 'Missing target image path',
     '缺少镜像路径': 'Missing image path',
     '自删 = 删旧系统 + 启动菜单 + 本程序（不可恢复）': 'Self-delete = old system + boot menu + this program (irreversible)',
+    '解压': 'Extract',
     '警告': 'Warning',
     '警告：本机存在 BitLocker 加密卷（%s）——\n      如果没有密码 / 恢复密钥，还原后这些卷的数据将无法恢复。\n': 'Warning: this machine has BitLocker-encrypted volumes (%s) --\n      without the password / recovery key, their data cannot be recovered after the restore.\n',
     '警告：目标磁盘（磁盘': 'Warning: the target disk (disk ',
@@ -546,6 +549,7 @@ EN = {
     '诊断包已导出：': 'Diagnostics bundle exported: ',
     '该分区上没有可用的旧系统（~old\\Windows）。\n': 'This partition has no usable old system (~old\\Windows).\n',
     '该镜像不是 Windows 7 及以上的系统镜像（缺少 \\Windows\\system32\\winload.exe；Vista 以前系统 / 安装源/ 不完整镜像均不支持还原），已中止，未动目标分区。': 'This image is not a Windows 7 or later system image (missing \\Windows\\system32\\winload.exe; pre-Vista systems / install-source images / incomplete images are not supported for restore). Aborted before touching the target partition.',
+    '该镜像需要先解压': 'This image must be extracted first',
     '请先选择保存位置': 'Please choose a save location first',
     '请先选择可用的镜像文件': 'Select a usable image file first',
     '请先选择镜像与目标分区，再安装到启动': 'Select an image and target partition before adding to boot',
@@ -559,6 +563,7 @@ EN = {
     '读取失败：%ls\n': 'Read failed: %ls\n',
     '读取服务「': 'Failed to query service "',
     '读取镜像信息失败': 'Failed to read image information',
+    '读取镜像元数据失败（rc=': 'Failed to read image metadata (rc=',
     '返回旧系统': 'Return to old system',
     '返回旧系统 = 重启把旧系统搬回根目录；': 'Return to old system',
     '返回旧系统 = 重启进恢复环境，把 ~old 的旧系统搬回根目录。\n当前新系统将被丢弃，无法再使用。\n确认执行？[y/N]: ': 'Return to old system',
@@ -607,11 +612,14 @@ EN = {
     '镜像不可用，请重新备份：': 'Image unusable, please back up again: ',
     '镜像内缺少 ntoskrnl.exe': 'ntoskrnl.exe is missing from the image',
     '镜像含 EFS 加密文件（还原后会变成空文件）': 'Image contains EFS-encrypted files (they would become empty files after restore)',
+    '镜像含 EFS 加密文件，救援层会还原成空文件。': 'The image contains EFS-encrypted files; the rescue layer would restore them as empty files.',
     '镜像含无法还原的重解析点': 'Image has unrestorable reparse points',
+    '镜像含特殊重解析点，救援层无法写回。': 'The image contains special reparse points that the rescue layer cannot write back.',
     '镜像在目标分区内，且找不到可存放它的数据盘；请先手动移走镜像': 'The image is inside the target partition and no data drive could be found to hold it; please move the image away manually',
     '镜像在目标分区内，搬到数据盘失败（空间不足？）；请先手动移走镜像': 'The image is inside the target partition and moving it to the data drive failed (not enough space?); please move the image away manually',
     '镜像在网络路径上（UNC 或映射网络驱动器）。还原系统盘需要重启进救援层，而救援层无法访问网络 —— 请先把镜像复制到**本地分区**（如 D:\\）再还原。': 'The image is on a network path (UNC or a mapped network drive). Restoring the system disk requires a reboot into the rescue layer, and the rescue layer has no network access -- copy the image to a **local partition** (e.g. D:\\) first, then restore.',
     '镜像文件': 'image file',
+    '镜像无法只在救援层中还原。': 'This image cannot be restored by the rescue layer alone.',
     '镜像校验失败': 'Image verification failed',
     '镜像校验失败，请打开日志查看详情。': 'Image verification failed; see the log for details.',
     '镜像校验通过': 'Image verification passed',

@@ -494,6 +494,11 @@ LRESULT CMainForm::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         OnMenuDone((int)wParam, lParam != 0);
         return 0;
     }
+    if (msg == WM_MENU_SCAN_DONE) {
+        // 「安装到启动」扫描完成（2026-10-28）：wParam=1 表示可在救援层直接还原。
+        OnMenuScanDone(wParam != 0);
+        return 0;
+    }
     if (msg == WM_SKIN_EMPTY_PARTITION) {
         // 分区下拉为空时被点击（2026-10-20）：直接打开发分区向导。
         if (!m_busy && !m_backupMode) OpenInitDiskWizard();
@@ -1311,10 +1316,25 @@ void CMainForm::ToggleBootMenu() {
                      name.c_str(), m_selImageIndex,
                      part.letter.empty() ? L"?" : part.letter.c_str());
         // 与"确认还原"一致：右按钮（动作）高亮且为回车默认项，ESC 一律取消。
-        if (CConfirmDlg::Ask2(m_hWnd, Tr(L"安装到启动"), msg, Tr(L"取消"),
-                              Tr(L"安装"), /*defaultIsRight=*/true) != 1)
+        // 2026-10-28（用户规格）：「安装到启动」给两个选项 ——
+        //   「扫描」= 只检查镜像能否**只靠救援层**还原（block 引擎，不占 C 盘）；
+        //   「解压」= 现在就解压到 C 盘（A 引擎，EFS/特殊重解析点必须走这条）。
+        // 三按钮：扫描 / 解压 / 取消；回车=扫描（用户指定默认），ESC=取消（escIdx=2，
+        // 否则 ESC 会误触发扫描）。
+        std::wstring full = msg;
+        full += Tr(L"\n「扫描」= 只检查救援层能否直接还原（不占空间）\n「解压」= 现在解压到 C 盘（EFS/重解析点镜像必须）");
+        const int pick = CConfirmDlg::Ask3(
+            m_hWnd, Tr(L"安装到启动"), full, Tr(L"扫描"), Tr(L"解压"),
+            Tr(L"取消"), /*defaultIdx=*/0, /*midDisabled=*/false, /*escIdx=*/2);
+        if (pick == 2) return;
+        if (pick == 1) {
+            LogInfo("GUI menu install: user chose 解压 (engine=swap)");
+            StartMenuToggle(/*install=*/true, /*engine=*/"swap");
             return;
-        StartMenuToggle(/*install=*/true);
+        }
+        LogInfo("GUI menu install: user chose 扫描");
+        StartMenuScan();
+        return;
     }
     RefreshBootMenuBtn();
     UpdateMainAction();
@@ -1324,7 +1344,7 @@ void CMainForm::ToggleBootMenu() {
 // 之前 StageRestoreMenu 在 UI 线程同步跑（写 ~28MB 救援载荷 + 逐文件双读
 // CRC 校验 ≈ 56MB I/O），Windows 5 秒无消息泵即判定"无响应" → 幽灵窗。
 // 现在与备份/还原同款：worker 线程 + WM_PROGRESS_UPDATE 进度 + 完成消息。
-void CMainForm::StartMenuToggle(bool install) {
+void CMainForm::StartMenuToggle(bool install, const std::string& engine) {
     if (m_busy) return;
     // 安装的请求在此定格（镜像/分区/子镜像索引在 busy 期间不可改）；
     // 删除不用请求，但统一传一份默认值，worker 里按 install 分支取用。
@@ -1336,7 +1356,9 @@ void CMainForm::StartMenuToggle(bool install) {
     }
     req.index = m_selImageIndex;
     req.repairBoot = true;
-    req.engine = "swap";  // 0.7 默认 A 引擎（安装时即完成 ~new 解压，见 ops.cpp）
+    // 2026-10-28（用户规格）：engine 由「扫描/解压」决定 —— 扫描通过用 block
+    // （救援层直接还原，安装时不解压），否则 swap（现在就解压到 C 盘）。
+    req.engine = engine;
     m_busy = true;
     m_menuInstall = install;
     m_menuErr.clear();
@@ -1345,6 +1367,7 @@ void CMainForm::StartMenuToggle(bool install) {
             " request: image=" + W2U(req.image) + " disk=" +
             std::to_string(req.disk) + " part=" + std::to_string(req.part) +
             " index=" + std::to_string(req.index) +
+            " engine=" + (install ? req.engine : std::string("-")) +
             " keepOld=" + std::to_string(req.keepOld ? 1 : 0));
     last_adv_ = sysrecover::ADV_NONE;
     // m_lastStage 给 WM_TIMER(1) 每秒刷新「已用」用（状态栏文字 + 流逝时间）。
@@ -1372,8 +1395,73 @@ void CMainForm::StartMenuToggle(bool install) {
     }
 }
 
-void CMainForm::MenuToggleAsync(bool install, const RestoreRequest& req) {
-    // 同 StartRestoreAsync：让出 CPU，写盘期间窗口仍可拖动（否则拖窗发飘）。
+// 「安装到启动」→「扫描」（2026-10-28 用户规格）：只读元数据，判断镜像能否
+// **只靠救援层**还原（block 引擎）。能 → 直接免解压安装；不能 → 提示改用「解压」。
+void CMainForm::StartMenuScan() {
+    if (m_busy) return;
+    m_busy = true;
+    m_scanBad = 0;
+    m_scanEnc = 0;
+    m_lastStage = Tr(L"正在检查镜像能否由救援层直接还原...");
+    SetStatus(m_lastStage);
+    SetProgress(0);
+    m_start = std::chrono::steady_clock::now();
+    SetTimer(m_hWnd, 1, 1000, nullptr);
+    UpdateMainAction();
+    RefreshBootMenuBtn();
+    const std::wstring image = m_wimPath;
+    const int index = m_selImageIndex;
+    if (m_worker.joinable()) m_worker.join();
+    m_cancel = false;
+    m_worker = std::thread([this, image, index] {
+        ::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        size_t bad = 0, enc = 0;
+        std::string err;
+        const bool ok =
+            sysrecover::CanRestoreInLinuxOnly(image, index, &bad, &enc, err);
+        m_scanBad = bad;
+        m_scanEnc = enc;
+        LogInfo(std::string("GUI menu scan: linux_only=") +
+                (ok ? "yes" : "no") + " reparse=" + std::to_string(bad) +
+                " efs=" + std::to_string(enc) +
+                (err.empty() ? "" : (" / " + err)));
+        ::PostMessageW(m_hWnd, WM_MENU_SCAN_DONE, ok ? 1 : 0, 0);
+    });
+}
+
+void CMainForm::OnMenuScanDone(bool linuxOnly) {
+    KillTimer(m_hWnd, 1);
+    m_busy = false;
+    ShowProgress(false);
+    if (m_worker.joinable()) m_worker.join();
+    if (m_cancel) {
+        UpdateMainAction();
+        return;
+    }
+    SetProgress(0);
+    if (linuxOnly) {
+        // 能在救援层直接还原 → 免解压安装（安装时只写契约 + 引导层）
+        StartMenuToggle(/*install=*/true, /*engine=*/"block");
+        return;
+    }
+    // 不能 → 说明为什么，并把「解压」放到默认项（回车=解压、ESC=取消）
+    std::wstring why;
+    if (m_scanBad > 0)
+        why = Tr(L"镜像含特殊重解析点，救援层无法写回。");
+    else if (m_scanEnc > 0)
+        why = Tr(L"镜像含 EFS 加密文件，救援层会还原成空文件。");
+    else
+        why = Tr(L"镜像无法只在救援层中还原。");
+    why += Tr(L"\n要现在解压到 C 盘吗？（约需与镜像内容等量的空间）");
+    if (CConfirmDlg::Ask2(m_hWnd, Tr(L"该镜像需要先解压"), why, Tr(L"取消"),
+                          Tr(L"解压"), /*defaultIsRight=*/true) == 1) {
+        StartMenuToggle(/*install=*/true, /*engine=*/"swap");
+        return;
+    }
+    UpdateMainAction();
+}
+
+void CMainForm::MenuToggleAsync(bool install, const RestoreRequest& req) {    // 同 StartRestoreAsync：让出 CPU，写盘期间窗口仍可拖动（否则拖窗发飘）。
     ::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
     sysrecover::ResetBootBlocked();
     int rc = 0;

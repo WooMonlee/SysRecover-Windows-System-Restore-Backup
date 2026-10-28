@@ -1313,6 +1313,18 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
   · **与 PBR 四段式的关系**：正常路径（引导区已正确 / `bootsect` 成功）根本不会置位 → **不弹任何框**；只有"`bootsect` 也没有、我们自己也写不进"（极简 PE + 安全软件这种组合）才会走到重试框。
   · 🚧 **待实测**：真被拦时弹框出现、退出火绒后点「重试」一次成功（本机引导区已正常，不会触发；等用户/客户现场验证）。
 
+- PIT-186 **「安装到启动」改三选（扫描/解压/取消）+ 顺手挖出潜伏 bug：皮肤 XML 的 `size` 会把运行时加高的对话框压回 196，4/5/6 行消息一直是"按钮被裁"**（`0.9.48`/`0.9.49`，2026-10-28，用户规格）：
+  · **需求（用户）**：点「安装到启动」时不该**立即解压**，而应先给两个选项——「扫描」= 只检查镜像能否**只靠 Linux 救援层**还原（不占 C 盘）；「解压」= 现在就解压到 C 盘备用；下方三个按钮 `扫描 / 解压 / 取消`，默认「扫描」。
+  · **实现**：
+    - `ops::CanRestoreInLinuxOnly(image, index, &badReparse, &encrypted, err)`：复用 `WimEngine::ScanImageForLinuxRestore`（**只读元数据、秒级、不动盘**，与 block 引擎的 F5/W1/W2 预检同源），返回"能否免解压"。
+    - GUI `ToggleBootMenu`：`CConfirmDlg::Ask3(标题, 5 行, 「扫描」「解压」「取消」, defaultIdx=0, midDisabled=false, escIdx=2)`；**回车=扫描、ESC=取消**。选「解压」→ `StartMenuToggle(true, "swap")`（原行为）；选「扫描」→ `StartMenuScan()` worker（`WM_MENU_SCAN_DONE`=WM_APP+26）→ 干净则 `StartMenuToggle(true, "block")`（安装时**不解压**，还原时由救援层直接写入）；不干净则弹 `Ask2`（说明原因：特殊重解析点 / EFS 加密文件，默认=解压）。
+    - `StartMenuToggle(bool install, const std::string& engine = "swap")` 增加 engine 形参（原先**写死** `"swap"`，即"安装即解压"）；日志记 `engine=`。
+    - `Ask3` 新增 `escIdx`（默认 0，保持历史语义）：本对话框 left=扫描是**动作**不是安全项，ESC 必须落「取消」→ 传 2。
+  · **⚠️ 顺带挖出的潜伏 bug（`0.9.49` 修）**：`RunModal` 明明按行数算了高度（5 行 = 240）传给 `Create`，但 **Duilib `WindowImplBase::OnCreate` 会按皮肤 `skin/confirm.xml` 的 `<Window size="420,196">` 把窗口尺寸重置回 420×196** → `InitWindow` 里按钮按 5 行排到 y=180，窗口仍是 196 → **按钮下半截被裁**（截图实证）。3 行消息恰好等于 196，所以 2026-10 之前从没暴露；**PIT-158 的"空间不足"5 行框、PIT-159 的 6 行框、Ask4 四选框同样中招**（用户之前看到的"按钮只露上边"就是它）。**修法**：`InitWindow` 末尾按 `MsgLineCount(m_msg)` 再 `SetWindowPos(m_hWnd, …, w, h, SWP_NOMOVE|SWP_NOZORDER)`（`w` 四选=520、其余 420）；并加日志 `confirm dlg: lines=N h=H msgLen=L` 便于日后核对。
+  · **验证（GUI 自动化截图）**：`D:\ea-lab\sfboot\menu-dialog-shot3.ps1`（剪贴板 + 点击输入框粘贴镜像路径 → 点「安装到启动」(client 506,316)）→ 确认框 **420×240**，5 行完整（用法/镜像/目标会格式化/「扫描」说明/「解压」说明），三按钮 `扫描`(蓝底默认) / `解压` / `取消` 全部完整（`menu-choices.png`）。
+  · **自动化踩坑（可复用）**：① `Add-Type` 里 `[DllImport("user32.dll")] GetClassNameW` 必须写 **`CharSet=CharSet.Unicode`**，否则返回的类名只剩首字母（"S"），永远匹配不上 `SysRecoverUI`；② 主窗口可能被上次运行留在屏幕右/下边缘（离屏）→ 先 `SetWindowPos(main, 60,40,745,410)` 再点，否则对话框出屏；③ 截图用 `PrintWindow(hwnd, hdc, PW_RENDERFULLCONTENT)`，`CopyFromScreen` 在被遮挡时抓到的是别的东西；④ `C#` 里静态方法别叫 `Main`（会被当入口点，`CS0017`）；⑤ 单实例互斥会拦下新实例 → 跑之前先 `Stop-Process` 掉残留 `SysRecover*`。
+  · 🚧 **待实测**：① 老镜像（含 EFS/特殊重解析点）选「扫描」→ 应提示改用「解压」；② 干净镜像选「扫描」→ 免解压安装后**开机选 SysRecover 能还原**（本条没自动测，因为安装会写本机 C: 的引导文件）。
+
 ## 14. License 合规（SBOM，随版本更新）
 
 | 组件 | 版本/来源 | License | 链接/分发方式 |

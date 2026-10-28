@@ -61,14 +61,16 @@ using namespace DuiLib;
 // 「安装/删除菜单」worker 完成（2026-10-18）：原来装/删菜单在 UI 线程**同步**跑
 // ~5 秒（写 28MB 救援载荷 + 双读 CRC 校验），Windows 判定"无响应"（幽灵窗）；
 // 现在改为 worker + 进度：wParam=rc, lParam=install(0/1)；失败原因在 m_menuErr。
-#define WM_MENU_DONE       (WM_APP + 19)
-// 新硬盘分区向导（2026-10-20）：worker 完成，wParam=rc；错误在 m_initErr。
+#define WM_MENU_DONE       (WM_APP + 19)// 新硬盘分区向导（2026-10-20）：worker 完成，wParam=rc；错误在 m_initErr。
 #define WM_PART_INIT_DONE  (WM_APP + 23)
 // 「修复引导」worker 完成：wParam=rc；说明在 m_fixMsg。
 #define WM_FIXBOOT_DONE    (WM_APP + 24)
 // 「镜像检查」（完整校验，2026-10-27）worker 完成：wParam=rc(0=通过)；
 // 说明在 m_verifyMsg。放在「更多功能>>」菜单里（原「异机」勾选框位置）。
 #define WM_VERIFY_DONE     (WM_APP + 25)
+// 「安装到启动」的能力扫描（2026-10-28 用户规格：扫描/解压/取消 三选）：
+// worker 完成，wParam=1 表示"可在救援层直接还原"；明细在 m_scanBad/m_scanEnc。
+#define WM_MENU_SCAN_DONE  (WM_APP + 26)
 
 namespace sysrecover {
 struct PartitionInfo;
@@ -147,7 +149,12 @@ private:
     // 镜像检查（完整校验）：worker 里跑 WimEngine::Verify，完成走 WM_VERIFY_DONE。
     void StartVerifyImage();
     void VerifyImageAsync();
-    void StartMenuToggle(bool install);  // 异步入口（2026-10-18：不再 UI 线程同步跑）
+    void StartMenuToggle(bool install,
+                         const std::string& engine = "swap");  // 异步入口
+    // 「安装到启动」→「扫描」（2026-10-28 用户规格）：先只读检查镜像能否
+    // **只靠救援层**还原（block 引擎），能就免解压安装，不能就提示改用「解压」。
+    void StartMenuScan();
+    void OnMenuScanDone(bool linuxOnly);
     void MenuToggleAsync(bool install,
                          const sysrecover::RestoreRequest& req);  // worker 线程体
     void OnMenuDone(int rc, bool install);  // worker 完成回主线程（WM_MENU_DONE）
@@ -237,6 +244,9 @@ private:
     std::string       m_retryErr;
     // 装/删菜单 worker 回传（2026-10-18，同上：成员回传、不传指针）。
     std::string       m_menuErr;
+    // 「安装到启动」扫描结果（2026-10-28）：能否只靠救援层还原 + 原因计数。
+    size_t            m_scanBad = 0;
+    size_t            m_scanEnc = 0;
     bool              m_menuInstall = false;  // 本次操作是装(true)还是删(false)
     // 进度节流（100ms）
     std::chrono::steady_clock::time_point m_lastProgressPost;

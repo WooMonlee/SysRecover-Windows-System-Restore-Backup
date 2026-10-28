@@ -207,6 +207,16 @@ void CConfirmDlg::InitWindow() {
             break;
         start = nl + 1;
     }
+    // ⚠️ 2026-10-28 实测（PIT-186）：`WindowImplBase::OnCreate` 会按**皮肤 XML 的
+    // `<Window size="420,196">` 把窗口重设回 420x196** —— 于是 RunModal 传进去的
+    // 加高尺寸（5/6 行消息）被 XML 覆盖，按钮下半截被裁掉（4/5/6 行都中招，
+    // 3 行时恰好等于 196 所以以前没暴露）。这里在控件排完后再按行数**重设尺寸**。
+    {
+        const int w = quad ? kQuadW : kWndW;
+        const int h = WindowHeight(lines);
+        ::SetWindowPos(m_hWnd, nullptr, 0, 0, w, h,
+                       SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
 }
 
 void CConfirmDlg::Finish(int result) {
@@ -231,9 +241,9 @@ void CConfirmDlg::Notify(TNotifyUI& msg) {
 }
 
 LRESULT CConfirmDlg::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
-    // 键盘兜底：ESC = 左按钮（安全的那个）；回车 = 默认项（m_defaultIdx）。
+    // 键盘兜底：ESC = m_escIdx（默认左按钮 = 安全项）；回车 = 默认项（m_defaultIdx）。
     if (msg == WM_KEYDOWN) {
-        if (wParam == VK_ESCAPE) { Finish(kExit); return 0; }
+        if (wParam == VK_ESCAPE) { Finish(m_escIdx); return 0; }
         if (wParam == VK_RETURN) {
             Finish(m_defaultIdx);
             return 0;
@@ -268,7 +278,7 @@ int CConfirmDlg::Ask2(HWND owner, const std::wstring& title,
 int CConfirmDlg::Ask3(HWND owner, const std::wstring& title,
                       const std::wstring& msg, const std::wstring& leftText,
                       const std::wstring& midText, const std::wstring& rightText,
-                      int defaultIdx, bool midDisabled) {
+                      int defaultIdx, bool midDisabled, int escIdx) {
     CConfirmDlg* dlg = new CConfirmDlg();
     dlg->m_title = title;
     dlg->m_msg = msg;
@@ -281,6 +291,9 @@ int CConfirmDlg::Ask3(HWND owner, const std::wstring& title,
     if (defaultIdx > 2) defaultIdx = 2;
     dlg->m_defaultIdx = defaultIdx;
     dlg->m_defaultRight = (defaultIdx == 2);  // 三选高亮走 m_defaultIdx 分支
+    // ESC 落点（2026-10-28）：默认 0（左=历史安全项）；「安装到启动」传 2（取消）。
+    if (escIdx < 0 || escIdx > 2 || (midDisabled && escIdx == 1)) escIdx = 0;
+    dlg->m_escIdx = escIdx;
     return RunModal(owner, dlg);
 }
 
@@ -312,6 +325,9 @@ int CConfirmDlg::RunModal(HWND owner, CConfirmDlg* dlg) {
     const int w = quad ? kQuadW : kWndW;
     const int lines = MsgLineCount(dlg->m_msg);
     const int hgt = WindowHeight(lines);
+    sysrecover::LogInfo("confirm dlg: lines=" + std::to_string(lines) +
+                        " h=" + std::to_string(hgt) + " msgLen=" +
+                        std::to_string(dlg->m_msg.size()));
     HWND h = dlg->Create(owner, Tr(L"九转还原"),
                          WS_POPUP | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
                          WS_EX_TOOLWINDOW, 0, 0, w, hgt);

@@ -938,6 +938,33 @@ bool TakeBootBlocked() {
     return b;
 }
 
+// 「安装到启动」前的能力扫描（2026-10-28 用户规格）。
+// 与 StageRestoreImpl 的 block 预检同源（W1/W2），但**只读元数据、不动盘**，
+// 让 GUI 在安装前就能告诉用户"要不要解压"。
+bool CanRestoreInLinuxOnly(const std::wstring& image, int index,
+                           size_t* badReparse, size_t* encrypted,
+                           std::string& err) {
+    if (badReparse) *badReparse = 0;
+    if (encrypted) *encrypted = 0;
+    WimEngine eng;
+    std::vector<std::wstring> bad;
+    size_t enc = 0;
+    const int eff = index < 1 ? 1 : index;
+    const int rc = eng.ScanImageForLinuxRestore(image, eff, bad, &enc);
+    if (badReparse) *badReparse = bad.size();
+    if (encrypted) *encrypted = enc;
+    if (rc != 0) {
+        err = Tr("读取镜像元数据失败（rc=") + std::to_string(rc) + Tr("）");
+        LogWarn("menu scan: ScanImageForLinuxRestore rc=" + std::to_string(rc) +
+                " image=" + W2U(image));
+        return false;
+    }
+    LogInfo("menu scan: linux-only check image=" + W2U(image) + " index=" +
+            std::to_string(eff) + " reparse=" + std::to_string(bad.size()) +
+            " efs=" + std::to_string(enc));
+    return bad.empty() && enc == 0;
+}
+
 // 命令返回 0，实际没落盘，重启后照旧进原系统，用户完全没有提示。凡写后
 // 读回校验失败（或命令本身失败）都要带上这句，指向"退出防护重试/PE 就地还原"。
 static std::string BootWriteBlockedHint() {

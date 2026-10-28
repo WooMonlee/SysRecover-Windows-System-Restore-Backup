@@ -28,14 +28,17 @@ public:
 
     // 通用三选（还原确认 取消/还原后重启/重启后还原、AskUndo 备返处理等）：
     // 返回 0（左）/ 1（中）/ 2（右）。
-    // 三个按钮重排为等宽；defaultIdx 指定回车落在哪（0/1/2）；ESC 仍是 0（安全项）。
+    // 三个按钮重排为等宽；defaultIdx 指定回车落在哪（0/1/2）。
+    // escIdx（2026-10-28）：ESC 落在哪个按钮，默认 0（历史上左键=安全项）。
+    //   「安装到启动」的 扫描/解压/取消 里，回车要落「扫描」而 ESC 必须是「取消」
+    //   → 传 escIdx=2（否则 ESC 会误触发扫描）。
     // midDisabled（2026-10-20，用户规格）：中间按钮不可选 —— 显示为红色
     // 「空间不足」并忽略点击（A 引擎空间不足时用；调用方应同时把 defaultIdx
     // 指到安全项/右按钮）。
     static int Ask3(HWND owner, const std::wstring& title, const std::wstring& msg,
                     const std::wstring& leftText, const std::wstring& midText,
                     const std::wstring& rightText, int defaultIdx,
-                    bool midDisabled = false);
+                    bool midDisabled = false, int escIdx = 0);
 
     // 通用四选（2026-10-20，用户规格：删除旧系统后自删）。
     // 返回 0（左）/ 1（中）/ 2（右）/ 3（第 4 个）。
@@ -63,6 +66,7 @@ private:
 
     int          m_result = kExit;
     bool         m_alive = false;
+    int          m_escIdx = 0;  // ESC 落在哪个按钮（默认 0 = 左/安全项）
     std::wstring m_title;
     std::wstring m_msg;
     std::wstring m_leftText;
