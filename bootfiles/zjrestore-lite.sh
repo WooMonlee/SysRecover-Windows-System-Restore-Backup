@@ -1646,7 +1646,9 @@ if [ -n "$ESP_FIX_DIR" ]; then
                 SRC="$TGTM/$ESP_FIX_DIR"
                 if [ -d "$SRC" ]; then
                     say "restore esp fix (copy) $ESP_FIX_DIR -> $ESP_DEV"
-                    if cp -a "$SRC/." "$ESPM/" 2>/tmp/espfix.err; then
+                    # FAT/ESP 不支持 Unix 权限，`cp -a` 在部分 busybox 上会因
+                    # 保留属性失败 → 先 -a，失败退回 -r。
+                    if cp -a "$SRC/." "$ESPM/" 2>/tmp/espfix.err || cp -r "$SRC/." "$ESPM/" 2>>/tmp/espfix.err; then
                         sync
                         say "esp restored (copy rc=0)"
                     else
