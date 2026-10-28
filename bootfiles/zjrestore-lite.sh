@@ -139,6 +139,8 @@ case "$EA_INDEX" in ''|0) EA_INDEX="" ;; esac
 # ZJRESTORE/{espfix,eafix}，救援层只做拷贝（它读不了加密容器）。空 = 旧行为。
 ESP_FIX_DIR=$(get_task esp_fix_dir)
 EA_FIX_DIR=$(get_task ea_fix_dir)
+# 加密镜像 + B 引擎：image_path 是 Windows 暂存的**明文**临时镜像，用完要删。
+IMAGE_CLEANUP=$(get_task image_cleanup)
 REPAIR_BOOT=$(get_task repair_boot)
 PT_TYPE=$(get_task pt_type)
 TARGET_OFFSET=$(get_task target_offset)
@@ -1892,6 +1894,8 @@ say "========================================="
 # grldr.mbr/menu.lst）与日志一并清掉。**只在成功路径执行**：失败时脚本提前
 # 退出，靠 trap persist_log 把日志留在非目标分区，便于排查/重试。
 # 只清「我们铺的」分区（有 grldr.mbr 或 ZJRESTORE 才动），绝不碰用户的镜像文件。
+# 例外：`image_cleanup=1` 时 image_path 是**我们自己暂存的明文临时镜像**（加密镜像
+# + B 引擎，docs/30），必须删掉——它留在盘上就等于没有加密。
 cleanup_after_success(){
     for _d in $(list_parts); do
         [ -b "$_d" ] || continue
@@ -1914,6 +1918,16 @@ cleanup_after_success(){
                 _did=1
             fi
             [ "$_did" = "1" ] && { sync; say "cleaned legacy boot files on $_d"; }
+            # 加密镜像 + B 引擎：删掉暂存的明文临时镜像（只在成功路径）
+            if [ "$IMAGE_CLEANUP" = "1" ] && [ -n "$IMG_REL" ] && \
+               [ -f "/tmp/zj_cl/$IMG_REL" ]; then
+                if rm -f "/tmp/zj_cl/$IMG_REL" 2>/dev/null; then
+                    sync
+                    say "removed staged plaintext image on $_d (encrypted restore)"
+                else
+                    say "WARN: cannot remove staged plaintext image on $_d"
+                fi
+            fi
             # UEFI/GPT：ESP 上的 <ESP>\EFI\$ZJRDIR 是**常驻启动还原模块**，
             # 还原成功后**保留**（开机启动菜单里仍能进救援 —— 用户要求：Windows
             # 蓝屏/引导损坏时也能用）。要清只能由 Windows 侧「删除启动还原」执行。

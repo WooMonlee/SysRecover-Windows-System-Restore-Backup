@@ -1502,3 +1502,20 @@
     ③ 自动化脚本找原生 EDIT 要按类名 **`EditWnd`**（不是 `Edit`）；④ 实测通过：粘贴 `.zje` 路径 → 弹「加密镜像」口令框（● 掩码）→ 输入口令回车 → 第一步下拉出现 `1 - Backup`、主按钮转蓝。
   · **明文兜底**：`RunBackup` 加了 RAII `PlainGuard`（任何提前 return 都删 `<目标>.plain.tmp`）；GUI `CleanupIncompleteOutput` 的候选路径同时覆盖 `.plain.tmp{,.stage,.stage.tmp}`。
     实测：目标名被目录占用导致加密改名失败 → `rc=1` 且**没有留下明文**。
+  · **2026-10-29 更正：引擎矩阵改为 A/B 双路（用户要求）**。原先 B 引擎被拒，理由是"救援层没有解密器"。
+    落地方式 = **暂存阶段由 Windows 解密**：
+    - `StageRestoreImpl` 在"镜像搬出目标分区"之后、写契约之前，把 `.zje` 解密到**同卷**临时明文
+      （`~zjenc-<pid>-<tick>.tmp`），`image_path`/`image_rel_path`/`image_part_guid` 全部指向它，并写
+      **`image_cleanup=1`**；救援层 `cleanup_after_success` 挂载该分区后 `rm -f` 掉（只在成功路径删，
+      失败保留以便 P3 自动重试/排查）。
+    - **空间预检**：同卷需要 ≈ 镜像大小 + 256MB；不够直接拒绝并给三条出路（清理 / 改 A 引擎 / 未加密镜像）。
+    - **兜底**：契约成功后同时 `MoveFileExW(..., MOVEFILE_DELAY_UNTIL_REBOOT)` —— 用户没进救援菜单而是
+      正常启动 Windows 时，这份明文会在那次开机被删掉（不会长期躺在盘上）。
+    - **EFS/不可写回重解析点**：解密后立刻在明文上补做 `ScanImageForLinuxRestore`（原先对 `.zje` 必然
+      失败，只能写 2=不可用让救援层兜底），命中即 `rc=4`、未动任何分区，并把 `reparse_scan/efs_scan=0` 写进契约。
+    - **为什么不选"就地改字节解密"**：那会把加密镜像本身毁掉（改到一半断电 = 密文/明文交错的废文件），
+      还原完还得整包重加密（再一遍全量 IO），且整个还原期间镜像以明文躺在盘上；收益（省一份临时空间）
+      远小于风险。真正的"零额外空间 + 开机输入口令"只有 dm-crypt 路线（需要把容器改成 dm-crypt 能读的
+      CBC-ESSIV 布局 + 给 initramfs 加 device-mapper/openssl，属独立一笔工作，见 docs/30 §11）。
+  · **`2>/dev/null` 新增一条**：`rm -f "/tmp/zj_cl/$IMG_REL" 2>/dev/null`（A 类：文件已被前一轮清掉时
+    rm 的报错没有信息量，成功/失败另有 `say`）。

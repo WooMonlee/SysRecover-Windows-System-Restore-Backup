@@ -1660,9 +1660,11 @@ void CMainForm::ShowMoreMenu() {
     ::AppendMenuW(hMenu, MF_STRING | (canAppend ? 0u : MF_GRAYED), 5,
                   Tr(L"增量备份（追加到当前镜像）"));
     // 加密备份（docs/30）：勾选态 = 已设置口令；只保护**下一次**备份（输出 .zje）。
+    // 备份模式才可点（还原模式下设置"下次备份密码"没有意义，灰掉避免误解）。
     const bool encOn = !m_backupPassword.empty();
-    ::AppendMenuW(hMenu, MF_STRING | (encOn ? MF_CHECKED : 0u), 6,
-                  Tr(L"加密备份（输出 .zje，一个密码保护整个镜像）"));
+    ::AppendMenuW(hMenu,
+                  MF_STRING | (m_backupMode ? (encOn ? MF_CHECKED : 0u) : MF_GRAYED),
+                  6, Tr(L"加密备份（输出 .zje，一个密码保护整个镜像）"));
 
     // MoreBtn 是顶层 float 控件 → GetPos() 已是客户区坐标；换屏幕坐标再弹。
     RECT rc{};
@@ -2870,11 +2872,11 @@ void CMainForm::ApplyModeUi() {
             }
         }
         // 备份模式不给这些还原专属按钮（2026-09-28 / 2026-10-27 规格）：
-        // 「安装到启动」「打包日志」「更多功能>>」都只在还原模式出现；
-        // 空出来的位置换成「限制CPU」下拉（见上方 Vis(CpuCapBox)）。
+        // 「安装到启动」「打包日志」只在还原模式出现；「更多功能>>」**两模式都要**
+        //（2026-10-29 用户规格：加密备份/增量备份都在这个菜单里，备份模式必须有入口）。
         Vis(_T("FixBootBtn"),   false);  // 皮肤已隐藏；入口在「更多功能>>」
         Vis(_T("Universal"), false);  // 皮肤已隐藏；入口在「更多功能>>」
-        Vis(_T("MoreBtn"),      false);
+        Vis(_T("MoreBtn"),      true);
         Vis(_T("BootMenuBtn"),  false);
         Vis(_T("LogBtn"),       false);  // 「打包日志」是还原模式专属（用户 2026-10-03 规格）
         Text(_T("PartTitle"),   Tr(L"备份源分区"));
@@ -2887,6 +2889,10 @@ void CMainForm::ApplyModeUi() {
         Pos(_T("Silent"),        248, 302, 330, 326);
         Pos(_T("FormatBox"),     639, 77, 710, 115);   // 第一步：类型下拉
         Pos(_T("EspChk"),        388, 298, 510, 331);  // 第三步：ESP 勾选
+        // 2026-10-29 用户规格：第三步最右侧补「更多功能>>」（加密/增量入口都在里面）。
+        // 右侧组：静默 248..330 / ESP 388..510 / CPU 530..612 / 更多 618..721。
+        Pos(_T("CpuCapBox"),     530, 298, 612, 331);
+        Pos(_T("MoreBtn"),       618, 298, 721, 331);
         // 注：状态栏在空闲时显示**当前模式说明**（见本函数末尾），任务执行中
         // 显示进度文字；进度条只在跑进度时出现（ShowProgress）。
     } else {
