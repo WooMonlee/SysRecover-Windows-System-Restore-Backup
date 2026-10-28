@@ -1306,6 +1306,13 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
     - `repair-boot` 的 BIOS 分支：PBR 仍写不进时**不再假装成功** —— `msg` 追加一句可执行的处置（用户可见），
       返回值仍是 0（引导文件已写好），细节进日志。
 
+- PIT-185 **被安全软件拦写时给「重试」而不是让用户猜：结构化 blocked 标志 + GUI 重试框（`0.9.47`，2026-10-28，用户规格）**：用户口径——"用「修复引导」或「安装」被火绒拦下后，你提示，我退出火绒，点你弹出的重试后成功，那就没什么问题了"。所以**不是**把提示减到没有，而是"**只在该拦的时候弹，且弹出的框里带重试**"：
+  · **ops 层（不靠解析文案）**：`thread_local bool t_bootBlocked` + `ResetBootBlocked()/TakeBootBlocked()`；置位点 = `BootWriteBlockedHint()`（BCD/固件变量写失败）、`RepairBoot` 的 PBR 写不进、`EnsureNtfsBootRegion` 失败。**必须同一线程 Reset/Take**（工作线程里取，主线程只用布尔成员）——否则取不到。
+  · **GUI**：`StartRepairBoot(bool confirm = true)`（`confirm=false` 供重试用，不再重复确认框）；worker 开头 `ResetBootBlocked()`、结束 `TakeBootBlocked()` 存 `m_fixBlocked/m_menuBlocked`；`WM_FIXBOOT_DONE` 与 `OnMenuDone` 里**只有** `blocked` 为真才弹 `CConfirmDlg::Ask2(标题, 3 行提示, 「关闭」/「重试」, 默认=重试)` → 点重试**直接重跑**同一条操作（修完火绒防护后一次就过）；普通失败仍走原来的信息框（不打扰）。
+  · **文案几何**：提示压成 **3 行、每行 ≤24 字**（15/18/24）—— `CSkinLabelUI` 单行绘制、超宽会被裁（PIT-183 教训）；3 行对话框 420×196、按钮完整可见。中英各一条（`lang` 648 keys）。
+  · **与 PBR 四段式的关系**：正常路径（引导区已正确 / `bootsect` 成功）根本不会置位 → **不弹任何框**；只有"`bootsect` 也没有、我们自己也写不进"（极简 PE + 安全软件这种组合）才会走到重试框。
+  · 🚧 **待实测**：真被拦时弹框出现、退出火绒后点「重试」一次成功（本机引导区已正常，不会触发；等用户/客户现场验证）。
+
 ## 14. License 合规（SBOM，随版本更新）
 
 | 组件 | 版本/来源 | License | 链接/分发方式 |

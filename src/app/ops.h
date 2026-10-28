@@ -206,8 +206,19 @@ bool UseUefiBootFor(const PartitionInfo& target);
 //   disk/part <= 0 → 自动找系统盘（含 \Windows\System32\winload.exe 的分区）；
 //   否则用指定的 磁盘号/分区号（分区必须有盘符）。
 // 流程：定位系统盘 → 找 ESP（GUID → mountvol → FAT 回退）→ 模板/空间预检 →
-//       `bcdboot <系统盘>:\Windows /s <ESP>: /f UEFI`（BIOS 走 /f BIOS）→ 产物断言。
+//       bcdboot（缺失时用随包引导资产）→ 产物断言；BIOS 另补 PBR/MBR 代码。
 // 返回：0 成功；1 失败（msg 为 UTF-8，含分区表摘要等诊断）。
 int RepairBoot(int disk, int part, std::string& msg);
+
+// ── 「被安全软件拦截」的结构化信号（2026-10-28，用户规格）──────────
+// 火绒/360 会拦本进程写引导区/启动项（实测：`bootsect` 这类微软签名工具放行，
+// 我们自己的进程一律 ERROR_ACCESS_DENIED）。GUI 要据此弹「请退出防护 → 重试」，
+// 而不是让用户自己猜。**不靠解析提示文案**（文案会翻译/改动），用线程局部标志：
+//   · 每次操作前 ResetBootBlocked()；
+//   · 操作结束（同一线程）TakeBootBlocked() 取走并清零。
+// 目前会置位的点：BootWriteBlockedHint()（BCD/固件变量写失败）、
+// RepairBoot 的 PBR 写入失败、EnsureNtfsBootRegion 失败。
+void ResetBootBlocked();
+bool TakeBootBlocked();
 
 }  // namespace sysrecover

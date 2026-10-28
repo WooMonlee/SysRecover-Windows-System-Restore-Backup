@@ -180,7 +180,9 @@ private:
     void OnTaskComplete(int rc);
     // 2026-10-20：新硬盘分区向导（第二步分区下拉为空时直接打开）与「修复引导」。
     void OpenInitDiskWizard();
-    void StartRepairBoot();
+    // 修复引导（2026-10-28）：confirm=false 用于「被安全软件拦截 → 重试」的二次进入
+    // （重试时不再重复确认框，直接开跑）。
+    void StartRepairBoot(bool confirm = true);
     // 异机还原（2026-10-21，0.9）：勾选框状态。
     bool IsUniversalChecked();
     int  BackupFmt() const;  // combo 0/1/2
@@ -206,6 +208,10 @@ private:
     std::wstring m_initErr;
     std::string m_initLog;
     std::string m_fixMsg;
+    // 2026-10-28：本次「修复引导」/「安装到启动」的失败是否由安全软件拦写引起
+    // （worker 线程里 TakeBootBlocked() 取走，done 消息回主线程后据此弹「重试」）。
+    bool m_fixBlocked = false;
+    bool m_menuBlocked = false;
     std::string m_verifyMsg;   // 镜像检查结果说明（worker 写、主线程读）
     std::vector<std::wstring> m_searchHits;  // 最近一次「搜索」结果（修改时间新→旧）
     bool m_pickGuard = false;   // 下拉选择菜单重入防护（EN_SETFOCUS → TrackPopupMenu）

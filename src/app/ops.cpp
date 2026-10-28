@@ -922,10 +922,27 @@ bool UseUefiBootFor(const PartitionInfo& t) {
 
 // 启动项/固件变量写入失败时的统一提示（用户 2026-10-27 需求）：
 // 装了金山毒霸/360 一类底层拦截的机器上，bcdedit / BootNext 都会"假成功"——
+// 「被安全软件拦截」的结构化信号（2026-10-28，用户规格）：
+// 火绒/360 会拦本进程写引导区/启动项（实测：bootsect 这类微软签名工具放行，
+// 我们自己的进程一律 ERROR_ACCESS_DENIED）。GUI 据此弹「请退出防护 → 重试」。
+// 用线程局部标志**不靠解析文案**（文案会翻译/改动）；工作线程内 Reset → 取走。
+namespace {
+thread_local bool t_bootBlocked = false;
+void MarkBootBlocked() { t_bootBlocked = true; }
+}  // namespace
+
+void ResetBootBlocked() { t_bootBlocked = false; }
+bool TakeBootBlocked() {
+    const bool b = t_bootBlocked;
+    t_bootBlocked = false;
+    return b;
+}
+
 // 命令返回 0，实际没落盘，重启后照旧进原系统，用户完全没有提示。凡写后
 // 读回校验失败（或命令本身失败）都要带上这句，指向"退出防护重试/PE 就地还原"。
 static std::string BootWriteBlockedHint() {
-    return Tr(" 可能被安全软件（如金山毒霸/360）拦截，写入未生效："
+    MarkBootBlocked();
+    return Tr(" 可能被安全软件（如火绒/360）拦截，写入未生效："
               "请退出其防护后重试，或用 PE 就地还原。");
 }
 
@@ -3457,6 +3474,7 @@ int RepairBoot(int disk, int part, std::string& msg) {
             LogInfo("repair-boot pbr: " + prlog);
         } else {
             LogWarn("repair-boot pbr (non-fatal): " + prlog);
+            MarkBootBlocked();  // GUI 据此弹「退出防护 → 重试」
             msg += Tr("\n注意：分区引导区（PBR）未能写入 —— 可能被安全软件拦写。请临时退出火绒/360 的「写磁盘保留扇区」保护（或把本程序加入信任）后重试，或在 PE 里修复。");
         }
         std::string mrlog;

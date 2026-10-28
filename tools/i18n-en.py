@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：642/643 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：647/648 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n建议：以管理员身份运行（本程序要读写分区与引导）。': '\n\nAdvice: run as administrator (this program reads and writes partitions and boot data).',
@@ -32,7 +32,7 @@ EN = {
     '  1) Win+R 输入 services.msc → 找到「': '  1) Press Win+R, type services.msc, find "',
     '  2) 命令行执行：sc config ': '  2) Run in a command line: sc config ',
     ' 个），Linux 恢复环境无法还原其内容（还原后这些文件会是空的）。请改选「还原后重启」，或进 PE 模式就地还原。': '), and the Linux recovery environment cannot restore their contents (these files would become empty). Choose "Restore & Reboot" instead, or restore in place from PE.',
-    ' 可能被安全软件（如金山毒霸/360）拦截，写入未生效：请退出其防护后重试，或用 PE 就地还原。': ' It may have been blocked by security software (e.g. Kingsoft Antivirus/360); the write did not take effect. Please disable its protection and retry, or restore in place from PE.',
+    ' 可能被安全软件（如火绒/360）拦截，写入未生效：请退出其防护后重试，或用 PE 就地还原。': ' may be blocked by security software (e.g. Huorong/360); the write did not take effect: exit its protection and retry, or restore in place from a PE.',
     ' 备份': ' backup',
     ' 或 ': ' or ',
     '%d - %ls（%.1f GB）': '%d - %ls (%.1f GB)',
@@ -152,9 +152,12 @@ EN = {
     '修复引导失败，请打开日志查看详情。': 'Boot repair failed; please open the log for details.',
     '修复引导失败：': 'Boot repair failed: ',
     '修复引导未完全成功': 'Boot repair did not fully succeed',
+    '修复引导未完成': 'Boot repair incomplete',
+    '关闭': 'Close',
     '内置驱动已启用': 'In-box drivers enabled',
     '写入': 'Writing',
     '写入 ESP 引导失败（无法生成引导配置）：': 'Failed to write the ESP boot files (cannot generate the boot configuration): ',
+    '写入启动项/引导区被安全软件拦截\n（如火绒/360 的「写磁盘保留扇区」）。\n请退出该防护或把本程序加入信任，再点「重试」。': 'Writing the boot entry / boot region was blocked by security software\n(e.g. Huorong/360 "protect disk reserved sectors").\nExit that protection (or trust this program), then click "Retry".',
     '写入引导文件': 'Writing boot files',
     '写恢复日志失败（需管理员权限写 ': 'Failed to write the restore log (admin rights required to write ',
     '写诊断包失败': 'Failed to write the diagnostics bundle',
@@ -235,6 +238,7 @@ EN = {
     '安装 UEFI 引导层失败: ': 'Failed to install the UEFI boot layer: ',
     '安装到启动': 'Add to boot',
     '安装启动还原菜单失败': 'Failed to install the boot restore menu',
+    '安装启动还原菜单未完成': 'Startup restore menu not installed',
     '安装引导层失败: ': 'Failed to install the boot layer: ',
     '完成': 'Done',
     '完整性检查': 'Integrity check',
@@ -584,6 +588,7 @@ EN = {
     '重启后还原': 'Reboot & Restore',
     '重启进安全模式再测': 'Safe Mode + Retest',
     '重映射扇区': 'Reallocated sectors',
+    '重试': 'Retry',
     '重试失败': 'Retry failed',
     '重试失败（详见日志）': 'Retry failed (see logs for details)',
     '重试失败：restore-task.conf 缺 image_path，请重新执行还原': 'Retry failed: restore-task.conf is missing image_path; please run the restore again',

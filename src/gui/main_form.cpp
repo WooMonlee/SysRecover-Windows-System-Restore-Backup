@@ -528,12 +528,23 @@ LRESULT CMainForm::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         if (m_worker.joinable()) m_worker.join();
         const int rc = (int)wParam;
         LogInfo("GUI repair-boot done rc=" + std::to_string(rc) + " / " + m_fixMsg);
+        SetStatus(rc == 0 ? Tr(L"引导已修复") : Tr(L"修复引导未完全成功"));
+        // 2026-10-28（用户规格）：**被安全软件拦写 → 弹框让用户退出防护后点「重试」**，
+        // 不再让用户自己猜"为什么没修好"。重试直接开跑（不再重复确认框）。
+        if (m_fixBlocked &&
+            CConfirmDlg::Ask2(
+                m_hWnd, Tr(L"修复引导未完成"),
+                Tr(L"写入启动项/引导区被安全软件拦截\n（如火绒/360 的「写磁盘保留扇区」）。\n请退出该防护或把本程序加入信任，再点「重试」。"),
+                Tr(L"关闭"), Tr(L"重试"), /*defaultIsRight=*/true) == 1) {
+            UpdateMainAction();
+            StartRepairBoot(/*confirm=*/false);
+            return 0;
+        }
         std::wstring text = m_fixMsg.empty() ? Tr(L"修复引导失败，请打开日志查看详情。")
                                              : U2W(m_fixMsg);
         MessageBoxW(m_hWnd, text.c_str(), Tr(L"修复引导"),
                     rc == 0 ? (MB_OK | MB_ICONINFORMATION)
                             : (MB_OK | MB_ICONWARNING));
-        SetStatus(rc == 0 ? Tr(L"引导已修复") : Tr(L"修复引导未完全成功"));
         UpdateMainAction();
         return 0;
     }
@@ -1329,6 +1340,7 @@ void CMainForm::StartMenuToggle(bool install) {
     m_busy = true;
     m_menuInstall = install;
     m_menuErr.clear();
+    m_menuBlocked = false;
     LogInfo("GUI menu " + std::string(install ? "install" : "remove") +
             " request: image=" + W2U(req.image) + " disk=" +
             std::to_string(req.disk) + " part=" + std::to_string(req.part) +
@@ -1363,6 +1375,7 @@ void CMainForm::StartMenuToggle(bool install) {
 void CMainForm::MenuToggleAsync(bool install, const RestoreRequest& req) {
     // 同 StartRestoreAsync：让出 CPU，写盘期间窗口仍可拖动（否则拖窗发飘）。
     ::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    sysrecover::ResetBootBlocked();
     int rc = 0;
     if (install) {
         // 进度：ops 层 StageRestoreImpl 的 Apply（菜单安装同样要完整解压
@@ -1396,6 +1409,8 @@ void CMainForm::MenuToggleAsync(bool install, const RestoreRequest& req) {
         m_menuErr = log;
         rc = ok ? 0 : 1;
     }
+    // 线程局部标志必须在 worker 线程取（PIT-184 更正段）
+    m_menuBlocked = sysrecover::TakeBootBlocked();
     PostMessage(WM_MENU_DONE, (WPARAM)rc, install ? 1 : 0);
 }
 
@@ -1436,6 +1451,18 @@ void CMainForm::OnMenuDone(int rc, bool install) {
                                            : U2W(m_menuErr);
         std::string advice = sysrecover::ErrorAdvice(rc, last_adv_);
         SetStatus(e);
+        // 2026-10-28（用户规格）：被安全软件拦写 → 弹「退出防护 → 重试」，
+        // 用户退出火绒后点重试即可成功，不用自己去猜原因。
+        if (m_menuBlocked &&
+            CConfirmDlg::Ask2(
+                m_hWnd, Tr(L"安装启动还原菜单未完成"),
+                Tr(L"写入启动项/引导区被安全软件拦截\n（如火绒/360 的「写磁盘保留扇区」）。\n请退出该防护或把本程序加入信任，再点「重试」。"),
+                Tr(L"关闭"), Tr(L"重试"), /*defaultIsRight=*/true) == 1) {
+            RefreshBootMenuBtn();
+            UpdateMainAction();
+            StartMenuToggle(/*install=*/true);
+            return;
+        }
         MessageBoxW(m_hWnd, (e + U2W(advice)).c_str(),
                     rc == 4 ? Tr(L"安全门禁拒绝") : Tr(L"安装启动还原菜单失败"),
                     MB_OK | MB_ICONERROR);
@@ -1733,26 +1760,31 @@ void CMainForm::OpenInitDiskWizard() {
     });
 }
 
-void CMainForm::StartRepairBoot() {
+void CMainForm::StartRepairBoot(bool confirm) {
     if (m_busy) return;
-    if (MessageBoxW(m_hWnd,
-                    Tr(L"将自动查找系统盘与 ESP，重建并校验引导文件。\n"
-                       L"确定继续吗？"),
-                    Tr(L"修复引导"),
-                    MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES)
+    if (confirm && MessageBoxW(m_hWnd,
+                               Tr(L"将自动查找系统盘与 ESP，重建并校验引导文件。\n"
+                                  L"确定继续吗？"),
+                               Tr(L"修复引导"),
+                               MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES)
         return;
-    LogInfo("GUI repair-boot start");
+    LogInfo(std::string("GUI repair-boot start") + (confirm ? "" : " (retry)"));
     m_busy = true;
+    m_fixBlocked = false;
     UpdateMainAction();
     SetStatus(Tr(L"正在修复引导..."));
     SetProgress(0);
     SetTimer(m_hWnd, 1, 1000, nullptr);
     if (m_worker.joinable()) m_worker.join();
     m_worker = std::thread([this] {
+        sysrecover::ResetBootBlocked();
         std::string msg;
         const int rc = sysrecover::RepairBoot(-1, -1, msg);
         m_fixMsg = msg;
-        LogInfo("repair-boot rc=" + std::to_string(rc) + ": " + msg);
+        // 必须在**同一 worker 线程**取（线程局部标志；PIT-184 更正段）
+        m_fixBlocked = sysrecover::TakeBootBlocked();
+        LogInfo("repair-boot rc=" + std::to_string(rc) +
+                " blocked=" + std::to_string(m_fixBlocked ? 1 : 0) + ": " + msg);
         ::PostMessageW(m_hWnd, WM_FIXBOOT_DONE, (WPARAM)rc, 0);
     });
 }
