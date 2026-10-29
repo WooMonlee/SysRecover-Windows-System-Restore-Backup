@@ -1507,6 +1507,12 @@
     - **验证**：guest 里 `openssl kdf` 复算的 PBKDF2 与 Windows 一致（头 MAC 相等），映射后
       `wimlib-imagex info /dev/mapper/zjenc` 返回 OK。initramfs +2.7MB（openssl/device-mapper）。
     - 「安装到启动」对加密镜像**重新放开**：菜单是用户开机时主动选的，可以当场输口令。
+  · **2026-10-29 演练盘实测（QEMU，B 引擎全链）**：`ZJ_DRILL_ENC=<.zje>` 生成演练盘 →
+    串口输入口令 → `password ok (header MAC verified)` → `dm-crypt` → `apply done` →
+    `bootfix` → `boot region OK` → `RESTORE DONE` → 重启。
+    **顺带修掉一个真问题**：`unlock_image` 原先只派生密钥就映射、**没验头 MAC**，口令错也会继续
+    （最后只报 wimlib "Invalid magic characters"，用户根本不知道是密码错）。现在用
+    `openssl kdf -keylen 64` 同时拿 encKey/macKey，先验头 MAC，错口令 → `STEP=enc-password` 明确提示。
   · **`2>/dev/null` 新增 9 处（A 类）**：`modprobe`（模块可能内建）、`dmsetup remove`/`losetup -d`
     （清理幂等）、`openssl ... -P`（失败另有 keylen 检查）、`dmsetup mknodes`（无 udev 时可能无输出）。
   · **GUI 实测补记（口令框）**：① 原生 EDIT 是 **首次获得焦点时才创建**（Duilib `CEditUI::DoEvent` 收到 `UIEVENT_SETFOCUS`/`BUTTONDOWN`/`MOUSEENTER` 才 `new CEditWnd`），

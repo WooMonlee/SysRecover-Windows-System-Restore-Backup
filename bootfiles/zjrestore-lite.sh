@@ -976,17 +976,33 @@ unlock_image(){
         persist_log
         exit 1
     fi
-    # PBKDF2-HMAC-SHA256(口令, salt, iters) → 32B（openssl enc -P 打印 key=...）
-    _key=$(openssl enc -aes-256-cbc -pbkdf2 -iter "$_iters" -md sha256 \
-        -S "$_salt" -pass "pass:$_zpwd" -P 2>/dev/null |
-        sed -n 's/^key=//p' | tr -d ' \r\n' | tr 'A-F' 'a-f')
+    # PBKDF2-HMAC-SHA256(口令, salt, iters) → **64B**：encKey(32) + macKey(32)。
+    # 必须用 openssl kdf（enc -P 只给 key+iv=48B，拿不到 macKey，也就没法验头 MAC）。
+    _k=$(openssl kdf -keylen 64 -kdfopt digest:SHA256 -kdfopt "pass:$_zpwd" \
+        -kdfopt "hexsalt:$_salt" -kdfopt "iter:$_iters" PBKDF2 2>/dev/null |
+        tr -d ' \r\n:' | tr 'A-F' 'a-f')
     _zpwd=""
-    if [ "${#_key}" -ne 64 ]; then
+    if [ "${#_k}" -ne 128 ]; then
         RESULT=FAILED; STEP=enc-key
-        say "ERROR: key derivation failed (openssl keylen=${#_key}, expected 64 hex)"
+        say "ERROR: key derivation failed (openssl kdf len=${#_k}, expected 128 hex)"
         persist_log
         exit 1
     fi
+    _key=${_k%????????????????????????????????????????????????????????????????}
+    _mkey=${_k#????????????????????????????????????????????????????????????????}
+    # 头 MAC 校验（错口令在这里就拦住，而不是等到 wimlib 报"不是 WIM"）
+    _hmac=$(od -An -tx1 -j 48 -N 32 "$IMG_FILE" | tr -d ' \n\r')
+    _calc=$(head -c 48 "$IMG_FILE" |
+        openssl dgst -sha256 -mac HMAC -macopt "hexkey:$_mkey" 2>/dev/null |
+        sed 's/.*= //' | tr -d ' \n\r' | tr 'A-F' 'a-f')
+    if [ "$_calc" != "$_hmac" ]; then
+        RESULT=FAILED; STEP=enc-password
+        say "ERROR: wrong image password (header MAC mismatch)"
+        say "  (ask again: this encrypted image cannot be restored without the password)"
+        persist_log
+        exit 1
+    fi
+    say "encrypted image: password ok (header MAC verified)"
     for _m in loop dm_mod dm_crypt cbc essiv aesni_intel; do
         modprobe "$_m" 2>/dev/null
     done

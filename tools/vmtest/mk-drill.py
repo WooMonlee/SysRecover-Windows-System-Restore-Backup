@@ -256,6 +256,24 @@ if EFS:
                .replace('ea_index=3\n', 'ea_index=0\n'))
 
 
+# ZJ_DRILL_ENC=<path.zje> -> 加密镜像演练（docs/30）：镜像分区换成 .zje，
+# 契约 esp_index/ea_index=0（单镜像），救援层应走 dm-crypt 映射再 apply。
+# 口令在串口控制台输入（-nographic 下 stdin 就是 /dev/console）。
+ENC = os.environ.get('ZJ_DRILL_ENC', '').strip()
+ENCZJE = os.path.abspath(ENC) if ENC else ''
+if ENC:
+    CONF_TXT = (CONF_TXT
+                .replace('image_path=D:/images/test.wim\n',
+                         'image_path=D:/images/enc.zje\n')
+                .replace('esp_index=2\n', 'esp_index=0\n')
+                .replace('ea_index=3\n', 'ea_index=0\n'))
+    LOG_TXT = (LOG_TXT
+               .replace('image_path=D:/images/test.wim\n',
+                        'image_path=D:/images/enc.zje\n')
+               .replace('esp_index=2\n', 'esp_index=0\n')
+               .replace('ea_index=3\n', 'ea_index=0\n'))
+
+
 def run(*args):
     r = subprocess.run(args, capture_output=True)
     if r.returncode != 0:
@@ -321,7 +339,10 @@ def main():
             print('  1) cipher /e <efs-src>/efs1.bin  (efs-src = copy of drill-src)')
             print('  2) build/reparse-lab.exe capture <efs-src> %s' % EFWIM)
             return 1
-    elif not os.path.exists(WIM):
+    elif ENC and not os.path.exists(ENCZJE):
+        print('missing %s' % ENCZJE)
+        return 1
+    elif not ENC and not os.path.exists(WIM):
         print('missing %s - create it first:' % WIM)
         print('  dist/SysRecover.exe backup --source tools/vmtest/drill-src/ '
               '--dest tools/vmtest/drill-images/test.wim --compress fast --esp --yes')
@@ -373,6 +394,7 @@ def main():
     # 落盘（回归：日志实时镜像与最终持久化）。
     image_entry = ((RTWIM, 'images/reparse-test.wim') if REPARSE == 'reject'
                    else (EFWIM, 'images/efs-test.wim') if EFS
+                   else (ENCZJE, 'images/enc.zje') if ENC
                    else (WIM, 'images/test.wim'))
     make_part(2, [
         image_entry,
@@ -388,6 +410,8 @@ def main():
         mode += '+reparse-' + REPARSE
     if EFS:
         mode += '+efs'
+    if ENC:
+        mode += '+enc'
     print('== drill.raw ready: %s (%d bytes) engine=%s mode=%s bulk=%s ==' % (
         IMG, os.path.getsize(IMG), ENGINE, mode, BULK or 'off'))
     return 0
