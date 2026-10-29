@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：727/731 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：730/731 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n建议：以管理员身份运行（本程序要读写分区与引导）。': '\n\nAdvice: run as administrator (this program reads and writes partitions and boot data).',
@@ -192,9 +192,9 @@ EN = {
     '删除未完全成功，~old 仍有残留；': 'Deletion did not fully succeed; ~old still has leftovers;',
     '加密备份': 'Encrypted Backup',
     '加密备份不支持追加（增量请用未加密的 .wim/.esd）': 'Encrypted backup does not support append (use an unencrypted .wim/.esd for incremental)',
+    '加密备份为 .zje 格式，用密码保护镜像': 'Encrypted backup in .zje format, protected by a password',
     '加密备份失败：': 'Encrypted backup failed: ',
     '加密备份的输出文件名必须以 .zje 结尾': 'The encrypted backup file name must end with .zje',
-    '加密备份（输出 .zje，一个密码保护整个镜像）': 'Encrypted Backup (writes .zje; one password protects the whole image)',
     '加密镜像': 'Encrypted Image',
     '加密镜像元数据格式错误': 'Encrypted image metadata is malformed',
     '加密镜像元数据被篡改（校验失败）': 'Encrypted image metadata was tampered with (check failed)',

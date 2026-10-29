@@ -1624,34 +1624,40 @@ void CMainForm::ShowMoreMenu() {
     const bool installed =
         BootMenuInstalled(detail) ||
         ReadMenuBinding(&boundImg, &boundIdx, &boundOff, &boundSz);
-    // 「清除」只在真装了东西时可点（否则点了也是空转，用户会以为没生效）。
-    // 「镜像检查」只在镜像已解析成功时可点（对坏镜像做全量校验没有意义）。
-    const bool canVerify = !m_backupMode && !m_wimPath.empty() && m_imageOk;
-    // 增量备份（2026-10-28 用户规格）：只在备份模式、且保存位置是**已存在的**
-    // .wim/.esd 时可点（没有镜像就无从"追加"）。
-    bool canAppend = false;
-    if (m_backupMode && !m_backupPath.empty() &&
-        GetFileAttributesW(m_backupPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
-        const wchar_t* dot = wcsrchr(m_backupPath.c_str(), L'.');
-        canAppend = dot && (_wcsicmp(dot, L".wim") == 0 ||
-                            _wcsicmp(dot, L".esd") == 0);
+    // 2026-10-29 用户规格：菜单内容**按模式分开**——
+    //   「文件>系统」（还原）只放还原/引导相关：异机还原、修复引导、清除菜单、镜像检查；
+    //   「系统>文件」（备份）只放备份相关：增量备份、加密备份。
+    //   不相关项直接不显示（不是灰掉），避免用户点进来看到一堆用不了的条目。
+    if (m_backupMode) {
+        // 增量备份：保存位置是**已存在的** .wim/.esd 才可点（没有镜像无从"追加"）。
+        bool canAppend = false;
+        if (!m_backupPath.empty() &&
+            GetFileAttributesW(m_backupPath.c_str()) !=
+                INVALID_FILE_ATTRIBUTES) {
+            const wchar_t* dot = wcsrchr(m_backupPath.c_str(), L'.');
+            canAppend = dot && (_wcsicmp(dot, L".wim") == 0 ||
+                                _wcsicmp(dot, L".esd") == 0);
+        }
+        ::AppendMenuW(hMenu, MF_STRING | (canAppend ? 0u : MF_GRAYED), 5,
+                      Tr(L"增量备份（追加到当前镜像）"));
+        // 加密备份（docs/30）：勾选态 = 已设置口令；只保护**下一次**备份（输出 .zje）。
+        const bool encOn = !m_backupPassword.empty();
+        ::AppendMenuW(hMenu,
+                      MF_STRING | (encOn ? MF_CHECKED : 0u), 6,
+                      Tr(L"加密备份为 .zje 格式，用密码保护镜像"));
+    } else {
+        // 「清除」只在真装了东西时可点（否则空转，用户会以为没生效）。
+        // 「镜像检查」只在镜像已解析成功时可点（对坏镜像做全量校验没有意义）。
+        const bool canVerify = !m_wimPath.empty() && m_imageOk;
+        ::AppendMenuW(hMenu,
+                      MF_STRING | (IsUniversalChecked() ? MF_CHECKED : 0u), 1,
+                      Tr(L"使用异机还原"));
+        ::AppendMenuW(hMenu, MF_STRING, 2, Tr(L"修复引导"));
+        ::AppendMenuW(hMenu, MF_STRING | (installed ? 0u : MF_GRAYED), 3,
+                      Tr(L"清除启动中还原菜单"));
+        ::AppendMenuW(hMenu, MF_STRING | (canVerify ? 0u : MF_GRAYED), 4,
+                      Tr(L"镜像检查（完整校验）"));
     }
-    ::AppendMenuW(hMenu,
-                  MF_STRING | (IsUniversalChecked() ? MF_CHECKED : 0u), 1,
-                  Tr(L"使用异机还原"));
-    ::AppendMenuW(hMenu, MF_STRING, 2, Tr(L"修复引导"));
-    ::AppendMenuW(hMenu, MF_STRING | (installed ? 0u : MF_GRAYED), 3,
-                  Tr(L"清除启动中还原菜单"));
-    ::AppendMenuW(hMenu, MF_STRING | (canVerify ? 0u : MF_GRAYED), 4,
-                  Tr(L"镜像检查（完整校验）"));
-    ::AppendMenuW(hMenu, MF_STRING | (canAppend ? 0u : MF_GRAYED), 5,
-                  Tr(L"增量备份（追加到当前镜像）"));
-    // 加密备份（docs/30）：勾选态 = 已设置口令；只保护**下一次**备份（输出 .zje）。
-    // 备份模式才可点（还原模式下设置"下次备份密码"没有意义，灰掉避免误解）。
-    const bool encOn = !m_backupPassword.empty();
-    ::AppendMenuW(hMenu,
-                  MF_STRING | (m_backupMode ? (encOn ? MF_CHECKED : 0u) : MF_GRAYED),
-                  6, Tr(L"加密备份（输出 .zje，一个密码保护整个镜像）"));
 
     // MoreBtn 是顶层 float 控件 → GetPos() 已是客户区坐标；换屏幕坐标再弹。
     RECT rc{};
@@ -2885,11 +2891,12 @@ void CMainForm::ApplyModeUi() {
         //   静默 248..340 / ESP 388..510 / CPU 下拉 530..612 / 菜单 618..706
         Pos(_T("Silent"),        248, 302, 330, 326);
         Pos(_T("FormatBox"),     639, 77, 710, 115);   // 第一步：类型下拉
-        Pos(_T("EspChk"),        388, 298, 510, 331);  // 第三步：ESP 勾选
-        // 2026-10-29 用户规格：第三步最右侧补「更多功能>>」（加密/增量入口都在里面）。
-        // 右侧组：静默 248..330 / ESP 388..510 / CPU 530..612 / 更多 618..721。
-        Pos(_T("CpuCapBox"),     530, 298, 612, 331);
-        Pos(_T("MoreBtn"),       618, 298, 721, 331);
+        // 2026-10-29 用户规格：两模式第三步右侧**右边界对齐**（更多功能永远 570..721）。
+        // 备份模式：静默 248..330 / ESP 338..456 / CPU 464..562 / 更多 570..721
+        //（与还原模式的 340..438、446..562 同一条 562 分界，视觉上数量/位置都相仿）。
+        Pos(_T("EspChk"),        338, 298, 456, 331);  // 第三步：ESP 勾选
+        Pos(_T("CpuCapBox"),     464, 298, 562, 331);
+        Pos(_T("MoreBtn"),       570, 298, 721, 331);
         // 注：状态栏在空闲时显示**当前模式说明**（见本函数末尾），任务执行中
         // 显示进度文字；进度条只在跑进度时出现（ShowProgress）。
     } else {
