@@ -89,6 +89,12 @@ APKS = [
     'libuuid-2.40.1-r1.apk',
     'libeconf-0.6.3-r0.apk',
     'wimlib-1.14.4-r0.apk',
+    # 加密镜像（ZJENC2）：Linux 侧用 dm-crypt 映射 + openssl 派生口令密钥
+    'device-mapper-2.03.29-r1.apk',
+    'device-mapper-libs-2.03.29-r1.apk',
+    'openssl-3.3.7-r2.apk',
+    'libcrypto3-3.3.7-r2.apk',
+    'libssl3-3.3.7-r2.apk',
     # 存储 HBA 固件（Alpine 把 linux-firmware 拆成 105 个子包，只取存储相关）。
     # 实测只有两个驱动要外部固件：qla2xxx（QLogic FC）与 isci（Intel C600 SCU）。
     # adaptec/advansys/microchip 一并带上（共 ~90KB，赌的是老服务器卡）。

@@ -1497,6 +1497,18 @@
   · **验证**：单测 `crypt_zje_roundtrip_meta_and_failclosed`（3MB+12345 字节跨块往返、错口令、篡改 1 字节 → 全部 fail-closed 且不留明文）；
     CLI 端到端：`backup --password` → `.zje`（5,244,845B，无明文残留）→ `images --password` 列出子镜像 / 错口令与无口令均拒绝 →
     `verify --password` 通过 → `extract --path \a.bin` 3,145,728B 逐字节一致 → `restore --engine block --password` `rc=4`、无口令 `rc=4`。
+  · **2026-10-29 最终定稿：改为 dm-crypt（Linux 侧真解密，零额外空间）**。用户否掉了"暂存解密"（空间/时间翻倍）。
+    - 容器改 v2：正文 = `aes-cbc-essiv:sha256` **512B 扇区**连续流（v1 只保留读取）。
+    - 救援层：`unlock_image`（口令从 /dev/console 读）→ `openssl kdf` 派生 → 校验头 MAC →
+      `losetup -r` + `dmsetup create ... crypt aes-cbc-essiv:sha256 <key> 0 <loop> 2048` → `IMG_FILE=/dev/mapper/zjenc`。
+    - **QEMU 实测三个坑**：① `sector_size:4096`（含 `iv_large_sectors`）被 Debian 6.12 的 dm-crypt
+      直接 `EINVAL` → 统一 512B 扇区；② 正文长度必须 `(plain+511)/512*512` 且不得越过 loop 末尾
+      （多算 4KB 就 EINVAL）；③ Windows CBC 的 `cbIV` 必须显式 16（传 0 → `STATUS_INVALID_BUFFER_SIZE`）。
+    - **验证**：guest 里 `openssl kdf` 复算的 PBKDF2 与 Windows 一致（头 MAC 相等），映射后
+      `wimlib-imagex info /dev/mapper/zjenc` 返回 OK。initramfs +2.7MB（openssl/device-mapper）。
+    - 「安装到启动」对加密镜像**重新放开**：菜单是用户开机时主动选的，可以当场输口令。
+  · **`2>/dev/null` 新增 9 处（A 类）**：`modprobe`（模块可能内建）、`dmsetup remove`/`losetup -d`
+    （清理幂等）、`openssl ... -P`（失败另有 keylen 检查）、`dmsetup mknodes`（无 udev 时可能无输出）。
   · **GUI 实测补记（口令框）**：① 原生 EDIT 是 **首次获得焦点时才创建**（Duilib `CEditUI::DoEvent` 收到 `UIEVENT_SETFOCUS`/`BUTTONDOWN`/`MOUSEENTER` 才 `new CEditWnd`），
     光 `SetPos` 建不出来 → `CPasswordDlg::Ask` 里必须 `m_PaintManager.SetFocus(edit)` 触发；② 单行 EDIT **吃掉回车/ESC**（不往父窗口转发）→ 子类化 `SetWindowSubclass` 转发 `WM_KEYDOWN`；
     ③ 自动化脚本找原生 EDIT 要按类名 **`EditWnd`**（不是 `Edit`）；④ 实测通过：粘贴 `.zje` 路径 → 弹「加密镜像」口令框（● 掩码）→ 输入口令回车 → 第一步下拉出现 `1 - Backup`、主按钮转蓝。

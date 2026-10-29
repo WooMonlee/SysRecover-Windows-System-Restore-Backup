@@ -37,9 +37,6 @@ struct RestoreTask {
     // 增量键，不升 contract_version。
     std::wstring espFixDir;
     std::wstring eaFixDir;
-    // 加密镜像 + B 引擎：image_path 指向**暂存的明文临时镜像**，
-    // 救援层 apply 完要把它删掉（1=删）。增量键，不升 contract_version。
-    int imageCleanup = 0;
     // 镜像文件字节数（1019 案，2026-10-19）：救援层"契约认证"用 —— 与暂存侧
     // 完全一致才走快路径（跳过救援层自带的重解析点扫描）。增量键。
     uint64_t imageSize = 0;

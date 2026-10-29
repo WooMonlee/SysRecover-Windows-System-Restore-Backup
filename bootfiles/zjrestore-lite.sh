@@ -139,8 +139,6 @@ case "$EA_INDEX" in ''|0) EA_INDEX="" ;; esac
 # ZJRESTORE/{espfix,eafix}，救援层只做拷贝（它读不了加密容器）。空 = 旧行为。
 ESP_FIX_DIR=$(get_task esp_fix_dir)
 EA_FIX_DIR=$(get_task ea_fix_dir)
-# 加密镜像 + B 引擎：image_path 是 Windows 暂存的**明文**临时镜像，用完要删。
-IMAGE_CLEANUP=$(get_task image_cleanup)
 REPAIR_BOOT=$(get_task repair_boot)
 PT_TYPE=$(get_task pt_type)
 TARGET_OFFSET=$(get_task target_offset)
@@ -518,6 +516,7 @@ bb_final(){
         bb_home_drop
         bb_esp_drop
     fi
+    type unlock_cleanup >/dev/null 2>&1 && unlock_cleanup
     stop_log_mirror
     # ── P3（PIT-148）失败退场决策：按 STAGE 决定 reboot / retry / menu ──
     if [ "$RESULT" = "FAILED" ] && [ "${ZZ_BLACKBOX:-0}" != "1" ]; then
@@ -941,6 +940,98 @@ scan_image(){
     done
     return 1
 }
+
+# ── 加密镜像（ZJENC2）：loop + dm-crypt 映射成块设备（2026-10-29，docs/30 §11）──
+# 为什么要在 Linux 侧解密：B 引擎（重启后还原）本来就是在救援层 apply，Windows
+# 侧解一份临时明文 = 多占一整份空间 + 多一遍全量读写。这里直接映射：
+#   容器：header 4096B（明文）+ meta + 补齐到 1MB，正文 = CBC-ESSIV-SHA256 / 4096B 扇区
+#   dm 表：0 <sectors> crypt aes-cbc-essiv:sha256 <keyhex> 0 <loop> 2048 1 sector_size:4096
+# 口令从**控制台**读（不回显）；没有控制台/没输入 → fail-closed，绝不动目标分区。
+unlock_image(){
+    [ -n "$IMG_FILE" ] || return 0
+    case "$IMG_FILE" in /dev/mapper/*) return 0 ;; esac
+    _magic=$(dd if="$IMG_FILE" bs=1 count=6 2>/dev/null)
+    [ "$_magic" = "ZJENC2" ] || return 0
+
+    say "encrypted image detected (ZJENC2) -> password required"
+    _zpwd="${ZJ_PASSWORD:-}"
+    if [ -z "$_zpwd" ] && [ -r /dev/console ]; then
+        printf '\n  Image password: ' > /dev/console
+        # shellcheck disable=SC2039
+        IFS= read -r -s _zpwd < /dev/console
+        printf '\n' > /dev/console
+    fi
+    if [ -z "$_zpwd" ]; then
+        RESULT=FAILED; STEP=enc-password
+        say "ERROR: encrypted image requires a password (none entered) - aborted BEFORE touching the target"
+        persist_log
+        exit 1
+    fi
+    _salt=$(od -An -tx1 -j 32 -N 16 "$IMG_FILE" | tr -d ' \n\r')
+    _iters=$(od -An -tu4 -j 16 -N 4 "$IMG_FILE" | tr -d ' \n\r')
+    _plain=$(od -An -tu8 -j 24 -N 8 "$IMG_FILE" | tr -d ' \n\r')
+    if [ -z "$_salt" ] || [ -z "$_iters" ] || [ -z "$_plain" ]; then
+        RESULT=FAILED; STEP=enc-header
+        say "ERROR: cannot parse encrypted image header"
+        persist_log
+        exit 1
+    fi
+    # PBKDF2-HMAC-SHA256(口令, salt, iters) → 32B（openssl enc -P 打印 key=...）
+    _key=$(openssl enc -aes-256-cbc -pbkdf2 -iter "$_iters" -md sha256 \
+        -S "$_salt" -pass "pass:$_zpwd" -P 2>/dev/null |
+        sed -n 's/^key=//p' | tr -d ' \r\n' | tr 'A-F' 'a-f')
+    _zpwd=""
+    if [ "${#_key}" -ne 64 ]; then
+        RESULT=FAILED; STEP=enc-key
+        say "ERROR: key derivation failed (openssl keylen=${#_key}, expected 64 hex)"
+        persist_log
+        exit 1
+    fi
+    for _m in loop dm_mod dm_crypt cbc essiv aesni_intel; do
+        modprobe "$_m" 2>/dev/null
+    done
+    _loop=$(losetup -f 2>/dev/null)
+    [ -n "$_loop" ] || _loop=/dev/loop0
+    if ! losetup -r "$_loop" "$IMG_FILE"; then
+        RESULT=FAILED; STEP=enc-loop
+        say "ERROR: losetup failed on $_loop"
+        persist_log
+        exit 1
+    fi
+    ZJ_LOOP="$_loop"
+    # 正文按 512B 扇区向上取整（与 Windows 侧、以及容器实际大小一致；
+    # 多算一点会让 dm 表越过 loop 设备末尾 → reload ioctl EINVAL）
+    _body=$(( (_plain + 511) / 512 * 512 ))
+    _sec=$(( _body / 512 ))
+    if ! dmsetup create zjenc --table "0 $_sec crypt aes-cbc-essiv:sha256 $_key 0 $_loop 2048"; then
+        RESULT=FAILED; STEP=enc-dm
+        say "ERROR: dmsetup create failed (dm-crypt mapping rejected)"
+        dmsetup remove zjenc 2>/dev/null
+        losetup -d "$_loop" 2>/dev/null
+        ZJ_LOOP=""
+        persist_log
+        exit 1
+    fi
+    dmsetup mknodes 2>/dev/null
+    _key=""
+    IMG_FILE=/dev/mapper/zjenc
+    if [ ! -b "$IMG_FILE" ]; then
+        RESULT=FAILED; STEP=enc-node
+        say "ERROR: /dev/mapper/zjenc not created"
+        unlock_cleanup
+        persist_log
+        exit 1
+    fi
+    say "encrypted image unlocked: $IMG_FILE (loop=$ZJ_LOOP sectors=$_sec)"
+}
+
+unlock_cleanup(){
+    [ -n "${ZJ_LOOP:-}" ] || return 0
+    dmsetup remove zjenc 2>/dev/null
+    losetup -d "$ZJ_LOOP" 2>/dev/null
+    ZJ_LOOP=""
+}
+
 if [ "$ENGINE" != "swap" ]; then
 scan_image
 if [ -z "$IMG_FILE" ]; then
@@ -955,6 +1046,7 @@ if [ -z "$IMG_FILE" ] && [ -s /tmp/zj_img.fail ]; then
     scan_image
 fi
 [ -n "$IMG_FILE" ] || { RESULT=FAILED; STEP=image-not-found; say "ERROR: image not found: $IMAGE_PATH"; exit 1; }
+unlock_image
 STEP=image-found
 persist_log
 
@@ -1894,8 +1986,6 @@ say "========================================="
 # grldr.mbr/menu.lst）与日志一并清掉。**只在成功路径执行**：失败时脚本提前
 # 退出，靠 trap persist_log 把日志留在非目标分区，便于排查/重试。
 # 只清「我们铺的」分区（有 grldr.mbr 或 ZJRESTORE 才动），绝不碰用户的镜像文件。
-# 例外：`image_cleanup=1` 时 image_path 是**我们自己暂存的明文临时镜像**（加密镜像
-# + B 引擎，docs/30），必须删掉——它留在盘上就等于没有加密。
 cleanup_after_success(){
     for _d in $(list_parts); do
         [ -b "$_d" ] || continue
@@ -1918,16 +2008,6 @@ cleanup_after_success(){
                 _did=1
             fi
             [ "$_did" = "1" ] && { sync; say "cleaned legacy boot files on $_d"; }
-            # 加密镜像 + B 引擎：删掉暂存的明文临时镜像（只在成功路径）
-            if [ "$IMAGE_CLEANUP" = "1" ] && [ -n "$IMG_REL" ] && \
-               [ -f "/tmp/zj_cl/$IMG_REL" ]; then
-                if rm -f "/tmp/zj_cl/$IMG_REL" 2>/dev/null; then
-                    sync
-                    say "removed staged plaintext image on $_d (encrypted restore)"
-                else
-                    say "WARN: cannot remove staged plaintext image on $_d"
-                fi
-            fi
             # UEFI/GPT：ESP 上的 <ESP>\EFI\$ZJRDIR 是**常驻启动还原模块**，
             # 还原成功后**保留**（开机启动菜单里仍能进救援 —— 用户要求：Windows
             # 蓝屏/引导损坏时也能用）。要清只能由 Windows 侧「删除启动还原」执行。
@@ -1960,5 +2040,6 @@ sync
 stop_log_mirror      # 停掉后台日志镜像循环
 trap - EXIT          # 清理阶段不要再触发 persist_log 把日志写回去
 cleanup_after_success
+unlock_cleanup
 sync
 reboot -f 2>/dev/null || reboot

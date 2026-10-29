@@ -186,7 +186,13 @@ std::wstring ResolveImagePlain(const std::wstring& path, ProgressFn progress,
     LogInfo("ZJE: decrypting image for read access");
     if (ZjeDecryptFile(path, plain, pwd, cp, derr) != 0) {
         err = derr;
-        LogError("ZJE decrypt failed: " + std::string(derr.begin(), derr.end()));
+        int n = WideCharToMultiByte(CP_UTF8, 0, derr.c_str(), -1, nullptr, 0,
+                                    nullptr, nullptr);
+        std::string u8(n > 0 ? n - 1 : 0, 0);
+        if (n > 0)
+            WideCharToMultiByte(CP_UTF8, 0, derr.c_str(), -1, &u8[0], n, nullptr,
+                                nullptr);
+        LogError("ZJE decrypt failed: " + u8);
         // 取消（err=已取消）也要把半成品清掉 —— ZjeDecryptFile 已删 .tmp
         return {};
     }

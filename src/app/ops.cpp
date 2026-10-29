@@ -948,12 +948,13 @@ bool CanRestoreInLinuxOnly(const std::wstring& image, int index,
                            std::string& err) {
     if (badReparse) *badReparse = 0;
     if (encrypted) *encrypted = 0;
-    // 加密镜像（ZJENC1）：救援层没有解密器 → **不能用 B 引擎**（恒为"需要解压"）。
-    // GUI 会在调用本函数之前就识别出来；这里再兜一层，避免新调用方漏判。
+    // 加密镜像（ZJENC2）：救援层用 dm-crypt 映射（开机输口令）→ **可以用 B 引擎**。
+    // 但内容检查（EFS/重解析点）要在救援层里对着解密后的镜像做 —— 脚本在
+    // mkntfs 之前完成，命中即中止、不动目标分区（PIT-138 同款 fail-closed）。
     if (ImageIsEncrypted(image)) {
-        err = Tr("这是加密镜像：救援层无法直接还原，只能「解压并安装」或 PE 就地还原。");
-        LogInfo("menu scan: encrypted image -> linux-only restore disabled");
-        return false;
+        err.clear();
+        LogInfo("menu scan: encrypted image -> linux-only allowed (password at boot)");
+        return true;
     }
     WimEngine eng;
     std::vector<std::wstring> bad;
@@ -1906,12 +1907,8 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
     if (encImage) {
         if (!req.password.empty())
             SetImagePassword(req.image, req.password);
-        if (menuEntry) {
-            err = Tr("这是加密镜像：不能安装到启动菜单（开机阶段无法输入密码）。"
-                     "请改用「解压并安装」，或只在需要时用「开始恢复」。");
-            LogError(err);
-            return 4;
-        }
+        // 菜单也支持加密镜像：B 引擎在救援层用 dm-crypt 映射（开机输口令），
+        // A 引擎的 ~new 是 Windows 侧解好的，Linux 不读镜像。
         if (GetImagePassword(req.image).empty()) {
             err = Tr("这是加密镜像，需要先输入密码");
             LogError(err);
@@ -2301,100 +2298,6 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
         return rc;
     }
 
-    // 1c) 加密镜像 + B 引擎（2026-10-29 用户规格：A/B 双路）：
-    //     救援层没有解密器，所以在**暂存阶段**由 Windows 把镜像解密到同卷临时文件，
-    //     契约（image_path / image_rel_path / image_part_guid）直接指向明文，
-    //     救援层 apply 完就删除（image_cleanup=1）。
-    //     ⚠️ 必须在"镜像搬出目标分区"之后：临时明文与镜像同目录，若镜像在目标分区上，
-    //        先解密再搬家会让明文留在会被格式化的分区里。
-    //     ⚠️ 失败路径由 TempImageGuard 删除明文；成功时保留给救援层 + 登记"下次开机删"
-    //        兜底（用户如果没进救援菜单而是正常启动 Windows，明文不会留在盘上）。
-    struct TempImageGuard {
-        std::wstring p;
-        bool keep = false;
-        ~TempImageGuard() {
-            if (!keep && !p.empty())
-                DeleteFileW(p.c_str());
-        }
-    } plainGuard;
-    if (encImage && req.engine != "swap") {
-        // 空间预检：同卷要放下等量明文（B 引擎的"不占目标盘"语义仍然成立，
-        // 但数据盘需要一份临时副本）。
-        unsigned long long need = 0;
-        {
-            WIN32_FILE_ATTRIBUTE_DATA fad = {};
-            if (GetFileAttributesExW(imagePath.c_str(), GetFileExInfoStandard,
-                                     &fad))
-                need = ((uint64_t)fad.nFileSizeHigh << 32) | fad.nFileSizeLow;
-        }
-        ULARGE_INTEGER avail = {};
-        const std::wstring root =
-            imagePath.size() >= 3 ? imagePath.substr(0, 3) : std::wstring();
-        if (need > 0 && !root.empty() &&
-            GetDiskFreeSpaceExW(root.c_str(), &avail, nullptr, nullptr)) {
-            if (avail.QuadPart < need + (256ull << 20)) {
-                char b[320];
-                snprintf(b, sizeof(b),
-                         Tr("加密镜像走「重启后还原」需要先把镜像解密到同一分区："
-                            "需要 %.1f GB 空闲，当前只有 %.1f GB。请清理空间、"
-                            "改用「还原后重启」（A 引擎），或改用未加密镜像。"),
-                         need / 1073741824.0, avail.QuadPart / 1073741824.0);
-                err = b;
-                if (adv) *adv = ADV_SPACE;
-                LogError(err);
-                return 1;
-            }
-        }
-        if (progress) progress(1, "decrypt");
-        std::wstring perr;
-        bool isTemp = false;
-        const std::wstring plain =
-            ResolveImagePlain(imagePath, progress, perr, &isTemp);
-        if (plain.empty()) {
-            err = W2U(perr);
-            LogError("B-engine decrypt failed: " + err);
-            return 1;
-        }
-        plainGuard.p = plain;
-        imagePath = plain;
-        LogInfo("B-engine: encrypted image decrypted for rescue layer -> " +
-                W2U(plain));
-        // 在明文上补做 Linux 侧能力预检（EFS / 不可写回重解析点）：命中即拒绝，
-        // 此时还没动任何分区（早先那次对 .zje 的扫描必然失败，值为 2=不可用）。
-        {
-            WimEngine eng;
-            std::vector<std::wstring> bad;
-            size_t encrypted = 0;
-            const int eff = req.index < 1 ? 1 : req.index;
-            const int frc =
-                eng.ScanImageForLinuxRestore(plain, eff, bad, &encrypted);
-            if (frc == 0 && !bad.empty()) {
-                err = Tr("镜像里含 Linux 恢复环境无法写回的重解析点（如「") +
-                      W2U(bad[0]) +
-                      Tr("」）—— 用「重启后还原」会中止并留下半成品。请改选「还原后"
-                         "重启」，或进 PE 模式就地还原；也可用新版软件重新备份后再试。");
-                LogError(err);
-                return 4;
-            }
-            if (frc == 0 && encrypted > 0) {
-                err = Tr("镜像里含 EFS 加密文件（") + std::to_string(encrypted) +
-                      Tr(" 个），Linux 恢复环境无法还原其内容（还原后这些文件会是"
-                         "空的）。请改选「还原后重启」，或进 PE 模式就地还原。");
-                LogError(err);
-                return 4;
-            }
-            if (frc == 0) {
-                reparseScan = 0;
-                efsScan = 0;
-                LogInfo("B-engine (encrypted): linux precheck clean (reparse/efs)");
-            } else {
-                reparseScan = 2;
-                efsScan = 2;
-                LogWarn("B-engine (encrypted): linux precheck rc=" +
-                        std::to_string(frc) + " (rescue layer will verify)");
-            }
-        }
-    }
     // 临时引导项的首启清理需要知道 A 引擎的 ~new 位置（B 引擎没有 ~new，
     // 目前只能记录告警；见下方 InstallFirstBootCleanup 调用）。
     std::wstring swapNewDir;
@@ -2757,8 +2660,6 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
     // 加密镜像：子镜像已由 Windows 解到目标分区，救援层只拷贝（不读密文镜像）。
     t.espFixDir = espFixRel;
     t.eaFixDir = eaFixRel;
-    // B 引擎 + 加密镜像：image_path 是暂存的明文，救援层用完要删。
-    t.imageCleanup = plainGuard.p.empty() ? 0 : 1;
     t.reparseScan = reparseScan;  // 1019 案：0=干净 / 2=扫描不可用 / -1=未扫描
     t.efsScan = efsScan;  // 1019 案 W2：同义（EFS 加密内容预检结果）
     {   // 镜像字节数（1019 案）：救援层"契约认证"精确比对用（SIZE 判"镜像未变"）
@@ -3185,17 +3086,6 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
         }
     }
     rollbackArmed = false;  // 成功：契约保留（菜单绑定 / 暂存任务）
-    // B 引擎 + 加密镜像：明文临时文件要留给救援层 apply；同时登记"下次开机删除"
-    // 兜底 —— 用户若没进救援菜单而是正常启动 Windows，这份明文不会一直躺在盘上。
-    if (!plainGuard.p.empty()) {
-        plainGuard.keep = true;
-        if (!::MoveFileExW(plainGuard.p.c_str(), nullptr,
-                           MOVEFILE_DELAY_UNTIL_REBOOT))
-            LogWarn("plain temp: schedule delete-at-boot failed err=" +
-                    std::to_string(GetLastError()) +
-                    " (rescue layer still deletes it after apply)");
-        LogInfo("B-engine: plain temp staged for rescue layer, cleanup=scheduled");
-    }
     return 0;
 }
 

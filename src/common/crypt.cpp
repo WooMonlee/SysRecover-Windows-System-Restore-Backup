@@ -1,11 +1,9 @@
-// 镜像加密容器 ZJENC1 实现（格式见 crypt.h 文件头）。
+// 镜像加密容器实现（格式见 crypt.h）。
 //
-// 只依赖 Windows CNG（bcrypt.dll，Vista/Win7 起可用）+ 内核32：
-//   · PBKDF2-HMAC-SHA256 → 64B 主密钥（加密键 + 认证键分离）
-//   · AES-256-CTR（用 ECB 生成密钥流后异或；CNG 无 CTR 链模式）
-//   · HMAC-SHA256 逐块认证（encrypt-then-MAC）
-// 为什么不用 AES-GCM：Win7 的 CNG 对 GCM 支持不保证（项目要跑 Win7），
-// CTR+HMAC 是同等强度、全平台可用的组合。
+// v2 = 连续单流 CBC-ESSIV（Linux 可用 loop + dm-crypt 映射，零额外空间）；
+// v1 = 分块 CTR + 每块 HMAC（只保留读取能力，已生成的 .zje 还能打开）。
+//
+// 只依赖 Windows CNG（bcrypt.dll，Vista/Win7 起可用）+ kernel32。
 #include "common/crypt.h"
 
 #include "common/i18n.h"
@@ -21,19 +19,22 @@
 namespace sysrecover {
 namespace {
 
-constexpr uint8_t kMagic[8] = {'Z', 'J', 'E', 'N', 'C', '1', 0, 0};
-constexpr uint32_t kVersion = 1;
+constexpr uint8_t kMagic1[8] = {'Z', 'J', 'E', 'N', 'C', '1', 0, 0};
+constexpr uint8_t kMagic2[8] = {'Z', 'J', 'E', 'N', 'C', '2', 0, 0};
+constexpr uint32_t kVersion1 = 1;
+constexpr uint32_t kVersion2 = 2;
 constexpr uint32_t kKdfPbkdf2Sha256 = 1;
 constexpr uint32_t kIterations = 600000;
-constexpr uint32_t kChunkSize = 1024u * 1024u;
-// meta 用的"块号"（与正文块索引不冲突）
+constexpr uint32_t kChunkSizeV1 = 1024u * 1024u;
+constexpr uint32_t kSectorSizeV2 = 512u;   // dm-crypt 默认扇区（大扇区被内核拒）
+constexpr uint32_t kHeaderSizeV2 = 4096u;  // 头固定 4KB，与扇区大小解耦
+constexpr uint64_t kBodyOffsetV2 = 0x100000ull;  // 1MB：放 header + meta
 constexpr uint64_t kMetaChunk = 0xFFFFFFFFFFFFFFFFull;
 constexpr size_t kMacLen = 32;
 constexpr size_t kSaltLen = 16;
-constexpr uint32_t kMetaMagic = 0x314D4A5Au;  // 'ZJM1'
 
 #pragma pack(push, 1)
-struct Header {
+struct HeaderV1 {
     uint8_t magic[8];
     uint32_t version;
     uint32_t kdf;
@@ -43,8 +44,20 @@ struct Header {
     uint8_t salt[kSaltLen];
     uint8_t headerMac[kMacLen];
 };
+struct HeaderV2 {
+    uint8_t magic[8];
+    uint32_t version;
+    uint32_t kdf;
+    uint32_t iterations;
+    uint32_t sectorSize;
+    uint64_t plainSize;
+    uint8_t salt[kSaltLen];
+    uint8_t headerMac[kMacLen];
+    uint8_t reserved[kHeaderSizeV2 - 80];
+};
 #pragma pack(pop)
-static_assert(sizeof(Header) == 80, "ZJENC1 header must be 80 bytes");
+static_assert(sizeof(HeaderV1) == 80, "ZJENC1 header must be 80 bytes");
+static_assert(sizeof(HeaderV2) == kHeaderSizeV2, "ZJENC2 header must be 4096");
 
 #ifndef BCRYPT_SUCCESS
 #define BCRYPT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
@@ -98,7 +111,6 @@ struct Hash {
     }
 };
 
-// 打开 HMAC-SHA256（bcrypt 的 SHA256 + HMAC 标志）
 bool OpenHmac(Alg& a, std::wstring& err) {
     NTSTATUS st = BCryptOpenAlgorithmProvider(
         &a.h, BCRYPT_SHA256_ALGORITHM, nullptr, BCRYPT_ALG_HANDLE_HMAC_FLAG);
@@ -142,7 +154,38 @@ bool HmacSha256(BCRYPT_ALG_HANDLE hAlg, const uint8_t key[32],
     return true;
 }
 
-// PBKDF2 → encKey[0..31] + macKey[32..63]
+// 单次 SHA256（ESSIV 的 IV 密钥 = SHA256(encKey)）
+bool Sha256Once(const uint8_t* data, size_t len, uint8_t out[32],
+                std::wstring& err) {
+    Alg a;
+    if (!BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(&a.h, BCRYPT_SHA256_ALGORITHM,
+                                                    nullptr, 0))) {
+        err = Tr(L"无法初始化 SHA256");
+        return false;
+    }
+    DWORD objLen = 0, cb = 0;
+    if (!BCRYPT_SUCCESS(BCryptGetProperty(a.h, BCRYPT_OBJECT_LENGTH,
+                                          (PUCHAR)&objLen, sizeof(objLen), &cb,
+                                          0)) ||
+        objLen == 0) {
+        err = Tr(L"读取 SHA256 参数失败");
+        return false;
+    }
+    Hash hs;
+    hs.obj.assign(objLen, 0);
+    NTSTATUS st = BCryptCreateHash(a.h, &hs.h, hs.obj.data(), objLen, nullptr, 0,
+                                   0);
+    if (BCRYPT_SUCCESS(st))
+        st = BCryptHashData(hs.h, (PUCHAR)data, (ULONG)len, 0);
+    if (BCRYPT_SUCCESS(st))
+        st = BCryptFinishHash(hs.h, out, 32, 0);
+    if (!BCRYPT_SUCCESS(st)) {
+        err = Tr(L"HMAC 计算失败");
+        return false;
+    }
+    return true;
+}
+
 bool DeriveKeys(const std::wstring& password, const uint8_t salt[kSaltLen],
                 uint32_t iterations, uint8_t keys[64], std::wstring& err) {
     if (password.empty()) {
@@ -178,7 +221,8 @@ struct AesKey {
     }
 };
 
-bool OpenAes(const uint8_t encKey[32], AesKey& out, std::wstring& err) {
+bool OpenAes(const uint8_t encKey[32], const wchar_t* mode, AesKey& out,
+             std::wstring& err) {
     NTSTATUS st =
         BCryptOpenAlgorithmProvider(&out.alg.h, BCRYPT_AES_ALGORITHM, nullptr, 0);
     if (!BCRYPT_SUCCESS(st)) {
@@ -186,9 +230,8 @@ bool OpenAes(const uint8_t encKey[32], AesKey& out, std::wstring& err) {
               std::to_wstring((long long)st) + Tr(L"）");
         return false;
     }
-    st = BCryptSetProperty(out.alg.h, BCRYPT_CHAINING_MODE,
-                           (PUCHAR)BCRYPT_CHAIN_MODE_ECB,
-                           (ULONG)sizeof(BCRYPT_CHAIN_MODE_ECB), 0);
+    st = BCryptSetProperty(out.alg.h, BCRYPT_CHAINING_MODE, (PUCHAR)mode,
+                           (ULONG)((wcslen(mode) + 1) * sizeof(wchar_t)), 0);
     if (!BCRYPT_SUCCESS(st)) {
         err = Tr(L"设置 AES 工作模式失败");
         return false;
@@ -211,7 +254,7 @@ bool OpenAes(const uint8_t encKey[32], AesKey& out, std::wstring& err) {
     return true;
 }
 
-// AES-256-CTR：counter = chunk(LE64) || block(LE64)，对 data 原地异或。
+// v1 的 AES-256-CTR：counter = chunk(LE64) || block(LE64)
 bool AesCtrXor(AesKey& aes, uint64_t chunk, uint8_t* data, size_t len,
                std::wstring& err) {
     if (len == 0)
@@ -234,6 +277,56 @@ bool AesCtrXor(AesKey& aes, uint64_t chunk, uint8_t* data, size_t len,
     }
     for (size_t i = 0; i < len; ++i)
         data[i] ^= ks[i];
+    return true;
+}
+
+// ── v2：CBC-ESSIV（与 dm-crypt `aes-cbc-essiv:sha256` 同口径）──────────
+// IV = AES-256-ECB(sha256(encKey), sectorNumber_LE64 || 0^8)
+// 每个扇区独立 CBC（4096B，无填充），扇区号从 0 开始。
+bool EssivCryptSectors(AesKey& dataAes, AesKey& ivAes, uint64_t startSector,
+                       uint8_t* data, size_t len, bool encrypt,
+                       std::wstring& err) {
+    const size_t nsec = len / kSectorSizeV2;
+    if (nsec == 0)
+        return true;
+    // 1) 批量算 IV（一次 ECB 调用）
+    std::vector<uint8_t> ctr(nsec * 16, 0);
+    std::vector<uint8_t> ivs(nsec * 16, 0);
+    for (size_t i = 0; i < nsec; ++i) {
+        const uint64_t s = startSector + i;
+        std::memcpy(&ctr[i * 16], &s, 8);
+    }
+    ULONG outLen = 0;
+    NTSTATUS st =
+        BCryptEncrypt(ivAes.key, ctr.data(), (ULONG)ctr.size(), nullptr,
+                      nullptr, 0, ivs.data(), (ULONG)ivs.size(), &outLen, 0);
+    if (!BCRYPT_SUCCESS(st) || outLen != (ULONG)ivs.size()) {
+        err = Tr(L"AES 密钥流生成失败");
+        return false;
+    }
+    // 2) 每个扇区一次 CBC
+    std::vector<uint8_t> out(kSectorSizeV2);
+    for (size_t i = 0; i < nsec; ++i) {
+        outLen = 0;
+        // 注意：CBC 必须显式给 cbIV=16（传 0 会被 CNG 判成
+        // STATUS_INVALID_BUFFER_SIZE=0xC0000206，实测踩到）。
+        st = encrypt
+                 ? BCryptEncrypt(dataAes.key, data + i * kSectorSizeV2,
+                                 kSectorSizeV2, nullptr, &ivs[i * 16], 16,
+                                 out.data(), kSectorSizeV2, &outLen, 0)
+                 : BCryptDecrypt(dataAes.key, data + i * kSectorSizeV2,
+                                 kSectorSizeV2, nullptr, &ivs[i * 16], 16,
+                                 out.data(), kSectorSizeV2, &outLen, 0);
+        if (!BCRYPT_SUCCESS(st) || outLen != kSectorSizeV2) {
+            wchar_t dbg[96] = {};
+            swprintf(dbg, 96, L" (st=%lld outLen=%lld)", (long long)st,
+                     (long long)outLen);
+            err = Tr(L"AES 扇区处理失败");
+            err += dbg;
+            return false;
+        }
+        std::memcpy(data + i * kSectorSizeV2, out.data(), kSectorSizeV2);
+    }
     return true;
 }
 
@@ -270,7 +363,7 @@ bool ReadAt(HANDLE h, uint64_t off, void* buf, DWORD n) {
     return ReadExact(h, buf, n);
 }
 
-// ── meta 序列化（子镜像清单；二进制、长度前缀，避免名称里的分隔符问题）──
+// ── meta 序列化（子镜像清单；二进制、长度前缀）──
 void PutU32(std::vector<uint8_t>& v, uint32_t x) {
     v.insert(v.end(), (uint8_t*)&x, (uint8_t*)&x + 4);
 }
@@ -307,7 +400,7 @@ bool GetStr(const std::vector<uint8_t>& v, size_t& p, std::wstring& s) {
 
 std::vector<uint8_t> SerializeMeta(const std::vector<ZjeImage>& images) {
     std::vector<uint8_t> v;
-    PutU32(v, kMetaMagic);
+    PutU32(v, 0x314D4A5Au);  // 'ZJM1'
     PutU32(v, (uint32_t)images.size());
     for (const auto& im : images) {
         PutU32(v, (uint32_t)im.index);
@@ -324,7 +417,8 @@ bool ParseMeta(const std::vector<uint8_t>& v, std::vector<ZjeImage>& images) {
     images.clear();
     size_t p = 0;
     uint32_t magic = 0, count = 0;
-    if (!GetU32(v, p, magic) || magic != kMetaMagic || !GetU32(v, p, count))
+    if (!GetU32(v, p, magic) || magic != 0x314D4A5Au ||
+        !GetU32(v, p, count))
         return false;
     if (count > 4096)
         return false;
@@ -342,28 +436,65 @@ bool ParseMeta(const std::vector<uint8_t>& v, std::vector<ZjeImage>& images) {
     return true;
 }
 
-// 读取并校验 header + meta（不做正文解密）。成功返回 0。
-// 输出：info（明文长度等）、images、keys（可选）、meta 校验通过。
-int OpenAndUnlock(const std::wstring& password,
-                  HANDLE h, Header& hdr, std::vector<ZjeImage>& images,
-                  uint8_t keys[64], std::wstring& err) {
+// meta 加解密（v1/v2 共用）：CTR(encKey, chunk=kMetaChunk) + HMAC(macKey)
+bool EncryptMeta(const uint8_t keys[64], std::vector<uint8_t>& meta,
+                 uint8_t mac[kMacLen], std::wstring& err) {
+    AesKey aes;
+    if (!OpenAes(keys, BCRYPT_CHAIN_MODE_ECB, aes, err))
+        return false;
+    if (!AesCtrXor(aes, kMetaChunk, meta.data(), meta.size(), err))
+        return false;
+    Alg hmac;
+    if (!OpenHmac(hmac, err))
+        return false;
+    uint8_t idx[8];
+    std::memcpy(idx, &kMetaChunk, 8);
+    return HmacSha256(hmac.h, keys + 32, idx, 8, meta.data(), meta.size(), mac,
+                      err);
+}
+
+bool DecryptMetaVerified(const uint8_t keys[64], std::vector<uint8_t>& meta,
+                         const uint8_t mac[kMacLen], std::wstring& err) {
+    Alg hmac;
+    if (!OpenHmac(hmac, err))
+        return false;
+    uint8_t idx[8];
+    std::memcpy(idx, &kMetaChunk, 8);
+    uint8_t want[kMacLen] = {};
+    if (!HmacSha256(hmac.h, keys + 32, idx, 8, meta.data(), meta.size(), want,
+                    err))
+        return false;
+    if (!ConstantEq(want, mac, kMacLen)) {
+        err = Tr(L"加密镜像元数据被篡改（校验失败）");
+        return false;
+    }
+    AesKey aes;
+    if (!OpenAes(keys, BCRYPT_CHAIN_MODE_ECB, aes, err))
+        return false;
+    if (!AesCtrXor(aes, kMetaChunk, meta.data(), meta.size(), err))
+        return false;
+    return true;
+}
+
+// 读 header + meta（不解正文）。成功 0；同时给出 keys / images / info。
+int UnlockV2(HANDLE h, const std::wstring& password, HeaderV2& hdr,
+             std::vector<ZjeImage>& images, uint8_t keys[64],
+             std::wstring& err) {
     if (!ReadAt(h, 0, &hdr, sizeof(hdr))) {
         err = Tr(L"读取加密镜像头失败（文件被截断？）");
         return 1;
     }
-    if (std::memcmp(hdr.magic, kMagic, 8) != 0) {
-        err = Tr(L"不是 SysRecover 加密镜像（文件头不匹配）");
-        return 1;
-    }
-    if (hdr.version != kVersion || hdr.kdf != kKdfPbkdf2Sha256) {
+    if (std::memcmp(hdr.magic, kMagic2, 8) != 0 || hdr.version != kVersion2 ||
+        hdr.kdf != kKdfPbkdf2Sha256) {
         err = Tr(L"加密镜像版本不受支持（请用更新版本的 SysRecover）");
         return 1;
     }
-    if (hdr.chunkSize < 4096 || hdr.chunkSize > 64u * 1024u * 1024u) {
-        err = Tr(L"加密镜像头损坏（块大小非法）");
+    if (hdr.sectorSize != kSectorSizeV2) {
+        err = Tr(L"加密镜像头损坏（扇区大小非法）");
         return 1;
     }
-    if (hdr.iterations < 1000 || hdr.iterations > 10000000u) {
+    if (hdr.iterations < 1000 || hdr.iterations > 10000000u ||
+        hdr.plainSize == 0) {
         err = Tr(L"加密镜像头损坏（KDF 参数非法）");
         return 1;
     }
@@ -372,10 +503,9 @@ int OpenAndUnlock(const std::wstring& password,
     Alg hmac;
     if (!OpenHmac(hmac, err))
         return 1;
-    // 头 MAC：错密码在这里就能区分开（不必读完整个文件）
     uint8_t mac[kMacLen] = {};
-    if (!HmacSha256(hmac.h, keys + 32, (const uint8_t*)&hdr, 48, nullptr, 0,
-                    mac, err)) {
+    if (!HmacSha256(hmac.h, keys + 32, (const uint8_t*)&hdr, 48, nullptr, 0, mac,
+                    err)) {
         err = Tr(L"加密镜像头校验失败");
         return 1;
     }
@@ -384,7 +514,66 @@ int OpenAndUnlock(const std::wstring& password,
         return 1;
     }
     uint64_t metaLen64 = 0;
-    if (!ReadAt(h, sizeof(Header), &metaLen64, 8) || metaLen64 == 0 ||
+    if (!ReadAt(h, kHeaderSizeV2, &metaLen64, 8) || metaLen64 == 0 ||
+        metaLen64 > kBodyOffsetV2 - kHeaderSizeV2 - 8 - kMacLen) {
+        err = Tr(L"加密镜像头损坏（元数据长度非法）");
+        return 1;
+    }
+    const uint32_t metaLen = (uint32_t)metaLen64;
+    std::vector<uint8_t> meta(metaLen);
+    if (!ReadExact(h, meta.data(), metaLen)) {
+        err = Tr(L"读取加密镜像元数据失败（文件被截断？）");
+        return 1;
+    }
+    uint8_t metaMac[kMacLen] = {};
+    if (!ReadExact(h, metaMac, kMacLen)) {
+        err = Tr(L"读取加密镜像元数据校验值失败（文件被截断？）");
+        return 1;
+    }
+    if (!DecryptMetaVerified(keys, meta, metaMac, err))
+        return 1;
+    if (!ParseMeta(meta, images)) {
+        err = Tr(L"加密镜像元数据格式错误");
+        return 1;
+    }
+    return 0;
+}
+
+// v1 的 header + meta（只读）
+int UnlockV1(HANDLE h, const std::wstring& password, HeaderV1& hdr,
+             std::vector<ZjeImage>& images, uint8_t keys[64],
+             std::wstring& err) {
+    if (!ReadAt(h, 0, &hdr, sizeof(hdr))) {
+        err = Tr(L"读取加密镜像头失败（文件被截断？）");
+        return 1;
+    }
+    if (std::memcmp(hdr.magic, kMagic1, 8) != 0 ||
+        hdr.version != kVersion1 || hdr.kdf != kKdfPbkdf2Sha256) {
+        err = Tr(L"加密镜像版本不受支持（请用更新版本的 SysRecover）");
+        return 1;
+    }
+    if (hdr.chunkSize < 4096 || hdr.chunkSize > 64u * 1024u * 1024u ||
+        hdr.iterations < 1000 || hdr.iterations > 10000000u) {
+        err = Tr(L"加密镜像头损坏（块大小非法）");
+        return 1;
+    }
+    if (!DeriveKeys(password, hdr.salt, hdr.iterations, keys, err))
+        return 1;
+    Alg hmac;
+    if (!OpenHmac(hmac, err))
+        return 1;
+    uint8_t mac[kMacLen] = {};
+    if (!HmacSha256(hmac.h, keys + 32, (const uint8_t*)&hdr, 48, nullptr, 0, mac,
+                    err)) {
+        err = Tr(L"加密镜像头校验失败");
+        return 1;
+    }
+    if (!ConstantEq(mac, hdr.headerMac, kMacLen)) {
+        err = Tr(L"密码错误（或镜像头被篡改）");
+        return 1;
+    }
+    uint64_t metaLen64 = 0;
+    if (!ReadAt(h, sizeof(HeaderV1), &metaLen64, 8) || metaLen64 == 0 ||
         metaLen64 > 64ull * 1024ull * 1024ull) {
         err = Tr(L"加密镜像头损坏（元数据长度非法）");
         return 1;
@@ -400,20 +589,7 @@ int OpenAndUnlock(const std::wstring& password,
         err = Tr(L"读取加密镜像元数据校验值失败（文件被截断？）");
         return 1;
     }
-    uint8_t idx[8];
-    std::memcpy(idx, &kMetaChunk, 8);
-    uint8_t want[kMacLen] = {};
-    if (!HmacSha256(hmac.h, keys + 32, idx, 8, meta.data(), meta.size(), want,
-                    err))
-        return 1;
-    if (!ConstantEq(want, metaMac, kMacLen)) {
-        err = Tr(L"加密镜像元数据被篡改（校验失败）");
-        return 1;
-    }
-    AesKey aes;
-    if (!OpenAes(keys, aes, err))
-        return 1;
-    if (!AesCtrXor(aes, kMetaChunk, meta.data(), meta.size(), err))
+    if (!DecryptMetaVerified(keys, meta, metaMac, err))
         return 1;
     if (!ParseMeta(meta, images)) {
         err = Tr(L"加密镜像元数据格式错误");
@@ -434,7 +610,8 @@ bool ZjeIsFile(const std::wstring& path) {
     uint8_t m[8] = {};
     DWORD got = 0;
     bool ok = ReadFile(h, m, 8, &got, nullptr) && got == 8 &&
-              std::memcmp(m, kMagic, 8) == 0;
+              (std::memcmp(m, kMagic1, 8) == 0 ||
+               std::memcmp(m, kMagic2, 8) == 0);
     CloseHandle(h);
     return ok;
 }
@@ -451,22 +628,42 @@ int ZjeReadMeta(const std::wstring& zje, const std::wstring& password,
         err = Tr(L"打不开加密镜像（文件不存在或被占用）");
         return 1;
     }
-    Header hdr = {};
-    std::vector<ZjeImage> imgs;
-    uint8_t keys[64] = {};
-    int rc = OpenAndUnlock(password, h, hdr, imgs, keys, err);
-    CloseHandle(h);
-    if (rc != 0)
-        return rc;
-    if (info) {
-        info->version = hdr.version;
-        info->iterations = hdr.iterations;
-        info->chunkSize = hdr.chunkSize;
-        info->plainSize = hdr.plainSize;
+    uint8_t magic[8] = {};
+    if (!ReadAt(h, 0, magic, 8)) {
+        CloseHandle(h);
+        err = Tr(L"读取加密镜像头失败（文件被截断？）");
+        return 1;
     }
-    if (images)
+    uint8_t keys[64] = {};
+    std::vector<ZjeImage> imgs;
+    int rc = 1;
+    if (std::memcmp(magic, kMagic2, 8) == 0) {
+        HeaderV2 hdr = {};
+        rc = UnlockV2(h, password, hdr, imgs, keys, err);
+        if (rc == 0 && info) {
+            info->version = hdr.version;
+            info->iterations = hdr.iterations;
+            info->chunkSize = hdr.sectorSize;
+            info->sectorSize = hdr.sectorSize;
+            info->plainSize = hdr.plainSize;
+            info->bodyOffset = kBodyOffsetV2;
+        }
+    } else {
+        HeaderV1 hdr = {};
+        rc = UnlockV1(h, password, hdr, imgs, keys, err);
+        if (rc == 0 && info) {
+            info->version = hdr.version;
+            info->iterations = hdr.iterations;
+            info->chunkSize = hdr.chunkSize;
+            info->sectorSize = 0;
+            info->plainSize = hdr.plainSize;
+            info->bodyOffset = 0;
+        }
+    }
+    CloseHandle(h);
+    if (rc == 0 && images)
         *images = std::move(imgs);
-    return 0;
+    return rc;
 }
 
 bool ZjeCheckPassword(const std::wstring& zje, const std::wstring& password) {
@@ -497,14 +694,13 @@ int ZjeEncryptFile(const std::wstring& plain, const std::wstring& out,
         return 1;
     }
     const uint64_t plainSize = (uint64_t)sz.QuadPart;
-    const uint64_t nchunks = (plainSize + kChunkSize - 1) / kChunkSize;
 
-    Header hdr = {};
-    std::memcpy(hdr.magic, kMagic, 8);
-    hdr.version = kVersion;
+    HeaderV2 hdr = {};
+    std::memcpy(hdr.magic, kMagic2, 8);
+    hdr.version = kVersion2;
     hdr.kdf = kKdfPbkdf2Sha256;
     hdr.iterations = kIterations;
-    hdr.chunkSize = kChunkSize;
+    hdr.sectorSize = kSectorSizeV2;
     hdr.plainSize = plainSize;
     if (!BCRYPT_SUCCESS(BCryptGenRandom(nullptr, hdr.salt, kSaltLen,
                                         BCRYPT_USE_SYSTEM_PREFERRED_RNG))) {
@@ -518,33 +714,19 @@ int ZjeEncryptFile(const std::wstring& plain, const std::wstring& out,
         return 1;
     }
     Alg hmac;
-    if (!OpenHmac(hmac, err)) {
-        CloseHandle(in);
-        return 1;
-    }
-    if (!HmacSha256(hmac.h, keys + 32, (const uint8_t*)&hdr, 48, nullptr, 0,
+    if (!OpenHmac(hmac, err) ||
+        !HmacSha256(hmac.h, keys + 32, (const uint8_t*)&hdr, 48, nullptr, 0,
                     hdr.headerMac, err)) {
         CloseHandle(in);
         return 1;
     }
-    // meta（子镜像清单）也加密，免得无密码就能看到镜像里有什么。
-    // 口径与正文块一致：先 CTR 加密，再对**密文**算 HMAC。
+    // meta（子镜像清单）：CTR+HMAC，放在 header 之后、正文之前
     std::vector<uint8_t> meta = SerializeMeta(images);
-    uint8_t midx[8];
-    std::memcpy(midx, &kMetaChunk, 8);
-    AesKey aesMeta;
-    if (!OpenAes(keys, aesMeta, err) ||
-        !AesCtrXor(aesMeta, kMetaChunk, meta.data(), meta.size(), err)) {
-        CloseHandle(in);
-        return 1;
-    }
     uint8_t metaMac[kMacLen] = {};
-    if (!HmacSha256(hmac.h, keys + 32, midx, 8, meta.data(), meta.size(), metaMac,
-                    err)) {
+    if (!EncryptMeta(keys, meta, metaMac, err)) {
         CloseHandle(in);
         return 1;
     }
-
     const std::wstring tmp = out + L".tmp";
     DeleteFileW(tmp.c_str());
     HANDLE o = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
@@ -554,37 +736,70 @@ int ZjeEncryptFile(const std::wstring& plain, const std::wstring& out,
         err = Tr(L"无法创建加密镜像文件（磁盘满/无权限？）");
         return 1;
     }
-    AesKey aesBody;
-    bool ok = OpenAes(keys, aesBody, err);
-    if (ok) {
+    bool ok = true;
+    {
         const uint64_t metaLen = (uint64_t)meta.size();
         ok = WriteExact(o, &hdr, sizeof(hdr)) && WriteExact(o, &metaLen, 8) &&
              WriteExact(o, meta.data(), (DWORD)meta.size()) &&
              WriteExact(o, metaMac, kMacLen);
+        // 显式补零到 1MB（正文起点固定，dm-crypt 才能按固定 offset 映射）
+        uint64_t written =
+            sizeof(hdr) + 8 + (uint64_t)meta.size() + (uint64_t)kMacLen;
+        if (ok && written < kBodyOffsetV2) {
+            std::vector<uint8_t> zeros(64 * 1024, 0);
+            while (written < kBodyOffsetV2) {
+                const DWORD n = (DWORD)std::min<uint64_t>(
+                    zeros.size(), kBodyOffsetV2 - written);
+                if (!WriteExact(o, zeros.data(), n)) {
+                    ok = false;
+                    break;
+                }
+                written += n;
+            }
+        }
     }
-    std::vector<uint8_t> chunk;
+    AesKey dataAes, ivAes;
+    uint8_t ivKey[32] = {};
     if (ok) {
-        chunk.resize(kChunkSize);
+        ok = Sha256Once(keys, 32, ivKey, err) &&
+             OpenAes(keys, BCRYPT_CHAIN_MODE_CBC, dataAes, err) &&
+             OpenAes(ivKey, BCRYPT_CHAIN_MODE_ECB, ivAes, err);
+    }
+    std::vector<uint8_t> buf;
+    if (ok) {
+        const size_t kBuf = 1024u * 1024u;  // 256 扇区
+        buf.resize(kBuf);
+        uint64_t sector = 0;
         uint64_t done = 0;
-        for (uint64_t i = 0; i < nchunks && ok; ++i) {
+        while (done < plainSize && ok) {
             const size_t len = (size_t)std::min<uint64_t>(
-                kChunkSize, plainSize - i * kChunkSize);
-            ok = ReadExact(in, chunk.data(), (DWORD)len);
+                kBuf, ((plainSize - done + kSectorSizeV2 - 1) / kSectorSizeV2) *
+                          kSectorSizeV2);
+            // 读 len（最后一块可能超出 EOF → 补零）
+            size_t got = 0;
+            while (got < len) {
+                DWORD rd = 0;
+                const DWORD want = (DWORD)std::min<size_t>(len - got, 1u << 20);
+                if (!ReadFile(in, buf.data() + got, want, &rd, nullptr))
+                    break;
+                if (rd == 0)
+                    break;
+                got += rd;
+            }
+            if (got < len)
+                std::memset(buf.data() + got, 0, len - got);
+            ok = EssivCryptSectors(dataAes, ivAes, sector, buf.data(),
+                                   (len / kSectorSizeV2) * kSectorSizeV2, true,
+                                   err);
             if (!ok)
                 break;
-            ok = AesCtrXor(aesBody, i, chunk.data(), len, err);
-            if (!ok)
+            ok = WriteExact(o, buf.data(), (DWORD)len);
+            if (!ok) {
+                err = Tr(L"写入加密镜像失败（磁盘满/被拦截？）");
                 break;
-            uint8_t idx[8];
-            std::memcpy(idx, &i, 8);
-            uint8_t mac[kMacLen] = {};
-            ok = HmacSha256(hmac.h, keys + 32, idx, 8, chunk.data(), len, mac,
-                            err);
-            if (!ok)
-                break;
-            ok = WriteExact(o, chunk.data(), (DWORD)len) &&
-                 WriteExact(o, mac, kMacLen);
-            done += len;
+            }
+            sector += len / kSectorSizeV2;
+            done += std::min<uint64_t>(len, plainSize - done);
             if (progress && progress(done, plainSize)) {
                 err = Tr(L"已取消");
                 ok = false;
@@ -611,31 +826,18 @@ int ZjeEncryptFile(const std::wstring& plain, const std::wstring& out,
     return 0;
 }
 
-int ZjeDecryptFile(const std::wstring& zje, const std::wstring& plain,
-                   const std::wstring& password, CryptProgress progress,
-                   std::wstring& err) {
-    err.clear();
-    HANDLE in = CreateFileW(zje.c_str(), GENERIC_READ,
-                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (in == INVALID_HANDLE_VALUE) {
-        err = Tr(L"打不开加密镜像（文件不存在或被占用）");
-        return 1;
-    }
-    Header hdr = {};
-    std::vector<ZjeImage> imgs;
-    uint8_t keys[64] = {};
-    if (OpenAndUnlock(password, in, hdr, imgs, keys, err) != 0) {
-        CloseHandle(in);
-        return 1;
-    }
-    // 期望的容器大小（校验截断/多余数据）
-    const uint64_t nchunks = (hdr.plainSize + hdr.chunkSize - 1) / hdr.chunkSize;
-    uint64_t expected = sizeof(Header) + 8;
+namespace {
+
+// v1 正文：分块 CTR + 每块 HMAC
+int DecryptV1Body(HANDLE in, const HeaderV1& hdr, const uint8_t keys[64],
+                  const std::wstring& plain, CryptProgress progress,
+                  std::wstring& err) {
+    const uint64_t nchunks =
+        (hdr.plainSize + hdr.chunkSize - 1) / hdr.chunkSize;
+    uint64_t expected = sizeof(HeaderV1) + 8;
     {
         uint64_t metaLen64 = 0;
-        if (!ReadAt(in, sizeof(Header), &metaLen64, 8)) {
-            CloseHandle(in);
+        if (!ReadAt(in, sizeof(HeaderV1), &metaLen64, 8)) {
             err = Tr(L"加密镜像头损坏");
             return 1;
         }
@@ -649,7 +851,6 @@ int ZjeDecryptFile(const std::wstring& zje, const std::wstring& plain,
     LARGE_INTEGER actual = {};
     if (!GetFileSizeEx(in, &actual) ||
         (uint64_t)actual.QuadPart != expected) {
-        CloseHandle(in);
         err = Tr(L"加密镜像被截断或损坏（文件大小不符）");
         return 1;
     }
@@ -658,21 +859,20 @@ int ZjeDecryptFile(const std::wstring& zje, const std::wstring& plain,
     HANDLE o = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
     if (o == INVALID_HANDLE_VALUE) {
-        CloseHandle(in);
         err = Tr(L"无法创建解密临时文件（磁盘空间不足？）");
         return 1;
     }
     AesKey aes;
     Alg hmac;
-    bool ok = OpenAes(keys, aes, err) && OpenHmac(hmac, err);
+    bool ok = OpenAes(keys, BCRYPT_CHAIN_MODE_ECB, aes, err) &&
+              OpenHmac(hmac, err);
     std::vector<uint8_t> chunk;
     if (ok) {
-        // 跳到正文起点：header + metaLen + meta + metaMac
         uint64_t metaLen64 = 0;
-        ok = ReadAt(in, sizeof(Header), &metaLen64, 8);
+        ok = ReadAt(in, sizeof(HeaderV1), &metaLen64, 8);
         if (ok) {
             LARGE_INTEGER li;
-            li.QuadPart = (LONGLONG)(sizeof(Header) + 8 + metaLen64 + kMacLen);
+            li.QuadPart = (LONGLONG)(sizeof(HeaderV1) + 8 + metaLen64 + kMacLen);
             ok = SetFilePointerEx(in, li, nullptr, FILE_BEGIN) != 0;
         }
     }
@@ -723,7 +923,6 @@ int ZjeDecryptFile(const std::wstring& zje, const std::wstring& plain,
     if (ok && !FlushFileBuffers(o))
         ok = false;
     CloseHandle(o);
-    CloseHandle(in);
     if (!ok) {
         DeleteFileW(tmp.c_str());
         if (err.empty())
@@ -739,8 +938,150 @@ int ZjeDecryptFile(const std::wstring& zje, const std::wstring& plain,
     return 0;
 }
 
+int DecryptV2Body(HANDLE in, const HeaderV2& hdr, const uint8_t keys[64],
+                  const std::wstring& plain, CryptProgress progress,
+                  std::wstring& err) {
+    const uint64_t bodyLen =
+        ((hdr.plainSize + kSectorSizeV2 - 1) / kSectorSizeV2) * kSectorSizeV2;
+    LARGE_INTEGER actual = {};
+    if (!GetFileSizeEx(in, &actual) ||
+        (uint64_t)actual.QuadPart != kBodyOffsetV2 + bodyLen) {
+        err = Tr(L"加密镜像被截断或损坏（文件大小不符）");
+        return 1;
+    }
+    const std::wstring tmp = plain + L".tmp";
+    DeleteFileW(tmp.c_str());
+    HANDLE o = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (o == INVALID_HANDLE_VALUE) {
+        err = Tr(L"无法创建解密临时文件（磁盘空间不足？）");
+        return 1;
+    }
+    AesKey dataAes, ivAes;
+    uint8_t ivKey[32] = {};
+    bool ok = Sha256Once(keys, 32, ivKey, err) &&
+              OpenAes(keys, BCRYPT_CHAIN_MODE_CBC, dataAes, err) &&
+              OpenAes(ivKey, BCRYPT_CHAIN_MODE_ECB, ivAes, err);
+    if (ok) {
+        LARGE_INTEGER li;
+        li.QuadPart = (LONGLONG)kBodyOffsetV2;
+        ok = SetFilePointerEx(in, li, nullptr, FILE_BEGIN) != 0;
+    }
+    std::vector<uint8_t> buf;
+    if (ok) {
+        const size_t kBuf = 1024u * 1024u;
+        buf.resize(kBuf);
+        uint64_t sector = 0;
+        uint64_t readDone = 0;  // 正文读取位置（含尾部补零）
+        uint64_t written = 0;   // 已写出的明文字节数
+        while (readDone < bodyLen && ok) {
+            const size_t len =
+                (size_t)std::min<uint64_t>(kBuf, bodyLen - readDone);
+            ok = ReadExact(in, buf.data(), (DWORD)len);
+            if (!ok) {
+                err = Tr(L"加密镜像被截断（块数据不完整）");
+                break;
+            }
+            ok = EssivCryptSectors(dataAes, ivAes, sector, buf.data(),
+                                   (len / kSectorSizeV2) * kSectorSizeV2, false,
+                                   err);
+            if (!ok)
+                break;
+            // 最后一个扇区含补零，只写 plainSize 以内的字节
+            const size_t writable = (size_t)std::min<uint64_t>(
+                len, hdr.plainSize - written);
+            ok = WriteExact(o, buf.data(), (DWORD)writable);
+            if (!ok) {
+                err = Tr(L"写入解密文件失败（磁盘空间不足？）");
+                break;
+            }
+            sector += len / kSectorSizeV2;
+            readDone += len;
+            written += writable;
+            if (progress && progress(written, hdr.plainSize)) {
+                err = Tr(L"已取消");
+                ok = false;
+                break;
+            }
+        }
+    }
+    if (ok && !FlushFileBuffers(o))
+        ok = false;
+    CloseHandle(o);
+    if (!ok) {
+        DeleteFileW(tmp.c_str());
+        if (err.empty())
+            err = Tr(L"解密失败");
+        return 1;
+    }
+    if (!MoveFileExW(tmp.c_str(), plain.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        DeleteFileW(tmp.c_str());
+        err = Tr(L"解密文件改名失败（目标被占用？）");
+        return 1;
+    }
+    return 0;
+}
+
+}  // namespace
+
+int ZjeDecryptFile(const std::wstring& zje, const std::wstring& plain,
+                   const std::wstring& password, CryptProgress progress,
+                   std::wstring& err) {
+    err.clear();
+    HANDLE in = CreateFileW(zje.c_str(), GENERIC_READ,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (in == INVALID_HANDLE_VALUE) {
+        err = Tr(L"打不开加密镜像（文件不存在或被占用）");
+        return 1;
+    }
+    uint8_t magic[8] = {};
+    if (!ReadAt(in, 0, magic, 8)) {
+        CloseHandle(in);
+        err = Tr(L"读取加密镜像头失败（文件被截断？）");
+        return 1;
+    }
+    uint8_t keys[64] = {};
+    std::vector<ZjeImage> imgs;
+    int rc;
+    if (std::memcmp(magic, kMagic2, 8) == 0) {
+        HeaderV2 hdr = {};
+        rc = UnlockV2(in, password, hdr, imgs, keys, err);
+        CloseHandle(in);
+        if (rc == 0)
+            rc = [&] {
+                HANDLE h = CreateFileW(zje.c_str(), GENERIC_READ,
+                                       FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                       nullptr, OPEN_EXISTING,
+                                       FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (h == INVALID_HANDLE_VALUE)
+                    return 1;
+                int r = DecryptV2Body(h, hdr, keys, plain, progress, err);
+                CloseHandle(h);
+                return r;
+            }();
+        return rc;
+    }
+    HeaderV1 hdr = {};
+    rc = UnlockV1(in, password, hdr, imgs, keys, err);
+    CloseHandle(in);
+    if (rc == 0)
+        rc = [&] {
+            HANDLE h = CreateFileW(zje.c_str(), GENERIC_READ,
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                   OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                                   nullptr);
+            if (h == INVALID_HANDLE_VALUE)
+                return 1;
+            int r = DecryptV1Body(h, hdr, keys, plain, progress, err);
+            CloseHandle(h);
+            return r;
+        }();
+    return rc;
+}
+
 std::wstring ZjeTempPlainPath(const std::wstring& zje) {
-    // 放在同一目录（同卷：不跨卷搬 20GB），随机后缀防撞名。
     size_t slash = zje.find_last_of(L"\\/");
     std::wstring dir = (slash == std::wstring::npos) ? L"." : zje.substr(0, slash);
     wchar_t buf[96] = {};

@@ -1553,8 +1553,14 @@ TEST(crypt_zje_roundtrip_meta_and_failclosed) {
     imgs.push_back(im);
 
     std::wstring err;
-    CHECK_EQ(sysrecover::ZjeEncryptFile(src, enc, L"P@ss word", imgs, {}, err),
-             0);
+    {
+        const int zrc =
+            sysrecover::ZjeEncryptFile(src, enc, L"P@ss word", imgs, {}, err);
+        if (zrc != 0)
+            std::printf("ZjeEncryptFile failed rc=%d err=%ls\n", zrc,
+                        err.c_str());
+        CHECK_EQ(zrc, 0);
+    }
     CHECK(sysrecover::ZjeIsFile(enc));
     CHECK(!sysrecover::ZjeIsFile(src));
 

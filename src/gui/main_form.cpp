@@ -1305,19 +1305,6 @@ void CMainForm::ToggleBootMenu() {
         SetStatus(Tr(L"请先选择镜像与目标分区，再安装到启动"));
         return;
     }
-    // 加密镜像（docs/30 §9）：常驻菜单在**开机阶段**执行，那一刻没人能输密码 →
-    // 「安装到启动」一律拒绝（A 引擎的「解压并安装」也不允许，机器重启后没人给口令）。
-    if (sysrecover::ImageIsEncrypted(m_wimPath)) {
-        SetStatus(Tr(L"加密镜像不能安装到启动菜单"));
-        MessageBoxW(
-            m_hWnd,
-            std::wstring(Tr(L"这是加密镜像：开机阶段无法输入密码，\n"
-                            L"因此不能安装到启动菜单。\n\n"
-                            L"请改用「开始恢复」（解压并安装 / 还原后重启），或在 PE 中就地还原。"))
-                .c_str(),
-            Tr(L"安装到启动"), MB_OK | MB_ICONINFORMATION);
-        return;
-    }
     {
         const PartitionInfo& part = m_parts[m_selPart];
         // ⚠️ CConfirmDlg 的正文只显示**最多 3 行**、且是**单行标签**（PIT-039），
@@ -2401,14 +2388,24 @@ void CMainForm::StartRestore() {
                         std::to_string(se.freeBytes) +
                         " (mid button disabled)");
             }
-            swprintf(confirm, 1200,
-                     Tr(L"即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n"
-                        L"还原后重启，是解压镜像后重启修复引导，可以恢复到现在状态\n"
-                        L"重启后还原，是重启格式化%ls: 盘后还原镜像，无法恢复现在状态\n"
-                        L"含 EFS 加密文件或特殊重解析点的镜像，请选「还原后重启」"),
-                     part.letter.empty() ? L"?" : part.letter.c_str(),
-                     part.diskIndex, part.partNumber,
-                     part.letter.empty() ? L"?" : part.letter.c_str());
+            if (sysrecover::ImageIsEncrypted(m_wimPath))
+                swprintf(confirm, 1200,
+                         Tr(L"即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n"
+                            L"还原后重启，是解压镜像后重启修复引导，可以恢复到现在状态\n"
+                            L"重启后还原，是重启格式化%ls: 盘后还原镜像，无法恢复现在状态\n"
+                            L"加密镜像：重启后还原需要输入密码"),
+                         part.letter.empty() ? L"?" : part.letter.c_str(),
+                         part.diskIndex, part.partNumber,
+                         part.letter.empty() ? L"?" : part.letter.c_str());
+            else
+                swprintf(confirm, 1200,
+                         Tr(L"即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n"
+                            L"还原后重启，是解压镜像后重启修复引导，可以恢复到现在状态\n"
+                            L"重启后还原，是重启格式化%ls: 盘后还原镜像，无法恢复现在状态\n"
+                            L"含 EFS 加密文件或特殊重解析点的镜像，请选「还原后重启」"),
+                         part.letter.empty() ? L"?" : part.letter.c_str(),
+                         part.diskIndex, part.partNumber,
+                         part.letter.empty() ? L"?" : part.letter.c_str());
             if (spaceShort) {
                 wchar_t sp[192];
                 swprintf(sp, 192,

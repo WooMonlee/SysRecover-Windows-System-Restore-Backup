@@ -70,7 +70,6 @@ std::string BuildTaskConf(const RestoreTask& t) {
         "ea_index=%d\n"
         "esp_fix_dir=%s\n"
         "ea_fix_dir=%s\n"
-        "image_cleanup=%d\n"
         "target_guid=%s\n"
         "target_offset=%llu\n"
         "target_size=%llu\n"
@@ -86,7 +85,7 @@ std::string BuildTaskConf(const RestoreTask& t) {
         W2U(t.imageRelPath).c_str(), W2U(t.imagePath).c_str(), t.imageIndex,
         (unsigned long long)t.imageSize, t.reparseScan, t.efsScan,
         t.espIndex, t.eaIndex, W2U(t.espFixDir).c_str(),
-        W2U(t.eaFixDir).c_str(), t.imageCleanup,
+        W2U(t.eaFixDir).c_str(),
         W2U(t.targetGuid).c_str(),
         (unsigned long long)t.targetOffset,
         (unsigned long long)t.targetSize, W2U(t.targetDiskSerial).c_str(),
@@ -107,7 +106,6 @@ std::string BuildTaskJson(const RestoreTask& t) {
         "\"esp_index\":%d,"
         "\"ea_index\":%d,"
         "\"esp_fix_dir\":\"%s\",\"ea_fix_dir\":\"%s\","
-        "\"image_cleanup\":%d,"
         "\"target_disk\":%d,\"target_part\":%d,"
         "\"target_offset\":%llu,\"target_size\":%llu,"
         "\"repair_boot\":%s,\"partition_count\":%u}\n",
@@ -116,7 +114,7 @@ std::string BuildTaskJson(const RestoreTask& t) {
         W2U(t.imageRelPath).c_str(), t.imageIndex,
         (unsigned long long)t.imageSize, t.reparseScan, t.efsScan,
         t.espIndex, t.eaIndex, JsonEsc(W2U(t.espFixDir)).c_str(),
-        JsonEsc(W2U(t.eaFixDir)).c_str(), t.imageCleanup,
+        JsonEsc(W2U(t.eaFixDir)).c_str(),
         t.targetDisk, t.targetPart, (unsigned long long)t.targetOffset,
         (unsigned long long)t.targetSize, t.repairBoot ? "true" : "false",
         t.partCount);
@@ -147,7 +145,6 @@ std::string BuildRestoreLogText(const RestoreTask& t,
         "ea_index=%d\n"
         "esp_fix_dir=%s\n"
         "ea_fix_dir=%s\n"
-        "image_cleanup=%d\n"
         "repair_boot=%d\n"
         "pt_type=%s\n"
         "engine=%s\n"
@@ -163,7 +160,7 @@ std::string BuildRestoreLogText(const RestoreTask& t,
         W2U(t.targetVolLabel).c_str(), W2U(t.imagePath).c_str(),
         t.imageIndex, (unsigned long long)t.imageSize, t.reparseScan,
         t.efsScan, t.espIndex, t.eaIndex, W2U(t.espFixDir).c_str(),
-        W2U(t.eaFixDir).c_str(), t.imageCleanup,
+        W2U(t.eaFixDir).c_str(),
         t.repairBoot ? 1 : 0,
         t.ptType.c_str(),
         (t.engine.empty() ? "block" : t.engine.c_str()),
