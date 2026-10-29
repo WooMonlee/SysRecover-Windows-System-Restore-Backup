@@ -188,3 +188,22 @@ d-20261028.zjd    delta：{manifest(diff) + 变更文件 blob + 删除列表}
 - 完成后提示"现在是第 N 个时间点，合计 X GB"（回主线程只读元数据算，秒级）。
 - 加密 + 增量：`RunBackup` 直接拒绝（`加密备份不支持追加`，用户在 §8 拍板本轮不做组合）。
 - 保留策略按 §9.2：**不设上限、不自动删**；≥10 的提示文案留待后续按用户反馈加（当前只在文档记录）。
+
+### 12.1 Windows 10 VM 实测（2026-10-29，发布版 exe 0.9.60）
+
+在 `D:\ea-lab\win10test\win10test.vhd`（Windows 10 x64，UEFI）里用 **GPO 启动脚本**
+离线注入后开机自动跑（脚本见 `D:\ea-lab\win10test\inject.ps1`，宿主机侧记录
+`result-enc-inc.txt`）。结果：
+
+| 步骤 | 命令 | 结果 |
+|---|---|---|
+| T1 全备 | `backup --dest C:\ZJTEST\a.wim --source C:\ZJTEST\src --compress fast --no-snapshot --yes` | `rc=0` |
+| T2 增量 | `backup --dest C:\ZJTEST\a.wim ... --append --yes`（先改 3 个文件） | `rc=0` |
+| 时间点 | `images --file C:\ZJTEST\a.wim` | `1 \| Backup` + `2 \| Backup (2)` |
+| 加密备份 | `backup --dest C:\ZJTEST\b.zje ... --password test123 --yes` | `rc=0`（2,165,760 B） |
+| 加密列镜像 | `images --file C:\ZJTEST\b.zje --password test123` | `1 \| Backup` |
+| 加密校验 | `verify --image C:\ZJTEST\b.zje --password test123` | `rc=0` |
+| 加密提取 | `extract --file C:\ZJTEST\b.zje --password test123 --path "\f001.bin"` | `rc=0`，提取文件 SHA256 与源**逐字节一致** |
+
+结论：增量（同文件多时间点）与加密镜像在**真实 Windows** 上按发布版 exe 工作正常；
+`a.wim` 追加后 1,317,596 B，两个子镜像都能列出。
