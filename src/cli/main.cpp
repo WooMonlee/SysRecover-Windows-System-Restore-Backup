@@ -992,7 +992,7 @@ void PrintAllUsage() {
         "  repair-boot [--disk N --part M]   修复引导（ESP 的 BCD/bootmgfw；引导坏了不用重装）\n"
         "  returnold [--disk N --part M] [--yes]  返回旧系统（把 ~old 搬回根，重启进救援层执行）\n"
         "  extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]\n" "                              从镜像里取单个/一组文件（支持通配符）\n" "  history                     列出操作历史（logs/history.jsonl）\n"
-        "  export-drivers [--dest <目录>]  导出本机**启动关键**驱动（供异机还原；不是 1.8GB 全量）\n" "  shortcut --target <exe> [--args <...>] [--name <名>]   建快捷方式\n" "  version                     显示版本\n" "  help [命令]                 本帮助\n" "  --password <pwd>            加密镜像口令（.zje 文件的备份/还原/校验/提取）\n" "  --lang <zh|en>              指定界面语言（如: SysRecover.exe --lang en help 用英文）\n" "\n" "退出码: 0 成功 / 1 通用失败 / 2 参数错 / 3 需管理员 / 4 危险目标被拒 / 5 镜像校验失败 / 6 取消\n" "注意: 还原系统盘会重启进救援层，镜像必须放在**本地分区**（救援层访问不到网络）。\n"));
+        "  export-drivers [--dest <目录>]  导出本机硬盘驱动（供异机还原；不是 1.8GB 全量）\n" "  shortcut --target <exe> [--args <...>] [--name <名>]   建快捷方式\n" "  version                     显示版本\n" "  help [命令]                 本帮助\n" "  --password <pwd>            加密镜像口令（.zje 文件的备份/还原/校验/提取）\n" "  --lang <zh|en>              指定界面语言（如: SysRecover.exe --lang en help 用英文）\n" "\n" "退出码: 0 成功 / 1 通用失败 / 2 参数错 / 3 需管理员 / 4 危险目标被拒 / 5 镜像校验失败 / 6 取消\n" "注意: 还原系统盘会重启进救援层，镜像必须放在**本地分区**（救援层访问不到网络）。\n"));
 }
 
 // 返回 true = 找到了该命令的说明。

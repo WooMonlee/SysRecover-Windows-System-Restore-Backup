@@ -1660,7 +1660,7 @@ void CMainForm::ShowMoreMenu() {
                       Tr(L"镜像检查（完整校验）"));
         // 导出本机启动关键驱动（异机还原用；只导存储/输入类）
         ::AppendMenuW(hMenu, MF_STRING, 7,
-                      Tr(L"导出本机启动驱动（供异机还原）"));
+                      Tr(L"导出本机硬盘驱动供异机还原"));
     }
 
     // MoreBtn 是顶层 float 控件 → GetPos() 已是客户区坐标；换屏幕坐标再弹。
@@ -1755,7 +1755,7 @@ void CMainForm::ExportDriversFlow() {
     }
     wchar_t msg[700] = {};
     swprintf(msg, 700,
-             Tr(L"已导出 %d 个启动关键驱动到：\n%ls\n\n"
+             Tr(L"已导出 %d 个硬盘（存储/输入）驱动到：\n%ls\n\n"
                 L"异机还原时把「驱动目录」指向它即可——只含存储/输入类，"
                 L"体积远小于全量导出（不需要 1.8GB）。"),
              n, dir.c_str());

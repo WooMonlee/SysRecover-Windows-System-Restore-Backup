@@ -583,7 +583,18 @@ bool InstallUefiBootEntry(const std::wstring& espRoot,
             log += "keep " + an + " (unchanged)\n";
             items.push_back({src, dst, false});
         } else {
-            need += FileSize(src);
+            // 2026-10-30：只算**净增量**（新文件 - 已有同名文件）。覆盖写是
+            // 原地替换，旧文件占的空间会退回来；按"全量"算会把"其实只多几 MB"
+            // 误报成"空间不足"（用户实测：need 29.5 / free 29.4，差 0.1MB 却
+            // 失败，真实是旧载荷 28MB 没被计入）。
+            const unsigned long long ssz = FileSize(src);
+            unsigned long long dsz = 0;
+            WIN32_FILE_ATTRIBUTE_DATA fad = {};
+            if (GetFileAttributesExW(dst.c_str(), GetFileExInfoStandard, &fad))
+                dsz = ((unsigned long long)fad.nFileSizeHigh << 32) |
+                      (unsigned long long)fad.nFileSizeLow;
+            if (ssz > dsz)
+                need += ssz - dsz;
             items.push_back({src, dst, true});
         }
     }
@@ -600,15 +611,21 @@ bool InstallUefiBootEntry(const std::wstring& espRoot,
     if (need > 0 && GetDiskFreeSpaceExW(espRoot.c_str(), &freeBytes, nullptr,
                                         nullptr)) {
         const unsigned long long kMargin = 16ull << 20;  // 16MB：给 bcdboot 留位
-        char line[192];
+        char line[256];
         snprintf(line, sizeof(line),
-                 "ESP space: need %.1f MB, free %.1f MB\n", need / 1048576.0,
+                 "ESP space: need(net) %.1f MB + margin %.0f MB, free %.1f MB\n",
+                 need / 1048576.0, kMargin / 1048576.0,
                  freeBytes.QuadPart / 1048576.0);
         log += line;
         if (freeBytes.QuadPart < need + kMargin) {
+            // 文案把"净增量"和"给 bcdboot 的 16MB 余量"都写清，别再出现
+            // "需要 29.5 / 可用 29.4"这种看起来只差 0.1MB 的误导。
             snprintf(line, sizeof(line),
-                     Tr("ESP 空间不足：需要 %.1fMB，可用 %.1fMB。请缩小 ESP 上的" "其它文件，或换用更小的 initramfs\n"),
-                     need / 1048576.0, freeBytes.QuadPart / 1048576.0);
+                     Tr("ESP 空间不足：还需 %.1fMB，另需预留 %.0fMB 给 bcdboot，"
+                        "可用 %.1fMB。请清理 ESP 上的其它文件，或换用更小的 "
+                        "initramfs。\n"),
+                     need / 1048576.0, kMargin / 1048576.0,
+                     freeBytes.QuadPart / 1048576.0);
             log += line;
             return false;
         }

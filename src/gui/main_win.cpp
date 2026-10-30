@@ -107,10 +107,19 @@ LRESULT CALLBACK DelProgWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_DEL_PROGRESS: {
             wchar_t t[256];
             // 格式串含中文 → 必须 Tr()（i18n 门禁 C1）
-            swprintf(t, 256,
-                     Tr(L"正在删除旧系统…\n已删除 %ld 个文件，失败 %ld 个，已用 %llu 秒"),
-                     (long)wp, (long)lp,
-                     (unsigned long long)((GetTickCount64() - g_delStart) / 1000));
+            const unsigned long long el =
+                (GetTickCount64() - g_delStart) / 1000;
+            if (el >= 5) {
+                // 2026-10-30 用户规格：预计要删很久时，明确告诉用户可以先去忙
+                swprintf(t, 256,
+                         Tr(L"正在删除旧系统…\n已删除 %ld 个文件，失败 %ld 个，已用 %llu 秒\n"
+                            L"文件较多，可能要几分钟：可点「在后台继续」去做别的，删完会提示"),
+                         (long)wp, (long)lp, el);
+            } else {
+                swprintf(t, 256,
+                         Tr(L"正在删除旧系统…\n已删除 %ld 个文件，失败 %ld 个，已用 %llu 秒"),
+                         (long)wp, (long)lp, el);
+            }
             SetWindowTextW(hwnd, t);
             InvalidateRect(hwnd, nullptr, TRUE);
             return 0;

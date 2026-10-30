@@ -49,6 +49,7 @@ struct DelStat {
     long fail = 0;
     long taken = 0;  // 多少个是靠提权夺权后才删掉的
     long long lastLogMs = 0;  // 上次进度日志时刻（GetTickCount64）
+    unsigned long long lastCbMs = 0;  // 上次进度回调时刻（500ms 节流）
     long forceLogged = 0;  // ForceDeleteItem 已留证次数（前 20 次逐条）
 };
 
@@ -221,10 +222,18 @@ void DeleteRec(const std::wstring& dir, DelStat& st,
                     LogWarn("swap leftover del fail: " + ToUtf8(p) +
                             " err=" + std::to_string(GetLastError()));
             }
-            // 进度：每 200 个文件回调一次（大树删除可显示进度）
-            if (progress && *progress &&
-                ((st.ok + st.fail) % 200) == 0)
-                (*progress)(st.ok, st.fail, st.taken);
+            // 进度回调（2026-10-30 用户规格）：**每 0.5 秒**一次（界面上的
+            // 计数/秒数要持续动）；保留"每 200 个"作为快速删除时的下限，
+            // 避免瞬间删完却一次都不回调。
+            if (progress && *progress) {
+                const unsigned long long nowCb = GetTickCount64();
+                if (st.lastCbMs == 0 ||
+                    nowCb - st.lastCbMs >= 500 ||
+                    ((st.ok + st.fail) % 200) == 0) {
+                    st.lastCbMs = nowCb;
+                    (*progress)(st.ok, st.fail, st.taken);
+                }
+            }
             // 进度日志：**全局**计数每 500 条 或 距上次 ≥10s 心跳（任一满足即打）。
             // 不再按单目录 localCount —— Windows 树单目录极少超 2000，
             // 删完整棵树也可能全程零日志（0.7.52 之前的盲区，用户现场只见
@@ -597,6 +606,10 @@ void DeleteSwapLeftover(const SwapLeftInfo& i, DeleteProgressFn progress) {
         // 首轮失败（典型：.NET/TrustedInstaller ACL，err=5）→ 系统 takeown +
         // icacls 批量处理剩余项，再删一次；仍不行 → 登记下次开机 SYSTEM 任务。
         bool bootCleanup = false;
+        // 2026-10-30：批量 takeown /r 会把剩余树**再走一遍**；若剩余很多
+        //（或带 junction），既慢又可能跟链接跑。超过 3000 项直接交给开机
+        // SYSTEM 任务，不再二次扫描。
+        const bool allowBatch = (st.fail <= 3000);
         // 只差 .zj-keepold（删除成功的常见收尾）→ 清标记 + rmdir，别走夺权
         {
             const std::wstring mk = ExtPath(dir) + L"\\\\.zj-keepold";
@@ -605,7 +618,7 @@ void DeleteSwapLeftover(const SwapLeftInfo& i, DeleteProgressFn progress) {
                 RemoveDirectoryW(ExtPath(dir).c_str());
             }
         }
-        if (IsDir(dir)) {
+        if (IsDir(dir) && allowBatch) {
             std::string blog;
             LogInfo("swap leftover: batch takeown/icacls retry (fail=" +
                     std::to_string(st.fail) + ")");
@@ -661,6 +674,17 @@ void DeleteSwapLeftover(const SwapLeftInfo& i, DeleteProgressFn progress) {
 }
 
 void DeleteSwapLeftoverAsync(const SwapLeftInfo& i) {
+    // 2026-10-30：同一盘只允许一个删除线程（否则每次开机/重复点击都会叠一个，
+    // 互相抢文件句柄 + 重复 takeown，越删越慢）。先占位再起线程；线程结束时
+    // DeleteSwapLeftover 里的 BusyUnmark 会释放。
+    {
+        std::lock_guard<std::mutex> lk(g_busyMx);
+        if (g_busy.count(i.drive)) {
+            LogInfo("swap leftover delete: already running for this drive, skip");
+            return;
+        }
+        g_busy.insert(i.drive);
+    }
     std::thread([i] { DeleteSwapLeftover(i); }).detach();
 }
 
