@@ -1063,6 +1063,7 @@ int main() {
         }
     }
     sysrecover::InitI18n(langArg.empty() ? nullptr : langArg.c_str());
+    sysrecover::EnsureTempDir();  // 同 GUI（PIT-192）
     // （Q1「先落盘后搬家」，用户 2026-10-18：启动搬迁块已删除 —— 搬家等用户
     //  点「确定还原」后再做。SettleHome 由 StageRestoreImpl 在确认后自动调用，
     //  仅还原/返回旧系统触发；无安全盘时在 CmdRestore 结束后打印警告。）

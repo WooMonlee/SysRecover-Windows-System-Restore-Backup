@@ -12,10 +12,92 @@
 #include <cstring>
 #include <cwchar>
 #include <cwctype>
+#include <map>
 #include <vector>
 
 namespace sysrecover {
 namespace {
+
+// 路径进日志用（原先是 std::string(w.begin(), w.end())，中文目录会变成
+// "E:\]l؟\Drivers" 这种乱码，现场排错看不出写到了哪）。
+std::string U8(const std::wstring& w) {
+    if (w.empty()) return std::string();
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0,
+                                      nullptr, nullptr);
+    if (n <= 1) return std::string();
+    std::string o((size_t)n - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, &o[0], n, nullptr, nullptr);
+    return o;
+}
+
+bool IsDirW(const std::wstring& p) {
+    const DWORD a = GetFileAttributesW(p.c_str());
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+// 逐级建目录（单层 CreateDirectoryW 在 "%TEMP%" 整个不存在时会失败 ——
+// 2026-10-30 客户现场正是这种情况）。
+bool EnsureDirTree(const std::wstring& dir) {
+    if (dir.empty()) return false;
+    if (IsDirW(dir)) return true;
+    const size_t pos = dir.find_last_of(L"\\/");
+    if (pos != std::wstring::npos && pos >= 2)
+        EnsureDirTree(dir.substr(0, pos));
+    CreateDirectoryW(dir.c_str(), nullptr);
+    return IsDirW(dir);
+}
+
+// 删目录树（只用于清理我们自己导出的 boot-* 旧目录；跳过重解析点）。
+bool RemoveTreeW(const std::wstring& dir, int depth = 0) {
+    if (depth > 32 || !IsDirW(dir)) return true;
+    WIN32_FIND_DATAW fd = {};
+    HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L".."))
+                continue;
+            const std::wstring p = dir + L"\\" + fd.cFileName;
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)
+                    RemoveDirectoryW(p.c_str());  // 只删链接本身
+                else
+                    RemoveTreeW(p, depth + 1);
+            } else {
+                SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_NORMAL);
+                DeleteFileW(p.c_str());
+            }
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    SetFileAttributesW(dir.c_str(), FILE_ATTRIBUTE_NORMAL);
+    return RemoveDirectoryW(dir.c_str()) != FALSE || !IsDirW(dir);
+}
+
+// 导出后清理同级的旧 boot-* 目录，只留刚写的这一个。
+int PruneOldExports(const std::wstring& keepDir) {
+    const size_t sl = keepDir.find_last_of(L"\\/");
+    if (sl == std::wstring::npos) return 0;
+    const std::wstring parent = keepDir.substr(0, sl);
+    const std::wstring base = keepDir.substr(sl + 1);
+    if (base.compare(0, 5, L"boot-") != 0) return 0;
+    WIN32_FIND_DATAW fd = {};
+    HANDLE h = FindFirstFileW((parent + L"\\boot-*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    int removed = 0;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+        const std::wstring p = parent + L"\\" + fd.cFileName;
+        if (_wcsicmp(p.c_str(), keepDir.c_str()) == 0) continue;
+        if (RemoveTreeW(p)) {
+            ++removed;
+            LogInfo("export drivers: pruned old folder " + U8(p));
+        } else {
+            LogWarn("export drivers: prune failed " + U8(p));
+        }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return removed;
+}
 
 bool PeMachineIs64(const std::wstring& exePath, bool* is64) {
     if (!is64) return false;
@@ -156,14 +238,43 @@ int ProbeImageOs(const std::wstring& image, int index, int* major, int* minor,
     if (major) *major = 0;
     if (minor) *minor = 0;
     if (is64) *is64 = false;
-    wchar_t tmp[MAX_PATH] = {};
-    if (!GetTempPathW(MAX_PATH, tmp)) {
-        err = Tr(L"无法获取临时目录");
+    // 2026-10-30 客户实测（wimlib rc=48 = WIMLIB_ERR_OPENDIR，
+    // wimlib-errors.log: Can't open or create directory
+    // "C:\\Users\\Administrator\\AppData\\Local\\Temp\\zjuni-1856"
+    // status=c000003a = STATUS_OBJECT_PATH_NOT_FOUND）：
+    // 刚还原完的新系统里 `%TEMP%` **整个目录都可能不存在**，单层
+    // CreateDirectoryW 建不出来 → wimlib 打不开目标目录 → 我们误报
+    // "镜像内缺少 ntoskrnl.exe"。用户以为加驱动包才"治好"，其实是那时 TEMP
+    // 已被别的程序建出来了。现在：递归建目录 + 多级回退 + 说清是环境问题。
+    const std::wstring tag = L"zjuni-" + std::to_wstring(GetCurrentProcessId());
+    std::vector<std::wstring> bases;
+    {
+        wchar_t tmp[MAX_PATH] = {};
+        if (GetTempPathW(MAX_PATH, tmp)) bases.push_back(tmp);
+        wchar_t win[MAX_PATH] = {};
+        if (GetWindowsDirectoryW(win, MAX_PATH))
+            bases.push_back(std::wstring(win) + L"\\Temp");
+        bases.push_back(LogsDir() + L"\\probe");  // 最后兜底：日志根下
+    }
+    std::wstring dir;
+    for (const auto& base : bases) {
+        std::wstring cand = base;
+        while (!cand.empty() && (cand.back() == L'\\' || cand.back() == L'/'))
+            cand.pop_back();
+        cand += L"\\" + tag;
+        if (EnsureDirTree(cand) && IsDirW(cand)) {
+            dir = cand;
+            break;
+        }
+        LogWarn("universal: probe temp unusable: " + U8(cand) + " err=" +
+                std::to_string(GetLastError()));
+    }
+    if (dir.empty()) {
+        err = Tr(L"无法创建临时目录（TEMP 与 Windows\\Temp 都不可写）");
         return 1;
     }
-    std::wstring dir = std::wstring(tmp) + L"zjuni-" +
-                       std::to_wstring(GetCurrentProcessId());
-    CreateDirectoryW(dir.c_str(), nullptr);
+    if (dir.find(tag) != std::wstring::npos)
+        LogInfo("universal: version probe dir=" + U8(dir));
     WimEngine eng;
     if (!eng.ok()) {
         err = Tr(L"wimlib 初始化失败");
@@ -224,7 +335,18 @@ int ProbeImageOs(const std::wstring& image, int index, int* major, int* minor,
         RemoveDirectoryW((dir + L"\\Windows\\System32").c_str());
         RemoveDirectoryW((dir + L"\\Windows").c_str());
         RemoveDirectoryW(dir.c_str());
-        err = Tr(L"镜像内缺少 ntoskrnl.exe");
+        // 区分「镜像真的没有这两个文件」与「文件解不出来」（2026-10-30）：
+        // 元数据说有、或 wimlib 报了错 → 是环境问题（临时目录/空间/权限），
+        // 不能再让用户以为镜像坏了（客户为此白折腾了一小时）。
+        if (rc != 0 || kernelInImage || loaderInImage) {
+            LogWarn("universal: version probe extract failed rc=" +
+                    std::to_string(rc) + " dir=" + U8(dir));
+            err = Tr(L"无法从镜像解出版本探测文件（临时目录不可用或磁盘"
+                     L"已满，wimlib rc=") +
+                  std::to_wstring(rc) + Tr(L"）");
+        } else {
+            err = Tr(L"镜像内缺少 ntoskrnl.exe");
+        }
         return 1;
     }
     FileVersion kv, lv;
@@ -557,6 +679,48 @@ static bool InjectDriverPack(const std::wstring& root,
         }
         keep.push_back(d);
     }
+    // 同名 INF 去重（2026-10-30）：同一个驱动可能出现在多个导出目录/驱动包里
+    // （现场 4 次导出 → iaahcic/integrated 被注入 4 次）。同名只留**修改时间
+    // 最新**的一份（= 最近一次导出 / 最新的包），其余丢弃。
+    if (keep.size() > 1) {
+        std::map<std::wstring, size_t> byName;
+        std::vector<InfInfo> uniq;
+        std::vector<unsigned long long> stamp;
+        int dup = 0;
+        for (const auto& d : keep) {
+            std::wstring name = d.path;
+            const size_t sl = name.find_last_of(L"\\/");
+            if (sl != std::wstring::npos) name = name.substr(sl + 1);
+            for (auto& c : name) c = (wchar_t)towlower(c);
+            unsigned long long t = 0;
+            WIN32_FILE_ATTRIBUTE_DATA fad = {};
+            if (GetFileAttributesExW(d.path.c_str(), GetFileExInfoStandard, &fad))
+                t = ((unsigned long long)fad.ftLastWriteTime.dwHighDateTime
+                     << 32) |
+                    (unsigned long long)fad.ftLastWriteTime.dwLowDateTime;
+            auto it = byName.find(name);
+            if (it == byName.end()) {
+                byName[name] = uniq.size();
+                uniq.push_back(d);
+                stamp.push_back(t);
+            } else {
+                ++dup;
+                if (t > stamp[it->second]) {
+                    uniq[it->second] = d;
+                    stamp[it->second] = t;
+                }
+            }
+        }
+        if (dup > 0) {
+            log += "universal: dedupe inf by name: kept=" +
+                   std::to_string(uniq.size()) + " dropped=" +
+                   std::to_string(dup) + "\n";
+            LogInfo("universal: dedupe inf by name kept=" +
+                    std::to_string(uniq.size()) + " dropped=" +
+                    std::to_string(dup));
+        }
+        keep.swap(uniq);
+    }
     log += "universal: drivers scanned=" + std::to_string(all.size()) +
            " kept=" + std::to_string(keep.size()) +
            " skip(class)=" + std::to_string(skipClass) +
@@ -755,8 +919,7 @@ int ExportBootCriticalDrivers(const std::wstring& destDir, int* exported,
         err = Tr(L"没有找到可导出的启动关键驱动（可能本机用的是标准 AHCI/NVMe）");
         return 1;
     }
-    if (!destDir.empty())
-        CreateDirectoryW(destDir.c_str(), nullptr);
+    if (!destDir.empty()) EnsureDirTree(destDir);  // 父目录 Drivers\\ 可能还不存在
     int ok = 0;
     for (const auto& name : oem) {
         std::wstring wname(name.begin(), name.end());
@@ -772,9 +935,17 @@ int ExportBootCriticalDrivers(const std::wstring& destDir, int* exported,
         }
     }
     if (exported) *exported = ok;
+    // 只保留最近一次导出（用户 2026-10-30 问「boot-* 会不会自动删」）：
+    // 每导出一次就多一个 `Drivers\\boot-<时间>\\`，注入时同名 INF 会被重复
+    // 扫到（现场日志：4 次导出 → 同一驱动被 DISM 注入 4 次，白等几分钟）。
+    if (ok > 0) {
+        const int pruned = PruneOldExports(destDir);
+        if (pruned > 0)
+            LogInfo("export drivers: kept newest, pruned " +
+                    std::to_string(pruned) + " old export folder(s)");
+    }
     LogInfo("export boot-critical drivers: " + std::to_string(ok) + "/" +
-            std::to_string(oem.size()) + " -> " +
-            std::string(destDir.begin(), destDir.end()));
+            std::to_string(oem.size()) + " -> " + U8(destDir));
     if (ok == 0) {
         err = Tr(L"驱动导出全部失败（权限不足或驱动被占用）");
         return 1;

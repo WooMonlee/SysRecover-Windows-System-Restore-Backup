@@ -433,6 +433,46 @@ bool UseInstallDirLogHome(const std::wstring& installDir,
 
 bool LogHomeDegraded() { return g_logHomeDegraded; }
 
+namespace {
+
+bool MakeDirTree(const std::wstring& dir, int depth = 0) {
+    if (dir.empty() || depth > 8) return false;
+    const DWORD a = GetFileAttributesW(dir.c_str());
+    if (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY))
+        return true;
+    const size_t pos = dir.find_last_of(L"\\/");
+    if (pos != std::wstring::npos && pos >= 2)
+        MakeDirTree(dir.substr(0, pos), depth + 1);
+    CreateDirectoryW(dir.c_str(), nullptr);
+    const DWORD a2 = GetFileAttributesW(dir.c_str());
+    return a2 != INVALID_FILE_ATTRIBUTES && (a2 & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+}  // namespace
+
+void EnsureTempDir() {
+    wchar_t buf[MAX_PATH] = {};
+    const DWORD n = GetTempPathW(MAX_PATH, buf);
+    if (n > 0) {
+        std::wstring d(buf, n);
+        while (!d.empty() && (d.back() == L'\\' || d.back() == L'/'))
+            d.pop_back();
+        if (MakeDirTree(d) && DirWritable(d)) return;
+        LogWarn("temp dir unusable: " + ToUtf8(d) +
+                " -> falling back to <Windows>\\Temp");
+    }
+    wchar_t win[MAX_PATH] = {};
+    if (!GetWindowsDirectoryW(win, MAX_PATH)) return;
+    const std::wstring alt = std::wstring(win) + L"\\Temp";
+    if (MakeDirTree(alt) && DirWritable(alt)) {
+        SetEnvironmentVariableW(L"TEMP", alt.c_str());
+        SetEnvironmentVariableW(L"TMP", alt.c_str());
+        LogInfo("temp dir redirected to " + ToUtf8(alt));
+    } else {
+        LogWarn("temp dir fallback failed: " + ToUtf8(alt));
+    }
+}
+
 std::string MigrateLogsToLogHome() {
     // PIT-156（2026-10-18）：触发面推广到**每次启动**（不再只限"备返克隆首启"）
     // —— 目的是给 CleanupStrayLogs 的"整个删掉残留文件夹"创造条件：先把残留里

@@ -476,6 +476,9 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     // i18n：词典必须在任何 Tr() 与建窗之前装好（皮肤 XML 也是在建窗时翻译的）。
     // GUI 只认 SYSRECOVER_LANG 环境变量 + 系统界面语言（CLI 另支持 --lang）。
     sysrecover::InitI18n(nullptr);
+    // 临时目录兜底（PIT-192）：刚还原完的新系统可能连 %TEMP% 目录都没有，
+    // 不建出来会让 wimlib / dism 的临时动作全部失败。
+    sysrecover::EnsureTempDir();
     CPaintManagerUI::SetInstance(hInstance);
     // 资源根 = **应用目录**（不是 exe 目录）：启动器布局下 exe 在 <root>\x86\ 或 \x64\ 子目录里，
     // 而 skin\ 放在 <root>（与位数无关）→ 必须用 sysrecover::ExeDir()（它会自动上移一级）。

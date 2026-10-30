@@ -1632,3 +1632,34 @@
   · 修复：`need += max(0, srcSize - dstSize)`（覆盖是原地替换）；失败文案改为
     "还需 X MB，另需预留 16MB 给 bcdboot，可用 Y MB"，不再出现"看着只差 0.1MB"的误导。
   · 与「导出本机驱动」无关：导出写的是程序目录（C:），不占 ESP；只是时间上挨着，属误判。
+
+### PIT-192
+
+- PIT-192 **异机还原误报「镜像内缺少 ntoskrnl.exe」= 新系统里 `%TEMP%` 整个目录不存在（wimlib rc=48）**（`0.9.66`，2026-10-30，客户日志 `SysRecover-logs-20261030-191244`）
+  · **现象**：23 号台式机的镜像异机还原到笔记本，勾「异机还原」后点开始 → `暂存失败：异机还原：无法读取镜像内的系统版本（镜像内缺少 ntoskrnl.exe）`；
+    换/加笔记本驱动包后又能过 → 用户以为"驱动包不够"。
+  · **证据链**：`wimlib-errors.log` 三行
+    `[ERROR] Can't open or create directory "C:\Users\Administrator\AppData\Local\Temp\zjuni-1856" (status=c000003a)`
+    —— `c000003a` = **STATUS_OBJECT_PATH_NOT_FOUND**，即**父目录不存在**；主日志对应
+    `universal: image metadata ntoskrnl=yes winload=yes` → `extract version probes rc=48`
+    （wimlib 48 = `WIMLIB_ERR_OPENDIR`）→ 我们却报了「镜像内缺少 ntoskrnl.exe」。
+  · **根因**：`ProbeImageOs` 用 `GetTempPathW` 拿 `%TEMP%`，而它**只回显环境变量、不建目录**；
+    这台机器刚用 17763 镜像还原过（18:19 暂存 → 18:23 新系统首启），新系统里
+    `C:\Users\Administrator\AppData\Local\Temp` **整个目录都不存在**，
+    单层 `CreateDirectoryW` 建不出来 → wimlib 打不开目标目录 → 探测失败 → 误报镜像坏。
+    18:33 再试就"成功"了：那时 TEMP 已被别的程序建出来 —— 与"加驱动包"无关，纯巧合。
+  · **修复**：
+    - 新增 `common/relocate.{h,cpp}::EnsureTempDir()`：**递归**建 TEMP；建不出来（只读/权限）
+      就把 `TEMP`/`TMP` 环境变量改指 `<Windows>\Temp`。GUI/CLI 启动时各调一次（幂等）；
+    - `ProbeImageOs`：递归建探测目录 + 三级回退（`%TEMP%` → `<Windows>\Temp` →
+      `<日志根>\probe`），每级失败都记 `universal: probe temp unusable: ... err=N`；
+    - **错误文案分清两种**：元数据里有 / wimlib 报错 → 「无法从镜像解出版本探测文件（临时目录不可用或磁盘已满，wimlib rc=N）」；
+      只有元数据确实没有才说「镜像内缺少 ntoskrnl.exe」。
+  · **同时修掉的两个连带问题**（同一次现场日志暴露）：
+    - `Drivers\boot-<时间>\` 每导出一次就多一份（客户导了 4 次），注入时同一驱动被 DISM
+      注入 4 次（日志：`added iaAHCIC.inf` × 4、`kept=33` 实际只有 11 个不同的驱动）→
+      现在导出成功后**只保留最新一份**（删同级旧 `boot-*`，记 `pruned N old export folder(s)`）；
+      注入前再按 INF 文件名去一次重（同名留修改时间最新的，记 `dedupe inf by name kept=N dropped=M`）。
+      `Drivers\` 下用户自己放的其它目录（如笔记本驱动包）**不动**。
+    - 导出/探测日志里的中文路径原先用 `std::string(w.begin(), w.end())` 转，落盘是
+      `E:\]l؟\Drivers\...` 这种乱码 → 统一改 UTF-8。

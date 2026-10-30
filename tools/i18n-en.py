@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：749/751 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：750/752 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n已登记为「下次开机自动清除」（重启后会自动删完）。': '\n\nThe remaining files are scheduled for automatic removal at the next boot (they will be gone after a reboot).',
@@ -440,8 +440,10 @@ EN = {
     '方案二：MBR（Legacy 启动）— 系统盘 %lluGB（整盘，不创建数据盘）': 'Option 2: MBR (Legacy boot) -- system %lluGB (whole disk; no data partition)',
     '旗舰版': 'Ultimate',
     '无卷标': 'No label',
+    '无法从镜像解出版本探测文件（临时目录不可用或磁盘已满，wimlib rc=': 'Failed to extract the version probe files from the image (temp folder unusable or disk full, wimlib rc=',
     '无法写入分区脚本（临时目录不可写）': 'Cannot write the partition script (temporary directory is not writable)',
     '无法创建 CPU 限制任务对象（err=%lu）': 'Failed to create the CPU limit job object (err=%lu)',
+    '无法创建临时目录（TEMP 与 Windows\\Temp 都不可写）': 'Cannot create a temp folder (neither TEMP nor Windows\\Temp is writable)',
     '无法创建加密镜像文件（磁盘满/无权限？）': 'Cannot create the encrypted image file (disk full or no permission?)',
     '无法创建备份目录：': 'Failed to create the backup directory: ',
     '无法创建工作线程，请重试': 'Could not create the worker thread, please retry',
@@ -457,7 +459,6 @@ EN = {
     '无法打开服务「': 'Could not open service "',
     '无法打开服务控制管理器（错误 ': 'Could not open the Service Control Manager (error ',
     '无法纠正扇区': 'Uncorrectable sectors',
-    '无法获取临时目录': 'Cannot get the temp directory',
     '无法设置 CPU 限制（err=%lu）': 'Failed to set the CPU limit (err=%lu)',
     '无法读取镜像内系统版本': 'Cannot read the OS version inside the image',
     '无法返回旧系统：\n': 'Cannot return to the old system:\n',

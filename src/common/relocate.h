@@ -83,6 +83,15 @@ bool UseInstallDirLogHome(const std::wstring& installDir,
 // 规则 ④：程序目录与所有固定分区都不可写（日志无处可放）。
 bool LogHomeDegraded();
 
+// 临时目录兜底（2026-10-30）：刚还原完/克隆后的新系统里
+// `%TEMP%`（`C:\Users\<用户>\AppData\Local\Temp`）可能**整个目录都不存在**，
+// 而 GetTempPathW 只是回显环境变量（不建目录）→ 单层 CreateDirectoryW 失败 →
+// wimlib / dism 相关动作报 "Can't open or create directory ... status=c000003a"
+// （现场表现：异机还原误报「镜像内缺少 ntoskrnl.exe」，rc=48）。
+// 本函数：递归建好 TEMP；建不出来就把 TEMP/TMP 改指 `<Windows>\Temp`。
+// GUI/CLI 启动时各调一次（幂等）。
+void EnsureTempDir();
+
 // 克隆后**首启**搬迁（用户 2026-10-17 规格）：把数据盘上的旧日志位置搬回日志根
 // （「先搬日志，再询问是否删除旧系统」）。
 //   源 = 各固定盘（不含系统盘）的 `<盘>:\ZJRESTORE\logs`（PIT-059 软件目录回退）
