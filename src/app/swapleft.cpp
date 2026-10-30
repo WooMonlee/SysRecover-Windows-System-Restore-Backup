@@ -19,6 +19,7 @@
 #include <thread>
 
 #include "../common/logger.h"
+#include "../common/process.h"  // takeown/icacls/schtasks（权限兜底）
 #include "../common/relocate.h"
 
 namespace sysrecover {
@@ -192,6 +193,10 @@ void DeleteRec(const std::wstring& dir, DelStat& st,
         do {
             if (std::wcscmp(fd.cFileName, L".") == 0 ||
                 std::wcscmp(fd.cFileName, L"..") == 0)
+                continue;
+            // 保留备返标记：删除失败时它是"这是用户选择删除的旧系统"的证据
+            // （成功了会在 DeleteSwapLeftover 里补删，不影响结果）。
+            if (depth == 0 && std::wcscmp(fd.cFileName, L".zj-keepold") == 0)
                 continue;
             std::wstring p = dir + L"\\" + fd.cFileName;
             // junction/symlink：只删链接本身，绝不递归进目标
@@ -480,8 +485,63 @@ void BackupContractsBeforeDelete(const std::wstring& oldRoot) {
                 std::to_string(copied) + " file(s) -> logs/");
 }
 
+// 批量夺权（2026-10-30）：逐文件 API 夺权在部分 TrustedInstaller ACL 上仍 err=5
+// （用户实测：takeown 调了 10 次、taken=0）。改用系统自带 takeown/icacls 对
+// **剩余** 的少量文件做一次批量处理，再重试删除。
+void BatchTakeOwnAndGrant(const std::wstring& dir, std::string& log) {
+    const std::wstring tk = SysToolPath(L"takeown.exe");
+    const std::wstring ic = SysToolPath(L"icacls.exe");
+    std::string out;
+    RunProcess(tk, L"/f \"" + dir + L"\" /r /d y /a", out);
+    log += "takeown rc? out=" + out.substr(0, 400) + "\n";
+    out.clear();
+    RunProcess(ic, L"\"" + dir + L"\" /grant *S-1-5-32-544:F /t /c /q", out);
+    log += "icacls out=" + out.substr(0, 400) + "\n";
+}
+
+// 最后兜底（2026-10-30）：仍删不掉 → 登记**下次开机**由 SYSTEM 计划任务删。
+// 开机阶段没有用户进程占用、SYSTEM 对 TrustedInstaller 目录也有完全控制；
+// 任务执行成功后会自删（cmd 删除自己 + schtasks /delete）。
+bool g_bootCleanupScheduled = false;
+
+bool ScheduleBootCleanup(const std::wstring& dir) {
+    const std::wstring cmdPath = L"C:\\Windows\\Temp\\zj-cleanup-old.cmd";
+    const std::string d = ToUtf8(dir);
+    std::string body;
+    body += "@echo off\r\n";
+    body += "takeown /f \"" + d + "\" /r /d y /a >nul 2>&1\r\n";
+    body += "icacls \"" + d + "\" /grant *S-1-5-32-544:F /t /c /q >nul 2>&1\r\n";
+    body += "rd /s /q \"" + d + "\"\r\n";
+    body += "if exist \"" + d + "\" exit /b 1\r\n";
+    body += "del \"%~f0\"\r\n";
+    body += "schtasks /delete /tn ZJSysRecoverOldCleanup /f >nul 2>&1\r\n";
+    HANDLE h = CreateFileW(cmdPath.c_str(), GENERIC_WRITE, 0, nullptr,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        LogWarn("boot cleanup: write cmd failed err=" +
+                std::to_string(GetLastError()));
+        return false;
+    }
+    DWORD wr = 0;
+    WriteFile(h, body.data(), (DWORD)body.size(), &wr, nullptr);
+    CloseHandle(h);
+    std::string out;
+    const int rc = RunProcess(
+        SysToolPath(L"schtasks.exe"),
+        L"/create /tn ZJSysRecoverOldCleanup /tr \"" + cmdPath +
+            L"\" /sc onstart /ru SYSTEM /rl HIGHEST /f",
+        out);
+    LogInfo("boot cleanup task: rc=" + std::to_string(rc) + " " +
+            out.substr(0, 200));
+    g_bootCleanupScheduled = (rc == 0);
+    return rc == 0;
+}
+
+bool LastDeleteBootCleanupScheduled() { return g_bootCleanupScheduled; }
+
 void DeleteSwapLeftover(const SwapLeftInfo& i, DeleteProgressFn progress) {
     if (!i.drive) return;
+    g_bootCleanupScheduled = false;
     std::wstring dir = RootPath(i.drive) + (i.isNew ? L"~new" : L"~old");
     BusyMark(i.drive);
     auto t0 = std::chrono::steady_clock::now();
@@ -533,6 +593,41 @@ void DeleteSwapLeftover(const SwapLeftInfo& i, DeleteProgressFn progress) {
         }
         DelStat st;
         DeleteRec(dir, st, progress ? &progress : nullptr, 0);
+        // ── 权限兜底（2026-10-30）────────────────────────────────────
+        // 首轮失败（典型：.NET/TrustedInstaller ACL，err=5）→ 系统 takeown +
+        // icacls 批量处理剩余项，再删一次；仍不行 → 登记下次开机 SYSTEM 任务。
+        bool bootCleanup = false;
+        // 只差 .zj-keepold（删除成功的常见收尾）→ 清标记 + rmdir，别走夺权
+        {
+            const std::wstring mk = ExtPath(dir) + L"\\\\.zj-keepold";
+            if (GetFileAttributesW(mk.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                DeleteFileW(mk.c_str());
+                RemoveDirectoryW(ExtPath(dir).c_str());
+            }
+        }
+        if (IsDir(dir)) {
+            std::string blog;
+            LogInfo("swap leftover: batch takeown/icacls retry (fail=" +
+                    std::to_string(st.fail) + ")");
+            BatchTakeOwnAndGrant(dir, blog);
+            LogInfo("swap leftover batch: " + blog);
+            DelStat st2;
+            DeleteRec(dir, st2, progress ? &progress : nullptr, 0);
+            st.ok += st2.ok;
+            st.fail = st2.fail;
+            st.taken += st2.taken;
+            // 只剩 .zj-keepold 时补删并 rmdir
+            if (IsDir(dir)) {
+                DeleteFileW((ExtPath(dir) + L"\\.zj-keepold").c_str());
+                RemoveDirectoryW(ExtPath(dir).c_str());
+            }
+            if (IsDir(dir)) {
+                bootCleanup = ScheduleBootCleanup(dir);
+                LogWarn("swap leftover: still present after retry -> boot "
+                        "cleanup scheduled=" +
+                        std::string(bootCleanup ? "yes" : "no"));
+            }
+        }
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                       std::chrono::steady_clock::now() - t0)
                       .count();
@@ -545,7 +640,8 @@ void DeleteSwapLeftover(const SwapLeftInfo& i, DeleteProgressFn progress) {
                     " fail=" + std::to_string(st.fail) +
                     " taken=" + std::to_string(st.taken) +
                     " elapsed=" + std::to_string(ms) + "ms" +
-                    " (dir still present)");
+                    (bootCleanup ? " (dir still present; boot cleanup scheduled)"
+                                 : " (dir still present)"));
         } else {
             LogInfo("swap leftover delete done: " + DriveStr(i.drive) +
                     (i.isNew ? " ~new" : " ~old") +

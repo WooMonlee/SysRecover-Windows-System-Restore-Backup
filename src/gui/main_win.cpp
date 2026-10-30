@@ -7,6 +7,7 @@
 #include "../common/crash.h"     // 崩溃处理（minidump + 可读日志）
 #include "../common/logger.h"    // LogInfo（启动耗时自检）
 #include "../common/process.h"   // MsSinceProcessStart
+#include <commctrl.h>  // 删除进度条（msctls_progress32）
 #include "../common/selfarch.h"  // 位数自举：32 位程序在 64 位系统上换成 x64\同名
 #include "../common/relocate.h"  // 运行目录搬迁（光盘/U盘：复制到本地固定分区）
 #include "../app/swapleft.h"     // A 引擎残留检测与分流（0.7）
@@ -34,9 +35,43 @@ namespace {
 
 const wchar_t* kDelProgClass = L"SysRecoverDelProg";
 HFONT g_delFont = nullptr;
+HWND g_delBar = nullptr;
+ULONGLONG g_delStart = 0;
 
 LRESULT CALLBACK DelProgWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
+        case WM_CREATE: {
+            g_delStart = GetTickCount64();
+            g_delBar = CreateWindowExW(
+                0, PROGRESS_CLASSW, nullptr,
+                WS_CHILD | WS_VISIBLE | PBS_SMOOTH, 16, 96, 388, 18, hwnd,
+                (HMENU)100, GetModuleHandleW(nullptr), nullptr);
+            if (g_delBar && !SendMessageW(g_delBar, PBM_SETMARQUEE, TRUE, 30))
+                SetTimer(hwnd, 7, 120, nullptr);  // 无 v6 控件时退回定时器
+            CreateWindowExW(0, L"BUTTON", Tr(L"在后台继续"),
+                            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 16, 126, 170,
+                            30, hwnd, (HMENU)1, GetModuleHandleW(nullptr),
+                            nullptr);
+            return 0;
+        }
+        case WM_TIMER:
+            if (wp == 7 && g_delBar) {
+                static int pos = 0;
+                pos = (pos + 7) % 100;
+                SendMessageW(g_delBar, PBM_SETPOS, pos, 0);
+            }
+            return 0;
+        case WM_COMMAND:
+            if (LOWORD(wp) == 1) {  // 「在后台继续」
+                ShowWindow(hwnd, SW_HIDE);
+                // 重新启用主窗，否则隐藏进度窗后主界面"点不动"
+                HWND ow = (HWND)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+                if (ow) EnableWindow(ow, TRUE);
+                sysrecover::LogInfo(
+                    "swap leftover delete UI: hidden by user (continue in "
+                    "background)");
+            }
+            return 0;
         case WM_PAINT: {
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hwnd, &ps);
@@ -50,7 +85,7 @@ LRESULT CALLBACK DelProgWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (g_delFont) SelectObject(hdc, g_delFont);
             wchar_t buf[256];
             int len = GetWindowTextW(hwnd, buf, 256);
-            RECT tr = {16, 40, rc.right - 16, rc.bottom - 16};
+            RECT tr = {16, 10, rc.right - 16, 88};
             DrawTextW(hdc, buf, len, &tr, DT_LEFT | DT_WORDBREAK);
             EndPaint(hwnd, &ps);
             return 0;
@@ -58,14 +93,24 @@ LRESULT CALLBACK DelProgWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_ERASEBKGND:
             return 1;
         case WM_CLOSE:
-            // 删除期间不允许关窗（防半途中止）
+            // 2026-10-30：以前直接 return 0 → 用户点 X "完全没反应"（本次
+            // 客户投诉的就是这个）。现在改成**隐藏窗口、删除转后台继续**：
+            // 既能给用户反馈，又不会半途中止。
+            ShowWindow(hwnd, SW_HIDE);
+            {
+                HWND ow = (HWND)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+                if (ow) EnableWindow(ow, TRUE);
+            }
+            sysrecover::LogInfo(
+                "swap leftover delete UI: user closed -> continue in background");
             return 0;
         case WM_DEL_PROGRESS: {
             wchar_t t[256];
             // 格式串含中文 → 必须 Tr()（i18n 门禁 C1）
             swprintf(t, 256,
-                     Tr(L"正在删除旧系统…\n已删除 %ld 个文件，失败 %ld 个"),
-                     (long)wp, (long)lp);
+                     Tr(L"正在删除旧系统…\n已删除 %ld 个文件，失败 %ld 个，已用 %llu 秒"),
+                     (long)wp, (long)lp,
+                     (unsigned long long)((GetTickCount64() - g_delStart) / 1000));
             SetWindowTextW(hwnd, t);
             InvalidateRect(hwnd, nullptr, TRUE);
             return 0;
@@ -179,8 +224,8 @@ bool RunDeleteWithProgress(HWND owner, const sysrecover::SwapLeftInfo& it) {
     HWND hwnd = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW, kDelProgClass,
         Tr(L"删除旧系统"),
-        WS_POPUP | WS_CAPTION | WS_SYSMENU,
-        (sw - 420) / 2, (sh - 160) / 2, 420, 160, owner, nullptr,
+        WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
+        (sw - 420) / 2, (sh - 200) / 2, 420, 200, owner, nullptr,
         GetModuleHandleW(nullptr), nullptr);
     if (!hwnd) {
         sysrecover::LogWarn("swap leftover delete UI: CreateWindowExW failed err=" +
@@ -188,6 +233,11 @@ bool RunDeleteWithProgress(HWND owner, const sysrecover::SwapLeftInfo& it) {
         return true;  // 失败 = ~old 仍在（不能报成"已删成功"）
     }
 
+    // 2026-10-30（客户实测）：删除期间**禁用主窗**。进度窗是 TOPMOST，
+    // 主窗若还能点，用户点「日志」会弹出一个被进度窗挡住的确认框 → 看起来
+    // "按钮点不动"。把 owner 记到窗口里，隐藏进度窗时再恢复。
+    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)owner);
+    if (owner) ::EnableWindow(owner, FALSE);
     // 初始文案
     SetWindowTextW(hwnd, Tr(L"正在删除旧系统…\n准备中…"));
     ShowWindow(hwnd, SW_SHOW);
@@ -210,6 +260,11 @@ bool RunDeleteWithProgress(HWND owner, const sysrecover::SwapLeftInfo& it) {
         nullptr, 8 * 1024 * 1024,
         [](LPVOID p) -> DWORD {
             auto* c = static_cast<Ctx*>(p);
+            // 2026-10-30：删 2.7 万文件会把磁盘打满、explorer 都卡（客户现场
+            // 两个 explorer dump）。用后台模式让前台优先（Win7+ 有效）；
+            // 代价是删得稍慢，但界面/桌面不再"假死"。
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+            SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
             // VEH 兜底（0.7.54）：删除线程内致命异常先落一条再放行 —
             // 崩溃过滤器若没写出 dump 也留线索。线程结束时移除。
             PVOID veh = AddVectoredExceptionHandler(1, DelWorkerVeh);
@@ -231,6 +286,7 @@ bool RunDeleteWithProgress(HWND owner, const sysrecover::SwapLeftInfo& it) {
         sysrecover::LogWarn("swap leftover delete UI: CreateThread failed err=" +
                             std::to_string(GetLastError()));
         DestroyWindow(hwnd);
+        if (owner) ::EnableWindow(owner, TRUE);  // 别把主窗永远禁着
         return true;  // 失败 = ~old 仍在（不能报成"已删成功"）
     }
     CloseHandle(hThread);
@@ -241,6 +297,7 @@ bool RunDeleteWithProgress(HWND owner, const sysrecover::SwapLeftInfo& it) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    if (owner) ::EnableWindow(owner, TRUE);
     sysrecover::LogInfo("swap leftover delete UI: message loop exited");
     // 从 WM_QUIT 的 wParam 取不出 stillThere（已 destroy）→ 用目录复核
     std::wstring dir = std::wstring(1, it.drive) +
@@ -556,12 +613,15 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
                             continue;
                         bool stillThere = RunDeleteWithProgress(h, it);
                         if (stillThere) {
-                            MessageBoxW(
-                                h,
-                                Tr(L"删除未完全成功，~old 仍有残留；"
-                                   "为避免留下半成品，本次未删除本程序。\n"
-                                   "可稍后重试，或重启后再删。"),
-                                Tr(L"删除旧系统"), MB_OK | MB_ICONWARNING);
+                            std::wstring m2 = Tr(
+                                L"删除未完全成功，~old 仍有残留；"
+                                L"为避免留下半成品，本次未删除本程序。\n"
+                                L"可稍后重试，或重启后再删。");
+                            if (sysrecover::LastDeleteBootCleanupScheduled())
+                                m2 += Tr(L"\n\n部分文件已登记为"
+                                         L"「下次开机自动清除」（重启后生效）。");
+                            MessageBoxW(h, m2.c_str(), Tr(L"删除旧系统"),
+                                        MB_OK | MB_ICONWARNING);
                             continue;
                         }
                         std::string blog;
@@ -596,7 +656,11 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
                                       Tr(L"删除未完全成功，~old 仍有残留。\n"))
                                   + Tr(L"部分文件可能被占用；可稍后重试，") +
                                       L"\n" +
-                                      Tr(L"或重启后再删（还原前必须清干净）。")
+                                      Tr(L"或重启后再删（还原前必须清干净）。") +
+                                      (sysrecover::LastDeleteBootCleanupScheduled()
+                                           ? Tr(L"\n\n已登记为「下次开机自动清除」"
+                                                L"（重启后会自动删完）。")
+                                           : std::wstring())
                                 : std::wstring(Tr(L"旧系统已删除，释放磁盘空间。"));
                         MessageBoxW(h, doneMsg.c_str(),
                                     Tr(L"删除旧系统"),

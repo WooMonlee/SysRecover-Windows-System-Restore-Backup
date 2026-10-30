@@ -1,6 +1,7 @@
 # SysRecover en.lang — 词条表（key=中文原文 → value=英文）
 # 由 tools/i18n-wrap.py --gen-lang 生成；改词条请改 tools/i18n-en.py 再重新生成。
 
+\n\n已登记为「下次开机自动清除」（重启后会自动删完）。=\n\nThe remaining files are scheduled for automatic removal at the next boot (they will be gone after a reboot).
 \n\n建议：以管理员身份运行（本程序要读写分区与引导）。=\n\nAdvice: run as administrator (this program reads and writes partitions and boot data).
 \n\n建议：备份源里有文件在持续变化（数据库/下载/云同步目录）。先停掉这些程序，或把它们所在目录加入排除清单后再备份。=\n\nAdvice: files in the backup source keep changing (database/download/cloud-sync folders). Stop those programs first, or add their folders to the exclusion list, then back up again.
 \n\n建议：把镜像文件移到别的分区 —— 它不能放在会被格式化的目标分区上。=\n\nAdvice: move the image file to another partition -- it must not sit on the target partition that will be formatted.
@@ -8,6 +9,7 @@
 \n\n建议：目标盘启用了 BitLocker。请先在「管理员命令提示符」里挂起保护，然后重试：\n    manage-bde -protectors -disable X: -rebootcount 1\n（X 换成目标盘符。还原会覆盖该盘数据，之后不需要恢复保护。）=\n\nAdvice: the target drive has BitLocker enabled. Suspend protection first in an "administrative Command Prompt", then retry:\n    manage-bde -protectors -disable X: -rebootcount 1\n(Replace X with the target drive letter. Restoring overwrites this drive, so protection does not have to be resumed afterwards.)
 \n\n建议：该镜像上次没有写完（备份中途中断过）。请重新做一次备份。=\n\nAdvice: this image was never finished (the backup was interrupted). Please run the backup again.
 \n\n是否仍要继续还原？=\n\nContinue restoring anyway?
+\n\n部分文件已登记为「下次开机自动清除」（重启后生效）。=\n\nSome files are scheduled for automatic removal at the next boot (effective after a reboot).
 \n\n（任务已被用户取消，没有改动目标分区。）=\n\n(The task was cancelled by the user; the target partition was not modified.)
 \n  - NVMe 关键警告位图 \= =\n  - NVMe critical warning bitmap \= 
 \n  - 驱动器自报：即将故障（SMART 阈值已超）=\n  - drive reports imminent failure (SMART threshold exceeded)
@@ -137,7 +139,6 @@ wimlib 初始化失败\n=wimlib initialization failed\n
 专业版=Pro
 丢失！=LOST!
 为新硬盘创建分区=Create partitions on a new disk
-为避免留下半成品，本次未删除本程序。\n可稍后重试，或重启后再删。=the program was NOT deleted to avoid leaving a half-finished state.\nRetry later, or delete again after a reboot.
 之前的程序正在执行任务，无法关闭。\n已为你切回该窗口，请等任务结束后再重新打开。=The previous instance is running a task and cannot be closed.\nIt has been brought back to the foreground; reopen the program after the task finishes.
 九转还原=SysRecover
 介质与数据完整性错误（Media Errors）=Media and data integrity errors (Media Errors)
@@ -187,7 +188,7 @@ wimlib 初始化失败\n=wimlib initialization failed\n
 删除旧系统=Delete Old OS
 删除旧系统后自删=Delete old + self-delete
 删除未完全成功，~old 仍有残留。\n=Deletion was incomplete; ~old still remains.\n
-删除未完全成功，~old 仍有残留；=Deletion did not fully succeed; ~old still has leftovers;
+删除未完全成功，~old 仍有残留；为避免留下半成品，本次未删除本程序。\n可稍后重试，或重启后再删。=Deletion did not fully succeed and ~old still has leftovers; to avoid leaving a half-finished state, this program was not deleted.\nRetry later, or delete again after a reboot.
 加密备份=Encrypted Backup
 加密备份不支持追加（增量请用未加密的 .wim/.esd）=Encrypted backup does not support append (use an unencrypted .wim/.esd for incremental)
 加密备份为 .zje 格式，用密码保护镜像=Encrypted backup in .zje format, protected by a password
@@ -235,6 +236,7 @@ wimlib 初始化失败\n=wimlib initialization failed\n
 启动驱动已导出=Boot drivers exported
 启用加密=Enable Encryption
 在 PE 中运行（目标非运行系统盘）→ 就地还原=Running in WinPE (the target is not the running system disk) -> restore in place
+在后台继续=Continue in Background
 增量备份=Incremental Backup
 增量备份只支持 .wim / .esd 镜像=Incremental backup only supports .wim / .esd images
 增量备份请在「系统→文件」模式使用=Incremental backup is available in the "System to File" mode
@@ -510,7 +512,7 @@ wimlib 初始化失败\n=wimlib initialization failed\n
 正在创建系统盘=Creating system partition
 正在删除启动还原菜单...=Removing the boot restore menu...
 正在删除旧系统…\n准备中…=Deleting old system...\nPreparing...
-正在删除旧系统…\n已删除 %ld 个文件，失败 %ld 个=Deleting old system...\n%ld file(s) deleted, %ld failed
+正在删除旧系统…\n已删除 %ld 个文件，失败 %ld 个，已用 %llu 秒=Deleting the old system...\nDeleted %ld file(s), failed %ld, elapsed %llu s
 正在启用内置存储驱动=Enabling in-box storage drivers
 正在备份...=Backing up...
 正在安装启动还原菜单（写入契约 + 部署救援环境）...=Installing the boot restore menu (writing the task contract + deploying the rescue environment)...

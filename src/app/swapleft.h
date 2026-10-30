@@ -74,4 +74,8 @@ void WaitSwapCleanup(wchar_t drive);
 // 取代者：`ops::StageReturnOld`（写 action=returnold 契约）→ 重启 → Linux 救援层
 // 的 `bootfiles/zjswap-undo.sh` 做目录反向交换（那台机器上没有进程占用）。
 
+// 上次 DeleteSwapLeftover 是否因权限/占用没删完、已登记"下次开机由 SYSTEM
+// 计划任务删除"（2026-10-30）。UI 用它把"删除未完全成功"说得更准确。
+bool LastDeleteBootCleanupScheduled();
+
 }  // namespace sysrecover
