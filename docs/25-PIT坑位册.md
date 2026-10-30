@@ -1571,6 +1571,15 @@
     **不是**镜像与固件相关；正确做法就是选「还原后重启」。真正的 PE 限制只有"固件模式 ≠ 目标盘分区风格
     且要还原正在运行的系统盘"（CSM+GPT / UEFI+MBR），因为重启后回不到救援层。
 
+  · **2026-10-30 补记（导出即自动生效，文案纠正）**：客户质疑导出弹窗写
+    "异机还原时把「驱动目录」指向它即可" —— 其实 GUI 早就是自动的
+    （`StartRestoreAsync` 固定取 `ExeDir()\Drivers`，`ScanInfs` 递归 32 层，
+    导出的 `Drivers\boot-<时间>\` 子目录会被自动扫到），只是文案说成了要手动指定。
+    现在：① 弹窗改为"只含存储/输入类驱动，异机还原时将自动调用此驱动。"；
+    ② GUI 在还原时写日志 `universal: auto driver dir=... inf=N`（没有 Drivers 目录则记
+    `in-box storage drivers only`）；③ CLI 的 `--universal` 不给 `--drivers` 时
+    也自动用程序目录的 `Drivers\`，与 GUI 同口径。
+
 ### PIT-190
 
 - PIT-190 **「删除旧系统」点不动 + 重启后 ~old 还在且没权限**：进度窗 TOPMOST 挡住确认框、X 被吞、直接夺权在 TrustedInstaller ACL 上无效（`0.9.63`，2026-10-30，客户日志 `SysRecover-logs-20261030-105636`）

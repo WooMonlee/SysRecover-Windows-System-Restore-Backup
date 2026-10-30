@@ -1756,8 +1756,7 @@ void CMainForm::ExportDriversFlow() {
     wchar_t msg[700] = {};
     swprintf(msg, 700,
              Tr(L"已导出 %d 个硬盘（存储/输入）驱动到：\n%ls\n\n"
-                L"异机还原时把「驱动目录」指向它即可——只含存储/输入类，"
-                L"体积远小于全量导出（不需要 1.8GB）。"),
+                L"只含存储/输入类驱动，异机还原时将自动调用此驱动。"),
              n, dir.c_str());
     SetStatus(Tr(L"启动驱动已导出"));
     MessageBoxW(m_hWnd, msg, Tr(L"导出驱动"), MB_OK | MB_ICONINFORMATION);
@@ -2557,10 +2556,17 @@ void CMainForm::StartRestoreAsync() {
         int n = 0;
         std::wstring uerr;
         if (GetFileAttributesW(drivers.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            if (sysrecover::ValidateDriverFolder(drivers, &n, uerr))
+            if (sysrecover::ValidateDriverFolder(drivers, &n, uerr)) {
                 req.driverDir = drivers;
-            else
+                // 用户要求「导出即自动生效」：这里留一条证据，排错时能确认
+                // 本次到底自动吃了哪个目录、多少个 INF（2026-10-30）。
+                LogInfo("universal: auto driver dir=" + W2U(drivers) +
+                        " inf=" + std::to_string(n));
+            } else {
                 LogWarn("universal: Drivers folder ignored (" + W2U(uerr) + ")");
+            }
+        } else {
+            LogInfo("universal: no Drivers folder -> in-box storage drivers only");
         }
     }
     std::string err;

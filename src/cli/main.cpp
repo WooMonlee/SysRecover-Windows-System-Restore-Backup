@@ -384,6 +384,19 @@ int CmdRestore(const std::vector<std::string>& a) {
     req.password = ToWide(Opt(a, "--password"));
     if (req.universal) {
         req.driverDir = ToWide(Opt(a, "--drivers"));
+        // 与 GUI 同口径（2026-10-30）：没给 --drivers 就自动用程序目录下的
+        // `Drivers\`（「导出本机硬盘驱动供异机还原」写的就是这里）。
+        if (req.driverDir.empty()) {
+            const std::wstring autoDir = sysrecover::AppDir() + L"\\Drivers";
+            int an = 0;
+            std::wstring aerr;
+            if (GetFileAttributesW(autoDir.c_str()) != INVALID_FILE_ATTRIBUTES &&
+                sysrecover::ValidateDriverFolder(autoDir, &an, aerr)) {
+                req.driverDir = autoDir;
+                std::printf(Tr("提示：自动使用程序目录 Drivers\\ 下的 %d 个 .inf。\n"),
+                            an);
+            }
+        }
         if (req.engine != "swap")
             std::printf(Tr("提示：异机还原只能配合「还原后重启」（--engine swap）"
                            "或 PE 就地还原；当前引擎会被拒绝。\n"));
