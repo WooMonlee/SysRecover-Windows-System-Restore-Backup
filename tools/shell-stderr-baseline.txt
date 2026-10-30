@@ -3,7 +3,7 @@
 # 格式：次数 路径
 
 178	bootfiles/zjrestore-lite.sh
-12	bootfiles/zjswap.sh
+14	bootfiles/zjswap.sh
 18	bootfiles/zjswap-undo.sh
 3	bootfiles/setup-swap.sh
 1	bootfiles/zjlog.sh

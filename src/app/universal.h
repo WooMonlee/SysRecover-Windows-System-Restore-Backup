@@ -33,4 +33,12 @@ bool PrepareUniversal(const std::wstring& offlineRoot,
 // 当前宿主是否为 64 位（PE/系统）；x64 镜像需要 64 位环境才能用 DISM。
 bool IsHost64();
 
+// 导出**本机启动关键类**驱动（2026-10-30，用户规格）：
+//   只导 SCSIAdapter/HDC/System/DiskDrive/Volume/USB/HIDClass/Keyboard/Mouse，
+//   而不是 `dism /export-driver` 的全量 1.8GB（网络/打印/蓝牙/显卡全在里面）。
+//   实现：pnputil /enum-drivers 按 **Class GUID** 过滤（GUID 与系统语言无关），
+//   再 pnputil /export-driver 逐个导出到 destDir。返回 0 成功（*exported=包数）。
+int ExportBootCriticalDrivers(const std::wstring& destDir, int* exported,
+                              std::wstring& err);
+
 }  // namespace sysrecover

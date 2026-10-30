@@ -156,6 +156,9 @@ private:
     void ClearBootMenuEntry();
     // 镜像检查（完整校验）：worker 里跑 WimEngine::Verify，完成走 WM_VERIFY_DONE。
     void StartVerifyImage();
+    // 导出本机启动关键驱动（2026-10-30）：pnputil 按 Class GUID 过滤，只导
+    // 存储/输入类，输出到 <程序目录>\Drivers\boot-<时间>。
+    void ExportDriversFlow();
     void VerifyImageAsync();
     void StartMenuToggle(bool install,
                          const std::string& engine = "swap");  // 异步入口

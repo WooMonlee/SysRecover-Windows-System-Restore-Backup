@@ -17,6 +17,7 @@
 #include "../common/zip.h"
 #include "../app/imgsrc.h"
 #include "../app/ops.h"
+#include "../app/universal.h"
 #include "../app/safety.h"
 #include "../app/selfdiag.h"
 #include "../app/shortcut.h"
@@ -196,6 +197,8 @@ bool ValidateCommandArgs(const std::vector<std::string>& a) {
         values = {"--disk", "--part"};
     } else if (cmd == "images") {
         values = {"--file", "--password"};
+    } else if (cmd == "export-drivers") {
+        values = {"--dest"};
     } else if (cmd == "extract") {
         flags = {"--all"};
         values = {"--file", "--image", "--path", "--dest", "--index", "--password"};
@@ -569,6 +572,27 @@ int CmdVerify(const std::vector<std::string>& a) {
     std::printf("\n");
     std::printf(rc == 0 ? Tr("校验通过\n") : Tr("校验失败\n"));
     return rc == 0 ? 0 : 5;
+}
+
+int CmdExportDrivers(const std::vector<std::string>& a) {
+    std::wstring dest = ToWide(Opt(a, "--dest"));
+    if (dest.empty()) {
+        SYSTEMTIME st = {};
+        GetLocalTime(&st);
+        wchar_t sub[96] = {};
+        swprintf(sub, 96, L"\\Drivers\\boot-%04u%02u%02u-%02u%02u%02u",
+                 st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+        dest = sysrecover::AppDir() + sub;
+    }
+    std::wstring err;
+    int n = 0;
+    const int rc = sysrecover::ExportBootCriticalDrivers(dest, &n, err);
+    if (rc != 0) {
+        std::printf(Tr("导出失败：%ls\n"), err.c_str());
+        return 1;
+    }
+    std::printf(Tr("已导出 %d 个启动关键驱动到：%ls\n"), n, dest.c_str());
+    return 0;
 }
 
 int CmdImages(const std::vector<std::string>& a) {
@@ -967,7 +991,8 @@ void PrintAllUsage() {
         Tr("SysRecover 九转还原 · 命令行\n" "\n" "用法: SysRecover.exe <命令> [选项]      （`SysRecover.exe help <命令>` 看单项）\n" "\n" "命令:\n"         "  list                        列出磁盘/分区/文件系统/盘符/ESP/系统标记\n" "  diag [--zip [--out <zip>]]  自检（固件/Secure Boot/启动项/wimlib）；--zip 导出诊断包\n" "  support [--out <zip>]       一键收集诊断资料（各盘日志+explorer转储+事件日志）打包\n" "  images --file <镜像>        列出镜像里的子镜像（含大小/描述）\n"         "  backup --dest <文件> [--source <目录>] [--compress fast|maximum|recovery]\n" "         [--name <名>] [--append] [--verify] [--esp] [--no-snapshot] [--password <pwd>] [--yes]\n"          "  restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--engine block|swap] [--yes]\n" "  verify --image <文件>       校验镜像完整性\n"
         "  repair-boot [--disk N --part M]   修复引导（ESP 的 BCD/bootmgfw；引导坏了不用重装）\n"
         "  returnold [--disk N --part M] [--yes]  返回旧系统（把 ~old 搬回根，重启进救援层执行）\n"
-        "  extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]\n" "                              从镜像里取单个/一组文件（支持通配符）\n" "  history                     列出操作历史（logs/history.jsonl）\n" "  shortcut --target <exe> [--args <...>] [--name <名>]   建快捷方式\n" "  version                     显示版本\n" "  help [命令]                 本帮助\n" "  --password <pwd>            加密镜像口令（.zje 文件的备份/还原/校验/提取）\n" "  --lang <zh|en>              指定界面语言（如: SysRecover.exe --lang en help 用英文）\n" "\n" "退出码: 0 成功 / 1 通用失败 / 2 参数错 / 3 需管理员 / 4 危险目标被拒 / 5 镜像校验失败 / 6 取消\n" "注意: 还原系统盘会重启进救援层，镜像必须放在**本地分区**（救援层访问不到网络）。\n"));
+        "  extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]\n" "                              从镜像里取单个/一组文件（支持通配符）\n" "  history                     列出操作历史（logs/history.jsonl）\n"
+        "  export-drivers [--dest <目录>]  导出本机**启动关键**驱动（供异机还原；不是 1.8GB 全量）\n" "  shortcut --target <exe> [--args <...>] [--name <名>]   建快捷方式\n" "  version                     显示版本\n" "  help [命令]                 本帮助\n" "  --password <pwd>            加密镜像口令（.zje 文件的备份/还原/校验/提取）\n" "  --lang <zh|en>              指定界面语言（如: SysRecover.exe --lang en help 用英文）\n" "\n" "退出码: 0 成功 / 1 通用失败 / 2 参数错 / 3 需管理员 / 4 危险目标被拒 / 5 镜像校验失败 / 6 取消\n" "注意: 还原系统盘会重启进救援层，镜像必须放在**本地分区**（救援层访问不到网络）。\n"));
 }
 
 // 返回 true = 找到了该命令的说明。
@@ -1243,6 +1268,8 @@ int main() {
         return CmdImages(args);
     if (args[0] == "extract")
         return CmdExtract(args);
+    if (args[0] == "export-drivers")
+        return CmdExportDrivers(args);
     if (args[0] == "history")
         return CmdHistory(args);
     if (args[0] == "shortcut")

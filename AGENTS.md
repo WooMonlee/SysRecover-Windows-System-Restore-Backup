@@ -233,6 +233,7 @@ CLI：`SysRecover.exe <cmd> [opts]`，无 `--no-gui`（默认就是 CLI），`--
 | `restore --image <f> --disk N --part M [--index 1] [--no-repair-boot] [--yes]` | 先做 ESP/BitLocker/恢复分区/镜像在目标分区四检查 |
 | `verify / images / diag / version` | 校验 / 列镜像 / 自检 / 版本 |
 | `extract --file <镜像> [--index N] --path <镜像内路径> [--path ...] --dest <目录>` | **从镜像里取单个/一组文件**（支持通配符，如 `\Users\*\Desktop\*.txt`）——"还原前先看看、只捞一个文件出来" |
+| `export-drivers [--dest <目录>]` | 只导出**本机启动关键**驱动（存储/输入类），供异机还原；不是 1.8GB 全量 |
 | `diag --zip [--out <zip>]` | **导出诊断包**（diag 文本 + `logs/` + 契约文件 + `version.json`）→ 用户直接把这个 zip 发回来即可排错。ZIP 由 `src/common/zip.{h,cpp}` 自写（store 模式、零依赖）|
 | GUI 自动模式（Phase 5） | `--auto-backup --source C: --dest D:\x.wim` / `--auto-restore --image <f> --disk N --part M`（对齐老 `MainWindow.xaml.cs`，CLI 先行，GUI 后移植） |
 
@@ -301,6 +302,7 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 
 - PIT-187 · AGENTS 体积：PIT 正文写 docs/25，本文件 ≤80KB · [正文](docs/25-PIT坑位册.md#pit-187)
 - PIT-188 · 加密镜像只能整包解到临时明文（wimlib 只收路径） · [正文](docs/25-PIT坑位册.md#pit-188)
+- PIT-189 · 异机还原只注入启动类驱动；单包失败不再整单失败 · [正文](docs/25-PIT坑位册.md#pit-189)
 
 ### 13.2 未闭环（正文带 🚧，别当"已经好了"）
 

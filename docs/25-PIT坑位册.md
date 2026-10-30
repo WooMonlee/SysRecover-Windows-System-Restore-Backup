@@ -1537,3 +1537,36 @@
       CBC-ESSIV 布局 + 给 initramfs 加 device-mapper/openssl，属独立一笔工作，见 docs/30 §11）。
   · **`2>/dev/null` 新增一条**：`rm -f "/tmp/zj_cl/$IMG_REL" 2>/dev/null`（A 类：文件已被前一轮清掉时
     rm 的报错没有信息量，成功/失败另有 `say`）。
+
+### PIT-189
+
+- PIT-189 **异机还原"105 个驱动一把梭"→ 2 个非签名启动驱动让整单失败 + 失败后先删 30GB 才报错**（`0.9.61`，2026-10-30，客户日志 `SysRecover-logs-20261029-234720`）
+  · **现象**：30.4GB 镜像 + A 引擎 + 异机还原，23:24 开始解压（7m47s）→ DISM 注入 **105 个包**（4m53s）→
+    `rc=50` → **23:45 才弹错误**（中间 8m37s 在删 `C:\~new`）。客户结论是"不如重装系统"。
+  · **DISM 真因**（`dism-universal.log`）：`hidi2c.inf` / `netvwifibus.inf` 是"未签名的启动关键驱动"，
+    DISM 默认拒绝（`0x80070032`，提示 `/forceunsigned`），其余 103 个都成功。它们**不是存储驱动**，
+    对能否开机毫无影响。
+  · **我们自己的四个问题**：
+    ① 驱动文件夹是 `dism /export-driver` 的**全量 1.8GB** + Dell WinPE 包（网络/打印/蓝牙/显卡），
+       DISM 一把梭 `/Recurse`，90% 的包对启动无用；
+    ② 任何单包失败 = 整单失败（`rc != 0` 直接 return）；
+    ③ 失败路径**先 `DeleteTreeRec(~new)` 再组装错误**（30GB 删除 ~8 分钟无响应），且重试还要重新解压；
+    ④ 错误文案写"确认驱动与镜像**位数/签名**匹配"——用户因此以为是位数问题（实际是未签名项）。
+    另：INF 递归计数有 `depth > 8` 上限，Dell Pack 最深 11 层 → 我们数 73、DISM 找到 105（潜在漏扫）。
+  · **修复（本版）**：
+    - 只注入**启动关键类**：`SCSIAdapter/HDC/System/DiskDrive/Volume/USB/HIDClass/Keyboard/Mouse/SDHost`
+      （解析 INF `[Version] Class=`；其它类直接跳过）。
+    - 跳过 `Provider=Microsoft`（镜像自带，且 DISM 会拒绝其中未签名项）与 **OS 不匹配目录**
+      （Win10 镜像不灌 `Windows11-x64` 驱动；也不灌 Win7/8 驱动）。
+    - **逐包注入**：失败只记日志并跳过（**不做 `/ForceUnsigned` 强装**——强行装未签名启动驱动会让 Secure Boot 起不来）；只有"有候选但一个都没成功"才失败。
+    - 失败**保留 `~new`**：写完 `.zj-done`（可复用）+ 失败标记 `.zj-universal-failed`；重试只重注入驱动（几十秒），
+      `zjswap.sh` 见到失败标记**拒绝交换**（双保险）。错误立即返回，不再先删 30GB。
+    - GUI：勾了「异机还原」时「重启后还原」按钮**置灰**（红），并写明"只能选「还原后重启」，不需要 PE"。
+    - 文案：CSM/GPT、UEFI/MBR 两条改为"进 BIOS 改哪一项 / 用对应模式的 PE 就地还原"。
+    - INF 扫描深度上限 8 → 32。
+  · **新增「导出本机启动驱动」**（GUI「文件>系统」菜单 + CLI `export-drivers [--dest]`）：
+    `pnputil /enum-drivers` 按 **Class GUID** 过滤（GUID 与系统语言无关，`pnputil` 的标签会本地化），
+    再逐个 `pnputil /export-driver`。实测本机 28 个 oem 包 → 只导 12 个、**6.9MB**（对比全量 1.8GB）。
+  · **关于"提示进 PE"**：客户遇到的是"异机还原 + 重启后还原"的组合（B 引擎在 Linux 跑，没有 DISM），
+    **不是**镜像与固件相关；正确做法就是选「还原后重启」。真正的 PE 限制只有"固件模式 ≠ 目标盘分区风格
+    且要还原正在运行的系统盘"（CSM+GPT / UEFI+MBR），因为重启后回不到救援层。

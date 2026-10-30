@@ -24,6 +24,7 @@
 #include "common/logger.h"
 #include "common/process.h"
 #include "common/relocate.h"
+#include "common/selfarch.h"  // AppDir()（导出驱动目录用）
 #include "common/sysinfo.h"
 #include "common/progress.h"
 #include "disk/disk.h"
@@ -1657,6 +1658,9 @@ void CMainForm::ShowMoreMenu() {
                       Tr(L"清除启动中还原菜单"));
         ::AppendMenuW(hMenu, MF_STRING | (canVerify ? 0u : MF_GRAYED), 4,
                       Tr(L"镜像检查（完整校验）"));
+        // 导出本机启动关键驱动（异机还原用；只导存储/输入类）
+        ::AppendMenuW(hMenu, MF_STRING, 7,
+                      Tr(L"导出本机启动驱动（供异机还原）"));
     }
 
     // MoreBtn 是顶层 float 控件 → GetPos() 已是客户区坐标；换屏幕坐标再弹。
@@ -1691,6 +1695,8 @@ void CMainForm::ShowMoreMenu() {
         StartVerifyImage();
     } else if (cmd == 5) {
         StartIncrementalBackup();
+    } else if (cmd == 7) {
+        ExportDriversFlow();
     } else if (cmd == 6) {
         if (!m_backupPassword.empty()) {
             m_backupPassword.clear();
@@ -1724,6 +1730,37 @@ void CMainForm::ClearBootMenuEntry() {
             /*defaultIsRight=*/false) != 1)
         return;
     StartMenuToggle(/*install=*/false);
+}
+
+// 导出本机启动关键驱动（2026-10-30，用户规格）：只导 SCSIAdapter/HDC/System/
+// DiskDrive/Volume/USB/HIDClass/Keyboard/Mouse，避免 `dism /export-driver`
+// 那种 1.8GB 全量（网络/打印/蓝牙/显卡全在里面）。
+void CMainForm::ExportDriversFlow() {
+    if (m_busy) return;
+    SYSTEMTIME st = {};
+    GetLocalTime(&st);
+    wchar_t sub[80] = {};
+    swprintf(sub, 80, L"\\Drivers\\boot-%04u%02u%02u-%02u%02u%02u", st.wYear,
+             st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    const std::wstring dir = AppDir() + sub;
+    SetStatus(Tr(L"正在导出本机启动驱动..."));
+    std::wstring err;
+    int n = 0;
+    const int rc = sysrecover::ExportBootCriticalDrivers(dir, &n, err);
+    if (rc != 0) {
+        SetStatus(Tr(L"导出启动驱动失败"));
+        MessageBoxW(m_hWnd, (Tr(L"导出启动驱动失败：") + err).c_str(),
+                    Tr(L"导出驱动"), MB_OK | MB_ICONERROR);
+        return;
+    }
+    wchar_t msg[700] = {};
+    swprintf(msg, 700,
+             Tr(L"已导出 %d 个启动关键驱动到：\n%ls\n\n"
+                L"异机还原时把「驱动目录」指向它即可——只含存储/输入类，"
+                L"体积远小于全量导出（不需要 1.8GB）。"),
+             n, dir.c_str());
+    SetStatus(Tr(L"启动驱动已导出"));
+    MessageBoxW(m_hWnd, msg, Tr(L"导出驱动"), MB_OK | MB_ICONINFORMATION);
 }
 
 // 「镜像检查」= 完整校验（wimlib_verify_wim 全文件扫描，CLI 的 `verify` 命令同源）。
@@ -2422,6 +2459,14 @@ void CMainForm::StartRestore() {
                 wcscat(confirm, L"\n");
                 wcscat(confirm, sp);
             }
+            // 2026-10-30：异机还原只能在 Windows 侧注入驱动 → 「重启后还原」
+            // （B 引擎）直接置灰并说明，不再让用户点完再弹"请去 PE"。
+            if (universal) {
+                wcscat(confirm, L"\n");
+                wcscat(confirm,
+                       Tr(L"异机还原需要在 Windows 侧注入启动驱动：只能选「还原后重启」"
+                          L"（不需要 PE）"));
+            }
             if (!bootNote.empty()) {
                 wcscat(confirm, L"\n");
                 wcscat(confirm, bootNote.c_str());
@@ -2430,14 +2475,14 @@ void CMainForm::StartRestore() {
                 m_hWnd, Tr(L"确认还原"), confirm, Tr(L"取消"),
                 spaceShort ? Tr(L"空间不足") : Tr(L"还原后重启"),
                 Tr(L"重启后还原"), /*defaultIdx=*/spaceShort ? 0 : 1,
-                /*midDisabled=*/spaceShort);  // 回车=还原后重启（推荐）；ESC=取消
+                /*midDisabled=*/spaceShort, /*escIdx=*/0,
+                /*centerTitle=*/false, /*rightDisabled=*/universal);
             if (r == 0) return;  // 取消
             if (r == 2 && universal) {
-                // 异机还原需要 Windows 侧 DISM；B 引擎（Linux apply）做不到。
+                // 双保险（按钮已禁用，正常走不到这里）
                 MessageBoxW(m_hWnd,
-                            Tr(L"异机还原仅支持「还原后重启」（A 引擎），"
-                               L"或在 PE 中使用就地还原；\n"
-                               L"「重启后还原」在 Linux 救援层执行，无法注入启动驱动。"),
+                            Tr(L"异机还原需要在 Windows 侧注入启动驱动，"
+                               L"只能选「还原后重启」——不需要进 PE。"),
                             Tr(L"异机还原"), MB_OK | MB_ICONWARNING);
                 return;
             }

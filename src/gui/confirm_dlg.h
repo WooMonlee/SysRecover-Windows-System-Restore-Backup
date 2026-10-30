@@ -35,11 +35,14 @@ public:
     // midDisabled（2026-10-20，用户规格）：中间按钮不可选 —— 显示为红色
     // 「空间不足」并忽略点击（A 引擎空间不足时用；调用方应同时把 defaultIdx
     // 指到安全项/右按钮）。
+    // rightDisabled（2026-10-30）：右按钮不可选（红色）——「异机还原」时
+    // 「重启后还原」在 Linux 救援层执行、无法注入驱动，必须置灰而不是让用户
+    // 点了再弹"请去 PE"。
     static int Ask3(HWND owner, const std::wstring& title, const std::wstring& msg,
                     const std::wstring& leftText, const std::wstring& midText,
                     const std::wstring& rightText, int defaultIdx,
                     bool midDisabled = false, int escIdx = 0,
-                    bool centerTitle = false);
+                    bool centerTitle = false, bool rightDisabled = false);
 
     // 通用四选（2026-10-20，用户规格：删除旧系统后自删）。
     // 返回 0（左）/ 1（中）/ 2（右）/ 3（第 4 个）。
@@ -71,6 +74,8 @@ private:
     // 2026-10-28（用户规格）：「安装到启动」标题要居中；其它对话框保持左对齐
     // （皮肤 DlgTitle 是 22,12,300,38，左对齐）。居中 = 加宽到整行 + align=center。
     bool         m_centerTitle = false;
+    // 2026-10-30：「异机还原」时右按钮不可选（红底），忽略点击
+    bool         m_rightDisabled = false;
     std::wstring m_title;
     std::wstring m_msg;
     std::wstring m_leftText;

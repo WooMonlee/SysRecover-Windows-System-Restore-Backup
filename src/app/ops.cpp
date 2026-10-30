@@ -2213,7 +2213,7 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
     // 异机还原只能走 Windows 侧路径：暂存的 B 引擎（Linux apply）没有 DISM。
     if (!inPlace && req.universal && req.engine != "swap") {
         err = Tr("异机还原不支持「重启后还原」（B 引擎在 Linux 里执行，无法注入"
-                 "启动驱动）。请改选「还原后重启」，或在 PE 中使用就地还原。");
+                 "启动驱动）。请改选「还原后重启」——不需要进 PE。");
         LogError(err);
         return 4;
     }
@@ -2225,13 +2225,16 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
         switch (CheckStagedBootPath(IsUefiFirmware(),
                                      DiskStyleOf(target.diskIndex))) {
             case StagedBootPath::BiosSessionGptTarget:
-                err = Tr("当前会话是传统(CSM)引导，目标是 GPT 盘 —— 重启后无法通过 BIOS 链引导。"
-                         "请改用 UEFI 模式的 PE/U盘启动后就地还原（无需重启）。");
+                err = Tr("当前系统以传统(CSM/Legacy)方式启动，但目标盘是 GPT——"
+                         "重启后进不了恢复环境。解决：① 进 BIOS 把启动模式改成 UEFI"
+                         "（关闭 CSM）后重试；或 ② 用 UEFI 模式启动的 PE/U 盘就地还原"
+                         "（不用重启）。");
                 LogError("staged boot path rejected: BIOS session + GPT target");
                 return 4;
             case StagedBootPath::UefiSessionMbrTarget:
-                err = Tr("当前会话是 UEFI 引导，目标是 MBR 盘 —— 重启后 UEFI 无法执行传统引导链。"
-                         "请改用传统(CSM)模式的 PE/U盘启动后就地还原（无需重启）。");
+                err = Tr("当前系统以 UEFI 方式启动，但目标盘是 MBR——重启后进不了"
+                         "恢复环境。解决：① 进 BIOS 打开 CSM/Legacy 后重试；或 "
+                         "② 用 Legacy 模式启动的 PE/U 盘就地还原（不用重启）。");
                 LogError("staged boot path rejected: UEFI session + MBR target");
                 return 4;
             case StagedBootPath::Ok:
@@ -2446,30 +2449,18 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
         }
         if (plainTemp)
             ReleaseImagePlain(imagePath);
-        // 异机还原（2026-10-21）：交换之前注入启动驱动；失败则丢弃 ~new，
-        // 旧系统原样保留（可回退）。
-        if (req.universal) {
-            std::string ulog;
-            std::wstring uerr;
-            auto uProgress = [&](int pct, const std::string& st) {
-                ProgressUpdate("restore", pct, st);
-                return progress ? progress(pct, st) : false;
-            };
-            if (!PrepareUniversal(newDir, req.driverDir, ulog, uerr,
-                                  uProgress)) {
-                DeleteTreeRec(newDir);
-                err = Tr("异机还原准备失败：") + W2U(uerr);
-                LogError(err);
-                LogError("universal log:\n" + ulog);
-                return 1;
-            }
-            LogInfo("universal: A-engine prepared\n" + ulog);
-        }
-        {   // 完成标记：zjswap.sh 先验后动；无标记 = 不完整 → 拒绝交换
+        LogInfo("A-engine: extract/staging done");
+        }  // if (!reuse)
+        // ── 完成标记（复用/新解压都写）──────────────────────────────
+        // 提前写：~new 本身是完整的解压结果，**即使后面异机注入失败也要保留**——
+        // 30GB 重新解压约 8 分钟，而重试只需要重新注入驱动（几十秒）。
+        // zjswap.sh 仍以 .zj-done 为"可交换"前提；异机失败另写
+        // .zj-universal-failed，由脚本拒绝交换（双保险）。
+        {
             SYSTEMTIME stw = {};
             GetLocalTime(&stw);
             char line[160];
-            int len = snprintf(
+            const int len = snprintf(
                 line, sizeof(line),
                 "content=%llu time=%04d-%02d-%02d %02d:%02d:%02d\n", content,
                 stw.wYear, stw.wMonth, stw.wDay, stw.wHour, stw.wMinute,
@@ -2483,8 +2474,42 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
                 CloseHandle(h);
             }
         }
-        LogInfo("A-engine: ~new ready (with .zj-done marker)");
-        }  // if (!reuse)
+        // ── 异机还原（2026-10-21；2026-10-30 改为"失败保留 ~new"）──
+        // 用户案例：103/105 个驱动成功、2 个非存储驱动被 DISM 拒绝 → 整单失败，
+        // 而且失败后先删 30GB ~new 才报错（8 分半无响应）。现在：
+        //   · 失败只写 .zj-universal-failed，**保留 ~new**（重试不用重新解压）；
+        //   · 成功则清掉失败标记。
+        if (req.universal) {
+            std::string ulog;
+            std::wstring uerr;
+            auto uProgress = [&](int pct, const std::string& st) {
+                ProgressUpdate("restore", pct, st);
+                return progress ? progress(pct, st) : false;
+            };
+            if (!PrepareUniversal(newDir, req.driverDir, ulog, uerr,
+                                  uProgress)) {
+                const std::wstring fm = newDir + L"\\.zj-universal-failed";
+                HANDLE fh = CreateFileW(fm.c_str(), GENERIC_WRITE, 0, nullptr,
+                                        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                                        nullptr);
+                if (fh != INVALID_HANDLE_VALUE) {
+                    const std::string why = W2U(uerr);
+                    DWORD wr = 0;
+                    WriteFile(fh, why.data(), (DWORD)why.size(), &wr, nullptr);
+                    CloseHandle(fh);
+                }
+                err = Tr("异机还原准备失败：") + W2U(uerr) +
+                      Tr("（已保留 C:\\~new，修好驱动后重试无需重新解压）");
+                LogError(err);
+                LogError("universal log:\n" + ulog);
+                return 1;
+            }
+            DeleteFileW((newDir + L"\\.zj-universal-failed").c_str());
+            LogInfo("universal: A-engine prepared\n" + ulog);
+        } else {
+            // 非异机路径：清掉上一轮遗留的失败标记，否则会让 zjswap 拒绝交换
+            DeleteFileW((newDir + L"\\.zj-universal-failed").c_str());
+        }
         // 复用旧 ~new 时（reuse=true）不重解子镜像：若上一轮已暂存过，契约照样要写
         // esp_fix_dir/ea_fix_dir，否则救援层会以为没有 ESP/EA。
         if (ImageIsEncrypted(imagePath)) {

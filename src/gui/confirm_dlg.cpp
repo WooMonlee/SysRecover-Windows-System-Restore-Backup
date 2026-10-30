@@ -190,6 +190,13 @@ void CConfirmDlg::InitWindow() {
             sb->SetBorderColor(0xFFE8A0A0);
             sb->SetTextColor(0xFFC42B1C);
         }
+        // 2026-10-30：右按钮禁用（异机还原时「重启后还原」不可用）
+        if (m_rightDisabled && b2) {
+            CSkinButtonUI* sb = static_cast<CSkinButtonUI*>(b2);
+            sb->SetBkColor(0xFFFDECEC);
+            sb->SetBorderColor(0xFFE8A0A0);
+            sb->SetTextColor(0xFFC42B1C);
+        }
     } else if (!m_defaultRight && b1 && b2) {
         Accent(b1, true);
         Accent(b2, false);
@@ -242,7 +249,10 @@ void CConfirmDlg::Notify(TNotifyUI& msg) {
         if (!m_midDisabled)           // 禁用态：忽略点击（红「空间不足」）
             Finish(three ? 1 : kExit);
     }
-    else if (name == _T("BtnReboot")) Finish(three || quad ? 2 : kExitReboot);
+    else if (name == _T("BtnReboot")) {
+        if (m_rightDisabled) return;  // 「异机还原」时不可选
+        Finish(three || quad ? 2 : kExitReboot);
+    }
     else if (name == _T("BtnMore"))   Finish(quad ? 3 : kExit);
     else if (name == _T("DlgClose"))  Finish(kExit);  // 关闭 = 安全项（0）
 }
@@ -286,22 +296,26 @@ int CConfirmDlg::Ask3(HWND owner, const std::wstring& title,
                       const std::wstring& msg, const std::wstring& leftText,
                       const std::wstring& midText, const std::wstring& rightText,
                       int defaultIdx, bool midDisabled, int escIdx,
-                      bool centerTitle) {
+                      bool centerTitle, bool rightDisabled) {
     CConfirmDlg* dlg = new CConfirmDlg();
     dlg->m_title = title;
     dlg->m_centerTitle = centerTitle;
+    dlg->m_rightDisabled = rightDisabled;
     dlg->m_msg = msg;
     dlg->m_leftText = leftText;
     dlg->m_midText = midText;
     dlg->m_rightText = rightText;
     dlg->m_midDisabled = midDisabled;
     if (midDisabled && defaultIdx == 1) defaultIdx = 0;  // 回车不能落在禁用项
+    if (rightDisabled && defaultIdx == 2) defaultIdx = 1;  // 同上（右按钮）
     if (defaultIdx < 0) defaultIdx = 0;
     if (defaultIdx > 2) defaultIdx = 2;
     dlg->m_defaultIdx = defaultIdx;
     dlg->m_defaultRight = (defaultIdx == 2);  // 三选高亮走 m_defaultIdx 分支
     // ESC 落点（2026-10-28）：默认 0（左=历史安全项）；「安装到启动」传 2（取消）。
-    if (escIdx < 0 || escIdx > 2 || (midDisabled && escIdx == 1)) escIdx = 0;
+    if (escIdx < 0 || escIdx > 2 || (midDisabled && escIdx == 1) ||
+        (rightDisabled && escIdx == 2))
+        escIdx = 0;
     dlg->m_escIdx = escIdx;
     return RunModal(owner, dlg);
 }

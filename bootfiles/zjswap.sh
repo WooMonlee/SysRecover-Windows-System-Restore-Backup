@@ -37,6 +37,15 @@ if [ ! -f "$M/~new/.zj-done" ]; then
 fi
 say "marker ok: $(cat "$M/~new/.zj-done" 2>/dev/null | tr -d '\r\n')"
 
+# 异机还原失败标记（2026-10-30）：~new 是完整的，但驱动没注入成功 → 绝不能交换
+# （换进去可能因为认不到硬盘而起不来）。失败标记由 Windows 侧重试成功后删除。
+if [ -f "$M/~new/.zj-universal-failed" ]; then
+    say "ERROR: universal restore preparation failed; refuse swap (old system untouched)"
+    say "reason: $(cat "$M/~new/.zj-universal-failed" 2>/dev/null | tr -d '\r\n' | head -c 300)"
+    umount "$M" 2>/dev/null
+    exit 4
+fi
+
 # ── L1：目标上已有 ~old → 拒绝交换（上次中断/用户保留；交给 Windows 侧询问）──
 if [ -d "$M/~old" ]; then
     say "ERROR: leftover ~old present -> refuse swap (exit 3); handle it on next Windows start"
@@ -62,7 +71,7 @@ done
 for d in "$M/~new"/* "$M/~new"/.[!.]*; do
     [ -e "$d" ] || continue
     b=$(basename "$d")
-    [ "$b" = ".zj-done" ] && continue
+    case "$b" in .zj-done|.zj-universal-failed) continue;; esac
     # 跳过契约文件（Windows 侧写的 _zjresy*.log / restore-task.conf）
     # 这些文件不应该被移到根目录，swap 后应删除
     case "$b" in
