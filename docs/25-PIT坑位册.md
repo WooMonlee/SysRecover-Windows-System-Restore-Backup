@@ -1690,3 +1690,30 @@
       不满足就用自足路径；新增纯函数 `bootself::PlanUefiBcd()`（keep / bcdboot / self-contained）+ 单测。
   · **教训**：凡是读 `<系统盘>:\Windows\System32\...` 的判断，32 位进程都必须走 Sysnative
     （与 PIT-082 的 bcdedit 同类坑）；凡是"我们有自足方案"的预检，都不该做成 fail-closed。
+
+### PIT-194
+
+- PIT-194 **暂存成功、重启却直接进了旧系统（UEFI 单次启动 BootNext 未生效；临时 Boot#### 事后消失）**（`0.9.68` 加复核日志，2026-10-31，维护者本机）
+  · **现场**：0.9.67 暂存 UEFI 还原，日志完整：`ESP BCD already valid -> skip bcdboot`、
+    `firmware boot entry Boot0003 installed (desc=SysRecover Temporary Restore, optional=92 chars)`、
+    `restore staged, reboot to execute` → `ExitWindowsEx ok`。
+    重启后（Kernel-General：15:57:39 关机 / 15:57:56 开机，**只有一次启动**）直接进了旧系统。
+  · **证据（排除法）**：
+    - 救援层**根本没跑**：ESP `\EFI\ZJRESTORE\` 里只有内核/initramfs（无 `ZJRESTORE-last.log` 等），
+      目标盘根无 `zjrestore-boot.log`，`C:\~new`+`.zj-done`+契约 `_zjresy311557.log` 全部原样。
+    - 事后读固件变量：`BootNext` **不存在**，`BootOrder` 只剩 3 项（Windows/SysRecover/USB），
+      临时项 `Boot0003` **已消失**；常驻项 `Boot0000`（desc=SysRecover，optional 里 initrd 正确）还在。
+    - 现场实测 NVRAM **可正常持久化**（写 `Boot00FE` 复制项、追加到 BootOrder 末尾，60 秒内未被回滚，
+      清理正常）→ 不是"NVRAM 写不进去"。
+    - 火绒（HipsDaemon）在跑；日志里**没有**它拦截的直接证据。
+  · **结论**：写入那一刻是真的（读回校验通过），但**重启后固件没按 BootNext 走**，且临时项被清掉；
+    具体是固件忽略 BootNext / 固件对"加载失败的项"做清理 / 安全软件在重启前后回滚，三选一，
+    当前证据不足以判定（下次带复核日志即可分辨）。
+  · **本次改动**：
+    - `SetUefiBootNext` 的返回消息改用**独立日志串**并立刻落盘（以前写进 `blog`，而 `blog` 在
+      装引导项时就打过了 → `BootNext = Boot0003 (verified)` 这行**从来没进过日志**，是最大的排错盲区）；
+    - 新增 `UefiTempBootStateOk()`：**重启前复核**「Boot#### 仍在 BootOrder + BootNext 指向它」，
+      不通过就重写一次并留 `boot state ...` 证据；仍不通过则记 ERROR 并提示"重启若回桌面请选开机菜单
+      里的 SysRecover / 退出防护后重试"。
+  · **现场可用的绕过**：开机菜单（F11/F12/ESC，视主板）里选常驻项 **SysRecover** ——
+    它指向同一套内核/initramfs，会执行 C: 上**已经暂存好**的任务，等同完成本次还原。

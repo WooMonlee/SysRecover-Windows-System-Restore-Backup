@@ -28,6 +28,12 @@ bool RemoveUefiBootEntry(std::string& log, bool temporary = false);
 // temporary=true 指向临时条目；false 指向常驻菜单。
 bool SetUefiBootNext(std::string& log, bool temporary = false);
 
+// 重启前复核单次启动是否真的生效（PIT-194，2026-10-31）：
+//   Boot#### 还在 BootOrder 里 + BootNext 确实指向它。
+// 现场：写入时读回校验通过，但重启后固件仍进了 Windows、临时项随后消失 ——
+// 装上这条复核，至少能把"到底有没有生效"写进日志，不再靠猜。
+bool UefiTempBootStateOk(std::string& detail);
+
 // 确保固件里有指向 Windows 的启动项（描述 "Windows Boot Manager"，路径
 // \EFI\Microsoft\Boot\bootmgfw.efi，挂进 BootOrder 末尾）。
 // 用途：自足 UEFI 引导（2026-10-27，用户反馈 2）—— 极简 PE 里没有 bcdboot，

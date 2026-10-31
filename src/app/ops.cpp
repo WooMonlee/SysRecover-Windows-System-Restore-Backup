@@ -3029,13 +3029,37 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             LogInfo("menu entry mode: no BootNext/bootsequence (user picks it in "
                     "the boot menu)");
         } else if (useUefi && CurrentSbMode() != SbMode::Bootapp) {
-            if (!SetUefiBootNext(blog, true)) {
+            // 用独立日志串：blog 在安装引导项时已经写进日志了，BootNext 的
+            // 结果必须自己再打一遍（PIT-194 —— 以前这段 message 被吞掉，
+            // 现场只能看到"entry installed"，看不到 BootNext 到底成没成）。
+            std::string nlog;
+            if (!SetUefiBootNext(nlog, true)) {
                 ReleaseOpLock();
                 ProgressDone("restore", "failed");
-                err = Tr("设置固件单次启动失败: ") + blog +
+                err = Tr("设置固件单次启动失败: ") + nlog +
                       BootWriteBlockedHint();
                 LogError(err);
                 return 1;
+            }
+            LogInfo("bootnext (UEFI single boot): " + nlog);
+            // 重启前复核（2026-10-31 实测事故：读回校验过了，重启却照旧进
+            // Windows、临时项随后消失）。复核不通过 → 重写一次并留证据，
+            // 不再让用户"重启一次白等"。
+            std::string vd;
+            if (!UefiTempBootStateOk(vd)) {
+                LogWarn("boot state check FAILED before reboot: " + vd +
+                        " -> rewrite BootNext once");
+                std::string rlog;
+                SetUefiBootNext(rlog, true);
+                LogInfo("bootnext retry: " + rlog);
+                if (UefiTempBootStateOk(vd))
+                    LogInfo("boot state verified after retry: " + vd);
+                else
+                    LogError("boot state STILL invalid (BootNext lost?): " +
+                             vd + " —— 重启若回到桌面，多为安全软件/固件拦截，"
+                             "请在开机菜单里选 SysRecover 或退出防护后重试");
+            } else {
+                LogInfo("boot state verified: " + vd);
             }
         } else if (!useUefi || CurrentSbMode() == SbMode::Bootapp) {
             std::string slog;

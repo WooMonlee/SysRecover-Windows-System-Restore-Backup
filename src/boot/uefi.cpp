@@ -836,6 +836,29 @@ bool RemoveUefiBootEntry(std::string& log, bool temporary) {
     return true;
 }
 
+bool UefiTempBootStateOk(std::string& detail) {
+    if (!EnableEnvPrivilege(detail)) return false;
+    const int num = FindOurEntry(true);
+    if (num < 0) {
+        detail = "temporary Boot#### missing (not in BootOrder)";
+        return false;
+    }
+    WORD next = 0;
+    const DWORD len = GetFirmwareEnvironmentVariableW(L"BootNext", kGlobalGuid,
+                                                      &next, sizeof(next));
+    char buf[128];
+    if (len != sizeof(next) || next != (WORD)num) {
+        snprintf(buf, sizeof(buf),
+                 "BootNext mismatch: want Boot%04X, got %s", num,
+                 len == sizeof(next) ? "another value" : "missing");
+        detail = buf;
+        return false;
+    }
+    snprintf(buf, sizeof(buf), "Boot%04X in BootOrder + BootNext ok", num);
+    detail = buf;
+    return true;
+}
+
 bool SetUefiBootNext(std::string& log, bool temporary) {
     if (!EnableEnvPrivilege(log))
         return false;
