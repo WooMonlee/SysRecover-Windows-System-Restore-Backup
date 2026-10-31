@@ -514,6 +514,16 @@ bool InstallUefiBootEntry(const std::wstring& espRoot,
             {L"\\bootfiles\\initramfs-zjrestore.cpio.gz",
              L"initramfs-zjrestore.cpio.gz"},
         };
+        // PIT-195（2026-10-31）：**暂存**用的启动项改指一份独立的内核副本
+        // `vmlinuz-zjtemp.efi`。原因：单次启动一旦把启动项置顶（不依赖固件是否
+        // 认 BootNext），万一救援层跑不起来就必须能"自己失效"，否则每次开机都
+        // 往救援里撞 = 死循环。救援层重启前删掉这份副本即可——常驻菜单用的
+        // `vmlinuz-zjrestore.efi` 不受影响。
+        if (temporary) {
+            files.push_back({L"\\bootfiles\\vmlinuz-zjrestore",
+                             L"vmlinuz-zjtemp.efi"});
+            targetPath = L"\\EFI\\ZJRESTORE\\vmlinuz-zjtemp.efi";
+        }
     }
 
     // 定点清 stale：不同 Secure Boot 走法部署的文件集不同（直启内核 / shim 一套 /
@@ -744,7 +754,15 @@ bool InstallUefiBootEntry(const std::wstring& espRoot,
 
     // 3) 挂进 BootOrder（**末尾**：默认仍进 Windows，固件启动菜单里能选到）
     std::vector<BYTE> order;
-    ReadVar(L"BootOrder", order);
+    const bool orderRead = ReadVar(L"BootOrder", order);
+    if (!orderRead) {
+        // PIT-195：原实现把"读失败"当空表 → 会把 BootOrder 覆盖成只剩我们一项，
+        // 其它系统从启动菜单里消失（可能"无法开机"）。读失败直接失败，让上层
+        // fail-closed。
+        log += "read BootOrder failed err=" + std::to_string(GetLastError()) +
+               " (refuse to overwrite)\n";
+        return false;
+    }
     int n = (int)(order.size() / 2);
     std::vector<WORD> list(n);
     bool present = false;
@@ -755,6 +773,16 @@ bool InstallUefiBootEntry(const std::wstring& espRoot,
     }
     if (!present)
         list.push_back((WORD)num);
+    // PIT-195：**暂存项置顶**（不依赖固件是否支持 BootNext —— PIT-194 现场
+    // 固件就把 BootNext 忽略了）。原顺序存到 ESP，救援/新系统首启后还原。
+    if (temporary) {
+        std::vector<WORD> front;
+        front.push_back((WORD)num);
+        for (WORD v : list)
+            if (v != (WORD)num)
+                front.push_back(v);
+        list.swap(front);
+    }
     std::vector<BYTE> nb(list.size() * 2);
     for (size_t i = 0; i < list.size(); ++i)
         memcpy(&nb[i * 2], &list[i], 2);
@@ -763,6 +791,32 @@ bool InstallUefiBootEntry(const std::wstring& espRoot,
         log += "set BootOrder failed err=" + std::to_string(GetLastError()) +
                "\n";
         return false;
+    }
+    if (temporary) {
+        // 原顺序（不含本项）留档：新系统首启的清理助手据此还原。
+        std::vector<BYTE> orig(order.size() > 0 ? order.size() : 2);
+        size_t w = 0;
+        for (int i = 0; i < n; ++i) {
+            WORD v = 0;
+            memcpy(&v, &order[i * 2], 2);
+            if (v == (WORD)num)
+                continue;
+            memcpy(&orig[w], &order[i * 2], 2);
+            w += 2;
+        }
+        orig.resize(w);
+        const std::wstring bak = espRoot + L"EFI\\ZJRESTORE\\bootorder.bak";
+        HANDLE hb = CreateFileW(bak.c_str(), GENERIC_WRITE, 0, nullptr,
+                                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (hb != INVALID_HANDLE_VALUE) {
+            DWORD wr = 0;
+            WriteFile(hb, orig.data(), (DWORD)orig.size(), &wr, nullptr);
+            CloseHandle(hb);
+            log += "bootorder.bak saved (" + std::to_string(orig.size()) +
+                   "B)\n";
+        }
+        log += "staged entry Boot" + std::to_string(num) +
+               " promoted to BootOrder[0]\n";
     }
     char line[160];
     snprintf(line, sizeof(line),
@@ -836,27 +890,72 @@ bool RemoveUefiBootEntry(std::string& log, bool temporary) {
     return true;
 }
 
-bool UefiTempBootStateOk(std::string& detail) {
+bool UefiTempBootStateOk(const std::wstring& espRoot, std::string& detail) {
     if (!EnableEnvPrivilege(detail)) return false;
     const int num = FindOurEntry(true);
     if (num < 0) {
         detail = "temporary Boot#### missing (not in BootOrder)";
         return false;
     }
+    // ① 临时内核必须真的在（否则固件加载失败 → 回落 Windows）
+    const std::wstring kern = espRoot + L"EFI\\ZJRESTORE\\vmlinuz-zjtemp.efi";
+    const DWORD ka = GetFileAttributesW(kern.c_str());
+    if (ka == INVALID_FILE_ATTRIBUTES || (ka & FILE_ATTRIBUTE_DIRECTORY)) {
+        detail = "temporary kernel missing on ESP";
+        return false;
+    }
+    // ② BootNext 指向它，**或**它在 BootOrder 首位（PIT-195：不赌固件认 BootNext）
     WORD next = 0;
     const DWORD len = GetFirmwareEnvironmentVariableW(L"BootNext", kGlobalGuid,
                                                       &next, sizeof(next));
-    char buf[128];
-    if (len != sizeof(next) || next != (WORD)num) {
+    const bool nextOk = (len == sizeof(next) && next == (WORD)num);
+    bool firstOk = false;
+    std::vector<BYTE> order;
+    if (ReadVar(L"BootOrder", order) && order.size() >= 2) {
+        WORD first = 0;
+        memcpy(&first, &order[0], 2);
+        firstOk = (first == (WORD)num);
+    }
+    char buf[160];
+    if (!nextOk && !firstOk) {
         snprintf(buf, sizeof(buf),
-                 "BootNext mismatch: want Boot%04X, got %s", num,
-                 len == sizeof(next) ? "another value" : "missing");
+                 "Boot%04X neither BootNext nor BootOrder[0]", num);
         detail = buf;
         return false;
     }
-    snprintf(buf, sizeof(buf), "Boot%04X in BootOrder + BootNext ok", num);
+    snprintf(buf, sizeof(buf), "Boot%04X ok (%s%s%s)", num,
+             nextOk ? "BootNext" : "", (nextOk && firstOk) ? "+" : "",
+             firstOk ? "BootOrder[0]" : "");
     detail = buf;
     return true;
+}
+
+// 清理指向"临时内核已不存在"的 SysRecover 启动项（PIT-195）：
+// 场景：以前暂存过、救援没跑成、救援层已把 vmlinuz-zjtemp.efi 删掉 →
+// 固件里留一个永远加载失败、还顶在 BootOrder 首位的项（每次开机白等几秒）。
+bool CleanupStaleUefiEntries(std::string& log) {
+    if (!EnableEnvPrivilege(log)) return false;
+    int removed = 0;
+    for (int guard = 0; guard < 8; ++guard) {
+        const int num = FindOurEntry(true);
+        if (num < 0)
+            break;
+        // 有临时内核 → 说明是"待执行"，不能清
+        // （这里只能看 ESP 文件：外部调用前已确认没有待执行任务）
+        std::vector<BYTE> b;
+        if (!ReadVar(VarName(num), b))
+            break;
+        std::wstring desc, dev;
+        ParseOption(b, desc, dev);
+        if (desc != EntryDesc(true))
+            break;
+        RemoveUefiBootEntry(log, true);
+        ++removed;
+    }
+    if (removed > 0)
+        log += "stale SysRecover entry removed x" + std::to_string(removed) +
+               "\n";
+    return removed > 0;
 }
 
 bool SetUefiBootNext(std::string& log, bool temporary) {

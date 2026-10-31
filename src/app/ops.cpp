@@ -2827,10 +2827,23 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
     // 6) 引导层 + 单次启动（仅正常 Windows，§2 禁令3）
     // 走哪条链**看目标盘的分区风格**（MBR→BIOS/GRUB4DOS；GPT→UEFI/ESP），不看固件类型：
     // UEFI 固件 + MBR 盘的机器（CSM/Legacy 装的 Windows）上没有 ESP，必须走 BIOS 链。
+    // PIT-195：`repairBoot=false` 只允许"就地还原"（写盘后立刻修引导）。
+    // 暂存路径下引导层+单次启动全在 `if (req.repairBoot)` 里 —— 不装任何引导
+    // 却照样写契约、返回成功、提示"重启后执行"，重启必然回到旧系统，
+    // 且连回滚都不武装（rollbackArmed=req.repairBoot）。必须前置拒绝。
+    if (!req.repairBoot) {
+        ReleaseOpLock();
+        ProgressDone("restore", "failed");
+        err = Tr("「不修复引导」只能用于就地还原（PE/非系统盘）。"
+                 "还原正在运行的系统盘必须先装引导交接，请取消该选项后重试。");
+        LogError(err);
+        return 2;
+    }
     const bool useUefi = UseUefiBootFor(target);
     LogInfo(std::string("boot path: ") + (useUefi ? "UEFI/ESP" : "BIOS/GRUB4DOS") +
             " (firmware=" + (IsUefiFirmware() ? "UEFI" : "BIOS") +
             ", target disk style=" + StyleName(DiskStyleOf(target.diskIndex)) + ")");
+    std::wstring espRoot;  // UEFI 分支用；单次启动复核也要用（PIT-195）
     if (req.repairBoot) {
         std::string blog;
         // 进度收官标记（2026-10-18）：apply 之后引导层还要写 ~28MB 救援载荷 +
@@ -2853,7 +2866,6 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
                 LogError(err);
                 return 1;
             }
-            std::wstring espRoot;
             bool guidMatched = false;
             std::string detail;
             if (!AcquireEspRoot(espRoot, guidMatched, blog,
@@ -3042,24 +3054,35 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
                 return 1;
             }
             LogInfo("bootnext (UEFI single boot): " + nlog);
-            // 重启前复核（2026-10-31 实测事故：读回校验过了，重启却照旧进
-            // Windows、临时项随后消失）。复核不通过 → 重写一次并留证据，
-            // 不再让用户"重启一次白等"。
+            // 重启前复核（PIT-194/195）：条目在 + 临时内核在 + (BootNext 指向 或
+            // BootOrder 首位)。复核不通过 → 重写一次；**仍然不通过就绝不重启**
+            // （用户 2026-10-31：宁可这里明确失败，也不要"重启一次白等"）。
             std::string vd;
-            if (!UefiTempBootStateOk(vd)) {
+            bool bootOk = UefiTempBootStateOk(espRoot, vd);
+            if (!bootOk) {
                 LogWarn("boot state check FAILED before reboot: " + vd +
-                        " -> rewrite BootNext once");
+                        " -> rewrite once");
                 std::string rlog;
                 SetUefiBootNext(rlog, true);
                 LogInfo("bootnext retry: " + rlog);
-                if (UefiTempBootStateOk(vd))
+                bootOk = UefiTempBootStateOk(espRoot, vd);
+                if (bootOk)
                     LogInfo("boot state verified after retry: " + vd);
-                else
-                    LogError("boot state STILL invalid (BootNext lost?): " +
-                             vd + " —— 重启若回到桌面，多为安全软件/固件拦截，"
-                             "请在开机菜单里选 SysRecover 或退出防护后重试");
             } else {
                 LogInfo("boot state verified: " + vd);
+            }
+            if (!bootOk) {
+                UnmountEsp(espRoot, blog);
+                ReleaseOpLock();
+                ProgressDone("restore", "failed");
+                err = Tr("无法确保下次启动进入恢复环境（启动项没有生效：") + vd +
+                      Tr("）。\n本次已取消、**没有重启**，目标分区一个字节都没动。\n"
+                         "请先退出安全软件（火绒/360 的引导区保护）后重试；\n"
+                         "或改用 Windows PE 启动 → 选镜像与 C: → 就地还原"
+                         "（PE 里不需要重启交接，最稳）。") +
+                      BootWriteBlockedHint();
+                LogError(err);
+                return 1;
             }
         } else if (!useUefi || CurrentSbMode() == SbMode::Bootapp) {
             std::string slog;

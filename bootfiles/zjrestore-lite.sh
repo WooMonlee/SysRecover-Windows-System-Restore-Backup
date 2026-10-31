@@ -1741,6 +1741,34 @@ find_esp_dev(){
     done
     return 1
 }
+# PIT-195（2026-10-31）：Windows 侧暂存时会把我们的启动项**置顶**到 BootOrder，
+# 且指向一份**独立临时内核** `vmlinuz-zjtemp.efi` —— 这样即使固件不认 BootNext
+# （现场实测），重启也一定能进救援。代价是必须"只用一次"：救援层一跑起来就把
+# 这份临时内核删掉，之后无论成功/失败/断电，固件再试这条启动项都会因文件不存在
+# 而跳过 → 回落 Windows/新系统，**不会死循环**。
+# 常驻菜单用的 `vmlinuz-zjrestore.efi` 不动。
+# 注：这里不额外抑制 stderr —— 失败原因要留在控制台/日志里可追（PIT-147 口径）。
+disable_staged_entry(){
+    _de=$(find_esp_dev) || _de=
+    [ -n "$_de" ] || return 0
+    _dm=/tmp/zj_disarm
+    mkdir -p "$_dm" || return 0
+    if mnt_dev "$_de" "$_dm"; then
+        if [ -f "$_dm/EFI/ZJRESTORE/vmlinuz-zjtemp.efi" ]; then
+            if rm -f "$_dm/EFI/ZJRESTORE/vmlinuz-zjtemp.efi"; then
+                sync
+                say "staged boot entry disarmed (temp kernel removed)"
+            else
+                say "WARN: cannot remove temp kernel (read-only ESP?)"
+            fi
+        fi
+        umount "$_dm"
+    fi
+    rmdir "$_dm"
+    return 0
+}
+disable_staged_entry
+
 if [ -n "$ESP_FIX_DIR" ]; then
     # 加密镜像（ZJENC1）：ESP 子镜像已由 Windows 解到目标盘的 $ESP_FIX_DIR，
     # 这里只做目录拷贝（救援层没有解密器，读不了 .zje）。

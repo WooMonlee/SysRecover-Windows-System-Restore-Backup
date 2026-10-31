@@ -308,6 +308,7 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 - PIT-192 · 新系统缺 `%TEMP%` → wimlib rc=48 误报"镜像缺 ntoskrnl" · [正文](docs/25-PIT坑位册.md#pit-192)
 - PIT-193 · 32 位进程读 System32 要走 Sysnative；引导预检不许 fail-closed · [正文](docs/25-PIT坑位册.md#pit-193)
 - PIT-194 · 暂存后重启没进救援（BootNext 未生效）→ 重启前复核 Boot#### + BootNext · [正文](docs/25-PIT坑位册.md#pit-194)
+- PIT-195 · 重启交接收口：BootOrder 置顶 + 临时内核自失效；复核不过不重启 · [正文](docs/25-PIT坑位册.md#pit-195)
 
 ### 13.2 未闭环（正文带 🚧，别当"已经好了"）
 

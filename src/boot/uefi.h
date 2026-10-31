@@ -32,7 +32,11 @@ bool SetUefiBootNext(std::string& log, bool temporary = false);
 //   Boot#### 还在 BootOrder 里 + BootNext 确实指向它。
 // 现场：写入时读回校验通过，但重启后固件仍进了 Windows、临时项随后消失 ——
 // 装上这条复核，至少能把"到底有没有生效"写进日志，不再靠猜。
-bool UefiTempBootStateOk(std::string& detail);
+bool UefiTempBootStateOk(const std::wstring& espRoot, std::string& detail);
+
+// 清除「指向已不存在的临时内核」的残留 SysRecover 启动项（PIT-195）：
+// 解决"重装多次后固件里堆一堆都指向 C:/ESP 的启动项"。只在暂存前调用。
+bool CleanupStaleUefiEntries(std::string& log);
 
 // 确保固件里有指向 Windows 的启动项（描述 "Windows Boot Manager"，路径
 // \EFI\Microsoft\Boot\bootmgfw.efi，挂进 BootOrder 末尾）。

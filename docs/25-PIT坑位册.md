@@ -1717,3 +1717,23 @@
       里的 SysRecover / 退出防护后重试"。
   · **现场可用的绕过**：开机菜单（F11/F12/ESC，视主板）里选常驻项 **SysRecover** ——
     它指向同一套内核/initramfs，会执行 C: 上**已经暂存好**的任务，等同完成本次还原。
+
+### PIT-195
+
+- PIT-195 **重启交接全面收口：BootNext 不可靠 → 改用「BootOrder 置顶 + 独立临时内核 + 自失效」；复核不过禁止重启**（`0.9.69`，2026-10-31，专家评审见 docs/32）
+  · **背景**：PIT-194 那台机器写 BootNext 明明"读回校验通过"，重启却直接进旧系统；同类问题在客户机上还会以
+    "临时项消失 / 多项都指向同一 ESP / 重启后无任何提示"等形式出现。补丁式修不动了，按 docs/32 收口。
+  · **收敛后的协议（UEFI，SB off）**：
+    1. 载荷部署时多放一份**独立临时内核** `vmlinuz-zjtemp.efi`（与常驻菜单的 `vmlinuz-zjrestore.efi` 解耦）；
+    2. 临时 `Boot####` 指向这份临时内核；
+    3. **BootOrder 置顶**（`bootorder.bak` 留原序）+ 仍设 BootNext（能认就走快路）；
+    4. 复核 = 条目在 + **临时内核在** + (BootNext 指向 或 BootOrder[0] 是它)；
+    5. 复核失败 → 重写一次；**仍失败 → 取消本次、不重启**（目标零改动），文案直接给两条出路：
+       退出安全软件后重试 / 用 WinPE 就地还原；
+    6. 救援层**一启动就删临时内核** → 无论成功失败断电，置顶项都不会再把机器拉回救援（防死循环）；
+    7. 新系统首启清理助手删临时项 + ESP 载荷；`CleanupStaleUefiEntries()` 清"临时内核已不存在"的旧项。
+  · **顺带修掉的两个硬伤**：
+    - `ReadVar(BootOrder)` 失败被当空表 → 会把 BootOrder 覆盖成只剩我们一项（其它系统从启动菜单消失，可能"无法开机"）→ 现在读失败即 fail-closed；
+    - `--no-repair-boot` + 暂存（非就地）= 不装任何引导却返回成功并提示"重启后执行"（100% 进旧系统）→ 现在前置拒绝（退出码 2）。
+  · **回归判据**（docs/32 §5）：删掉 `vmlinuz-zjtemp.efi` 后重启必须回落 Windows；清掉 BootNext 后仍能进救援；
+    日志必须出现 `staged entry BootXXXX promoted to BootOrder[0]` 与 `boot state verified: ...`。
