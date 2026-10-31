@@ -773,6 +773,21 @@ bool EnsureBiosBootFiles(const std::wstring& targetRoot,
     return ok;
 }
 
+UefiBcdPlan PlanUefiBcd(bool bcdValid, bool tplOk, bool bcdbootAvail,
+                        bool spaceOk) {
+    if (bcdValid) return UefiBcdPlan::KeepExistingBcd;
+    if (tplOk && bcdbootAvail && spaceOk) return UefiBcdPlan::RunBcdboot;
+    return UefiBcdPlan::SelfContained;
+}
+
+const char* UefiBcdPlanName(UefiBcdPlan p) {
+    switch (p) {
+        case UefiBcdPlan::KeepExistingBcd: return "keep-existing-bcd";
+        case UefiBcdPlan::RunBcdboot: return "bcdboot";
+        default: return "self-contained";
+    }
+}
+
 bool EnsureUefiBootFiles(const std::wstring& espRoot,
                          const std::wstring& targetRoot,
                          const std::wstring& winDir, const std::wstring& exeDir,

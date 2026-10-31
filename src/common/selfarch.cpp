@@ -35,6 +35,21 @@ bool ReexecX64IfNeeded(int* exitCode, bool wait) {
     std::wstring dir = DirOf(exePath);
     std::wstring name = BaseOf(exePath);
     std::wstring target = dir + L"\\x64\\" + name;
+    if (GetFileAttributesW(target.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        // 显式 32 位入口（`SysRecoverUI_x86.exe` / `SysRecover_x86.exe`）在 64 位
+        // 系统上同样要自举：x64 目录里没有带 `_x86` 后缀的同名文件，**不带后缀**
+        // 那份才是 x64 版（PIT-193，2026-10-31 实测：用户直接双击 _x86 入口 →
+        // 一直以 32 位跑 → 撞上 WOW64 重定向，System32 下的文件全看不见）。
+        std::wstring base = name;
+        std::wstring low = base;
+        for (auto& c : low) c = (wchar_t)towlower(c);
+        const std::wstring suffix = L"_x86.exe";
+        if (low.size() > suffix.size() &&
+            low.compare(low.size() - suffix.size(), suffix.size(), suffix) == 0) {
+            base = name.substr(0, name.size() - suffix.size()) + L".exe";
+            target = dir + L"\\x64\\" + base;
+        }
+    }
     if (GetFileAttributesW(target.c_str()) == INVALID_FILE_ATTRIBUTES)
         return false;  // 没有 x64 版（例如只发了 x86 包）→ 本进程继续跑
 

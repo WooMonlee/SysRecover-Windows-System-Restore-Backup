@@ -1663,3 +1663,30 @@
       `Drivers\` 下用户自己放的其它目录（如笔记本驱动包）**不动**。
     - 导出/探测日志里的中文路径原先用 `std::string(w.begin(), w.end())` 转，落盘是
       `E:\]l؟\Drivers\...` 这种乱码 → 统一改 UTF-8。
+
+### PIT-193
+
+- PIT-193 **「暂存失败：目标系统缺少引导模板（missing \Windows\System32\Config\BCD-Template）」= 32 位进程被 WOW64 重定向 + 检查 fail-closed**（`0.9.67`，2026-10-31，维护者本机实测）
+  · **现象**：本机重装系统，选「还原后重启」→ 提取 6GB 到 `C:\~new` 全部成功、契约已写、ESP 已挂载，
+    最后一步报"目标系统缺少引导模板（missing \Windows\System32\Config\BCD-Template）：bcdboot 无法生成引导，
+    请换用完整系统镜像"，然后**整单回滚**（契约删掉、`~new` 留着）。用户看文件明明存在（28672 字节）。
+  · **两个独立根因**：
+    ① 跑的是 **`SysRecoverUI_x86.exe`**（显式 32 位入口）。`ReexecX64IfNeeded()` 只找
+       `<dir>\x64\<同名>`，而 x64 目录里没有带 `_x86` 后缀的文件 → 自举失败 → 一直以 32 位跑。
+       32 位进程访问 `C:\Windows\System32\...` 会被 **WOW64 重定向**到 `SysWOW64`，而
+       `SysWOW64\Config\BCD-Template` **不存在** → 误判"缺模板"。
+       （实测：`SysWOW64\cmd /c if exist C:\Windows\System32\Config\BCD-Template` → MISSING；
+       `C:\Windows\Sysnative\Config\BCD-Template` → OK。）
+    ② 即使真的缺模板也**不该判死**：我们有随包资产 `bootfiles\bcd\uefi.bcd` +
+       `EnsureUefiBootFiles()`（复制 `\Windows\Boot\EFI`、补 bootmgfw、按真实分区 GUID 打补丁），
+       整条链**不需要 bcdboot、也不需要 BCD-Template**。就地还原路径早就这么兜底了，
+       只有**暂存路径**还在 fail-closed（漏改）。
+  · **修复**：
+    - `selfarch.cpp`：`_x86` 后缀入口的自举目标先去掉 `_x86` 再找 `x64\<名>`（`SysRecoverUI_x86.exe`
+      → `x64\SysRecoverUI.exe`）。实测 `SysRecover_x86.exe diag` → `proc=x64 wow64=no`。
+    - `uefi.cpp::TargetBcdTemplateOk`：32 位进程再查一次 `%windir%\Sysnative\Config\BCD-Template`
+      （绕过 WOW64 重定向），命中即记 `BCD-Template found via Sysnative`。
+    - `ops.cpp`（暂存 UEFI 分支）：模板/空间预检从"直接失败并回滚"降级为**只决定走不走 bcdboot**，
+      不满足就用自足路径；新增纯函数 `bootself::PlanUefiBcd()`（keep / bcdboot / self-contained）+ 单测。
+  · **教训**：凡是读 `<系统盘>:\Windows\System32\...` 的判断，32 位进程都必须走 Sysnative
+    （与 PIT-082 的 bcdedit 同类坑）；凡是"我们有自足方案"的预检，都不该做成 fail-closed。

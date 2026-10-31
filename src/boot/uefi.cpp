@@ -1075,15 +1075,31 @@ bool TargetBcdTemplateOk(wchar_t targetLetter, std::string& detail) {
     }
     std::wstring tpl = std::wstring(1, targetLetter) +
                        L":\\Windows\\System32\\Config\\BCD-Template";
-    if (!PathExists(tpl)) {
-        detail = "missing \\Windows\\System32\\Config\\BCD-Template";
-        return false;
+    auto usable = [](const std::wstring& p) {
+        return PathExists(p) && FileSize(p) > 0;
+    };
+    if (usable(tpl)) return true;
+    // WOW64 重定向（PIT-193，2026-10-31 用户本机实测）：32 位进程访问
+    // `<系统盘>:\Windows\System32\...` 会被系统改写成 `SysWOW64`，
+    // 而 `SysWOW64\Config\BCD-Template` **不存在** → 明明该文件在
+    // `System32\Config\` 也会被判成"缺模板"，整单暂存被回滚。
+    // 32 位进程另有 `%windir%\Sysnative` 指向原生 System32，用它再看一次。
+    if (sizeof(void*) == 4) {
+        wchar_t win[MAX_PATH] = {};
+        if (GetWindowsDirectoryW(win, MAX_PATH)) {
+            const std::wstring nat =
+                std::wstring(win) + L"\\Sysnative\\Config\\BCD-Template";
+            if (usable(nat)) {
+                LogInfo("BCD-Template found via Sysnative (32-bit process, "
+                        "WOW64 redirection bypassed)");
+                return true;
+            }
+        }
     }
-    if (FileSize(tpl) == 0) {
-        detail = "empty \\Windows\\System32\\Config\\BCD-Template";
-        return false;
-    }
-    return true;
+    detail = PathExists(tpl)
+                 ? "empty \\Windows\\System32\\Config\\BCD-Template"
+                 : "missing \\Windows\\System32\\Config\\BCD-Template";
+    return false;
 }
 
 bool EspHasRoomForBcdboot(const std::wstring& espRoot, std::string& detail) {

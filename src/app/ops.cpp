@@ -2871,27 +2871,23 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             if (!guidMatched)
                 LogWarn("ESP partition type is not EFI System; used fallback "
                         "(mountvol/\\EFI files)");
-            // ① 目标系统盘得有 bcdboot 要的模板（docs/15 · P2c）
-            if (!TargetBcdTemplateOk(target.letter[0], detail)) {
-                UnmountEsp(espRoot, blog);
-                ReleaseOpLock();
-                ProgressDone("restore", "failed");
-                err = Tr("目标系统缺少引导模板（") + detail +
-                      Tr("）：bcdboot 无法生成引导。多见于第三方精简/万能镜像，"
-                         "请换用完整系统镜像。");
-                LogError(err);
-                return 1;
-            }
-            // ② ESP 还得放得下 bcdboot 要写的 ~9MB（docs/15 · P2a）
-            if (!EspHasRoomForBcdboot(espRoot, detail)) {
-                UnmountEsp(espRoot, blog);
-                ReleaseOpLock();
-                ProgressDone("restore", "failed");
-                err = Tr("ESP 空间不足，无法修复引导（") + detail +
-                      Tr("）：请先在 Windows 里点「删除启动还原」清掉 "
-                         "\\EFI\\ZJRESTORE\\ 旧版残留，或用 diskpart 扩大 ESP。");
-                LogError(err);
-                return 1;
+            // ① 目标系统盘得有 bcdboot 要的模板（docs/15 · P2c）；② ESP 还得
+            //    放得下 bcdboot 要写的 ~9MB（docs/15 · P2a）。
+            //    ⚠️ 这两条**只对 bcdboot 这条路成立**：不满足就改走随包资产自足
+            //    （`EnsureUefiBootFiles`，不依赖 bcdboot/模板）。以前这里直接判死、
+            //    整单回滚 —— 2026-10-31 用户本机实测：32 位进程被 WOW64 重定向到
+            //    `SysWOW64\Config\`，明明有模板也报缺（PIT-193）。
+            bool tplOk = false, spaceOk = false;
+            {
+                std::string td, sd;
+                tplOk = TargetBcdTemplateOk(target.letter[0], td);
+                spaceOk = EspHasRoomForBcdboot(espRoot, sd);
+                if (!tplOk)
+                    LogWarn("BCD-Template unavailable (" + td +
+                            ") -> skip bcdboot, use self-contained ESP boot");
+                if (!spaceOk)
+                    LogWarn("ESP space not enough for bcdboot (" + sd +
+                            ") -> skip bcdboot");
             }
             // ③ **先跑 bcdboot**（此刻 ESP 空间最富裕），再放我们 33MB 的救援载荷
             //    —— 顺序反了就会被自己的载荷挤掉空间（docs/15 · P2b）。
@@ -2904,15 +2900,19 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
                     std::wstring(1, target.letter[0]) + L":\\Windows";
                 std::string out;
                 std::string vd;
-                if (VerifyEspBcd(espRoot, winDir, vd)) {
+                const UefiBcdPlan plan =
+                    PlanUefiBcd(VerifyEspBcd(espRoot, winDir, vd), tplOk,
+                                ToolAvailable(L"bcdboot.exe"), spaceOk);
+                if (plan == UefiBcdPlan::KeepExistingBcd) {
                     LogInfo("ESP BCD already valid -> skip bcdboot (preserve "
                             "third-party boot entries): " + vd);
                 } else {
-                    LogInfo("ESP BCD invalid -> rebuild: " + vd);
+                    LogInfo(std::string("ESP BCD invalid -> rebuild: ") + vd +
+                            " / plan=" + UefiBcdPlanName(plan));
                     // 2026-10-27（用户反馈 2）：bcdboot 缺失/失败 → 随包资产自足
                     // （极简 PE 里没有 bcdboot；以前这里直接失败、只能拿 fixboot.exe 修）。
                     bool rebuilt = false;
-                    if (ToolAvailable(L"bcdboot.exe")) {
+                    if (plan == UefiBcdPlan::RunBcdboot) {
                         std::wstring args = winDir + L" /s " +
                                             std::wstring(1, espRoot[0]) + L": /f UEFI";
                         int brc = RunProcess(SysToolPath(L"bcdboot.exe"), args, out);
@@ -2920,7 +2920,8 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
                                 out);
                         rebuilt = brc == 0;
                     } else {
-                        LogInfo("bcdboot.exe missing -> self-contained ESP boot");
+                        LogInfo("bcdboot skipped (template/tool/space) -> "
+                                "self-contained ESP boot");
                     }
                     if (!rebuilt) {
                         std::string slog, serr;

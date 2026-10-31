@@ -80,6 +80,15 @@ bool EnsureBiosBootFiles(const std::wstring& targetRoot,
 //   BCD 模板里的两个 GUID 占位 → ESP / 目标系统分区的真实 GUID。
 //   overwriteBcd 语义同上（ESP 不被我们格式化，默认应保留有效 BCD）。
 // 不写固件启动项（那是 uefi::EnsureWindowsBootEntry 的事，失败不算致命）。
+// UEFI 引导修复走哪条路（PIT-193）。纯逻辑，单测覆盖。
+//   KeepExistingBcd：ESP 上已有可用 BCD → 什么都不做（保住第三方启动项）
+//   RunBcdboot      ：模板/工具/空间都齐 → 交给 bcdboot
+//   SelfContained   ：以上任一不满足 → 用随包资产自己写（不依赖 bcdboot）
+enum class UefiBcdPlan { KeepExistingBcd, RunBcdboot, SelfContained };
+UefiBcdPlan PlanUefiBcd(bool bcdValid, bool tplOk, bool bcdbootAvail,
+                        bool spaceOk);
+const char* UefiBcdPlanName(UefiBcdPlan p);
+
 bool EnsureUefiBootFiles(const std::wstring& espRoot,
                          const std::wstring& targetRoot,
                          const std::wstring& winDir, const std::wstring& exeDir,

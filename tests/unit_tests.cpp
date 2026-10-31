@@ -1148,6 +1148,25 @@ TEST(esp_soft_item_verdict) {
     CHECK(EspSoftItemVerdict(false, false) == SoftItemVerdict::SkipSourceMissing);
 }
 
+// UEFI 引导修复的路线选择（PIT-193）：缺 BCD-Template / 空间不够 / 没有
+// bcdboot 都必须**退回随包资产自足**，绝不能把整单判死（客户实测被误杀）。
+TEST(uefi_bcd_plan) {
+    using sysrecover::PlanUefiBcd;
+    using sysrecover::UefiBcdPlan;
+    // ESP 上已有可用 BCD → 一律不动（保住第三方启动项，最高优先级）
+    CHECK(PlanUefiBcd(true, true, true, true) == UefiBcdPlan::KeepExistingBcd);
+    CHECK(PlanUefiBcd(true, false, false, false) ==
+          UefiBcdPlan::KeepExistingBcd);
+    // 模板/工具/空间都齐 → 交给 bcdboot
+    CHECK(PlanUefiBcd(false, true, true, true) == UefiBcdPlan::RunBcdboot);
+    // 任一不满足 → 自足（这才是 2026-10-31 那次误报解法的核心）
+    CHECK(PlanUefiBcd(false, false, true, true) == UefiBcdPlan::SelfContained);
+    CHECK(PlanUefiBcd(false, true, false, true) == UefiBcdPlan::SelfContained);
+    CHECK(PlanUefiBcd(false, true, true, false) == UefiBcdPlan::SelfContained);
+    CHECK(PlanUefiBcd(false, false, false, false) ==
+          UefiBcdPlan::SelfContained);
+}
+
 // ────────────── 悬空引用扫描（PIT-132：Temp 注册组件还原后必坏）──────────────
 TEST(refscan_volatile_path) {
     using sysrecover::refscan::IsVolatilePath;

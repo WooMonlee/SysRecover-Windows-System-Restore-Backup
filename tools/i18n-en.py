@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：750/752 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：748/748 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n已登记为「下次开机自动清除」（重启后会自动删完）。': '\n\nThe remaining files are scheduled for automatic removal at the next boot (they will be gone after a reboot).',
@@ -70,7 +70,6 @@ EN = {
     'ESP 上缺少引导资源：Resources\\bootres.dll': 'ESP is missing boot resource: Resources\\bootres.dll',
     'ESP 备份失败(rc=%d): ': 'ESP backup failed (rc=%d): ',
     'ESP 引导校验未通过（未真正修好，已中止，未动目标分区）：': 'ESP boot verification failed (boot was NOT properly repaired; aborted before touching the target partition): ',
-    'ESP 空间不足，无法修复引导（': 'ESP is out of space; cannot repair the boot (',
     'ESP 空间不足：还需 %.1fMB，另需预留 %.0fMB 给 bcdboot，可用 %.1fMB。请清理 ESP 上的其它文件，或换用更小的 initramfs。\n': 'Not enough space on the ESP: %.1f MB more is needed, plus %.0f MB reserved for bcdboot, but only %.1f MB is available. Clean up other files on the ESP or use a smaller initramfs.\n',
     'ESP/MSR 容量不合法': 'Invalid ESP/MSR size',
     'GPT 方案缺少 ESP 分区，校验失败': 'GPT layout is missing the ESP partition (verification failed)',
@@ -565,7 +564,6 @@ EN = {
     '目标文件已存在，覆盖需加 --yes 确认（追加请用 --append）\n': 'The target file already exists; add --yes to overwrite (use --append to add to it)\n',
     '目标是正在运行的系统盘（必须重启后脱机还原）': 'The target is the running system disk (it must be restored offline after a reboot)',
     '目标盘存在未处理的 ~old 残留，A 引擎还原已中止（重新运行程序会再次询问如何处理）': 'The target drive still has an unhandled ~old leftover; the A-engine restore was aborted (run the program again to be asked).',
-    '目标系统缺少引导模板（': 'The target system is missing the boot template (',
     '目标里没有 SYSTEM 注册表（不是完整的 Windows）': 'The target has no SYSTEM registry hive (not a complete Windows)',
     '目标镜像文件已存在，覆盖？': 'The target image file already exists. Overwrite it?',
     '知道了': 'Got it',
@@ -751,8 +749,6 @@ EN = {
     '），正在重启...': '), rebooting...',
     '），请重新执行「返回旧系统」': '); please run "Return to old system" again',
     '）：': '): ',
-    '）：bcdboot 无法生成引导。多见于第三方精简/万能镜像，请换用完整系统镜像。': '): bcdboot cannot generate boot files. This is common with trimmed/universal images; use a complete system image.',
-    '）：请先在 Windows 里点「删除启动还原」清掉 \\EFI\\ZJRESTORE\\ 旧版残留，或用 diskpart 扩大 ESP。': '): first click "Remove boot install" in Windows to delete the old \\EFI\\ZJRESTORE\\ leftovers, or enlarge the ESP with diskpart.',
     '，版本 ': ', version ',
     '，目标 ': ', target ',
     '：': ': ',
