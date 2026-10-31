@@ -32,7 +32,12 @@ bool SetUefiBootNext(std::string& log, bool temporary = false);
 //   Boot#### 还在 BootOrder 里 + BootNext 确实指向它。
 // 现场：写入时读回校验通过，但重启后固件仍进了 Windows、临时项随后消失 ——
 // 装上这条复核，至少能把"到底有没有生效"写进日志，不再靠猜。
-bool UefiTempBootStateOk(const std::wstring& espRoot, std::string& detail);
+// ⚠️ 只查固件变量（条目在 + BootNext 指向 或 BootOrder[0] 是它）——
+// **不查 ESP 上的文件**：本函数在 UnmountEsp 之后调用，去读 ESP 路径必然"不存在"
+//（2026-10-31 现场：临时内核明明已拷好，复核却报"temporary kernel missing"）。
+// 文件是否真的落盘，由 InstallUefiBootEntry 在**挂载期间**的 CRC 校验 +
+// 显式存在性检查保证。
+bool UefiTempBootStateOk(std::string& detail);
 
 // 清除「指向已不存在的临时内核」的残留 SysRecover 启动项（PIT-195）：
 // 解决"重装多次后固件里堆一堆都指向 C:/ESP 的启动项"。只在暂存前调用。

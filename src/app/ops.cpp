@@ -3058,14 +3058,14 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             // BootOrder 首位)。复核不通过 → 重写一次；**仍然不通过就绝不重启**
             // （用户 2026-10-31：宁可这里明确失败，也不要"重启一次白等"）。
             std::string vd;
-            bool bootOk = UefiTempBootStateOk(espRoot, vd);
+            bool bootOk = UefiTempBootStateOk(vd);
             if (!bootOk) {
                 LogWarn("boot state check FAILED before reboot: " + vd +
                         " -> rewrite once");
                 std::string rlog;
                 SetUefiBootNext(rlog, true);
                 LogInfo("bootnext retry: " + rlog);
-                bootOk = UefiTempBootStateOk(espRoot, vd);
+                bootOk = UefiTempBootStateOk(vd);
                 if (bootOk)
                     LogInfo("boot state verified after retry: " + vd);
             } else {

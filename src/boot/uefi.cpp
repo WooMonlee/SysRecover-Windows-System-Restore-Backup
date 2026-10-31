@@ -681,6 +681,19 @@ bool InstallUefiBootEntry(const std::wstring& espRoot,
     if (mode == SbMode::None)
         SetFileAttributesW((dir + L"\\vmlinuz-zjrestore.efi").c_str(),
                            FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
+    // PIT-195：暂存用的临时内核必须在**挂载期间**确认落盘（复核阶段 ESP 已卸载，
+    // 看不到文件 —— 这是 0.9.69 首次实机的回归点）。
+    if (temporary && mode == SbMode::None) {
+        const std::wstring tmpK = dir + L"\\vmlinuz-zjtemp.efi";
+        const DWORD ta = GetFileAttributesW(tmpK.c_str());
+        if (ta == INVALID_FILE_ATTRIBUTES || (ta & FILE_ATTRIBUTE_DIRECTORY)) {
+            log += "temporary kernel NOT deployed: vmlinuz-zjtemp.efi\n";
+            return false;
+        }
+        SetFileAttributesW(tmpK.c_str(), FILE_ATTRIBUTE_HIDDEN |
+                                             FILE_ATTRIBUTE_SYSTEM);
+        log += "temporary kernel ready (vmlinuz-zjtemp.efi)\n";
+    }
 
     // ── bootapp 走法：BCD bootapp 条目（bootmgr → efiloader → 我们的 UKI）──
     // 不需要固件启动项；单次启动用 BCD `bootsequence`（与 BIOS 路径同法）。
@@ -890,21 +903,17 @@ bool RemoveUefiBootEntry(std::string& log, bool temporary) {
     return true;
 }
 
-bool UefiTempBootStateOk(const std::wstring& espRoot, std::string& detail) {
+bool UefiTempBootStateOk(std::string& detail) {
     if (!EnableEnvPrivilege(detail)) return false;
     const int num = FindOurEntry(true);
     if (num < 0) {
         detail = "temporary Boot#### missing (not in BootOrder)";
         return false;
     }
-    // ① 临时内核必须真的在（否则固件加载失败 → 回落 Windows）
-    const std::wstring kern = espRoot + L"EFI\\ZJRESTORE\\vmlinuz-zjtemp.efi";
-    const DWORD ka = GetFileAttributesW(kern.c_str());
-    if (ka == INVALID_FILE_ATTRIBUTES || (ka & FILE_ATTRIBUTE_DIRECTORY)) {
-        detail = "temporary kernel missing on ESP";
-        return false;
-    }
-    // ② BootNext 指向它，**或**它在 BootOrder 首位（PIT-195：不赌固件认 BootNext）
+    // 只查固件变量。**不要**在这里读 ESP 文件：调用点在 UnmountEsp 之后，
+    // 路径必然"不存在"（PIT-195 回归：0.9.69 首次实机就栽在这）。
+    // 临时内核是否落盘由 InstallUefiBootEntry 挂载期间保证（CRC + 显式检查）。
+    // BootNext 指向它，**或**它在 BootOrder 首位（不赌固件认 BootNext）
     WORD next = 0;
     const DWORD len = GetFirmwareEnvironmentVariableW(L"BootNext", kGlobalGuid,
                                                       &next, sizeof(next));

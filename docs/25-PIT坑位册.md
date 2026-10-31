@@ -1737,3 +1737,20 @@
     - `--no-repair-boot` + 暂存（非就地）= 不装任何引导却返回成功并提示"重启后执行"（100% 进旧系统）→ 现在前置拒绝（退出码 2）。
   · **回归判据**（docs/32 §5）：删掉 `vmlinuz-zjtemp.efi` 后重启必须回落 Windows；清掉 BootNext 后仍能进救援；
     日志必须出现 `staged entry BootXXXX promoted to BootOrder[0]` 与 `boot state verified: ...`。
+
+### PIT-196
+
+- PIT-196 **「复核」在 ESP 卸载后读 ESP 文件 → 假失败（`temporary kernel missing on ESP`）**（`0.9.70`，2026-10-31，0.9.69 首次实机即踩）
+  · **现象**：0.9.69 暂存到最后一步报"无法确保下次启动进入恢复环境（启动项没有生效：
+    temporary kernel missing on ESP）"并回滚；可日志里 `ESP space: need(net) 11.6 MB` 正是那份
+    临时内核，事后读固件变量 `BootNext=Boot0003`、`BootOrder[0]=Boot0003`（path 与 `initrd=` 都对），
+    ESP 上 `vmlinuz-zjtemp.efi` 确实存在（12,142,528 字节）—— 交接状态**完全正确**，是我们自己的检查误报。
+  · **根因**：`UefiTempBootStateOk()` 里读了 ESP 上的文件，而调用点在 `UnmountEsp()` **之后**
+    （日志顺序：`ESP unmounted` → `boot state check FAILED ... temporary kernel missing`）。
+    卸载后该路径不可见 → 必然"缺文件"。
+  · **修复**：复核只查固件变量（条目在 + BootNext 指向 或 BootOrder[0] 是它）；
+    文件是否落盘改在 `InstallUefiBootEntry` **挂载期间**确认（CRC 校验后显式
+    `GetFileAttributesW(vmlinuz-zjtemp.efi)`，缺失即失败，成功记
+    `temporary kernel ready`），并置隐藏+系统属性。
+  · **教训（通用）**：凡是"卸载/关闭资源之后再做的复核"，都要检查它依赖的资源是否还在；
+    这次的复核对象一半在 NVRAM、一半在 ESP，混在一个函数里就埋了雷。
