@@ -8,6 +8,9 @@
 
 **Under 50MB · faster startup than most WinPE · CA2023 support · ESP backup · return to the pre-restore system · installable recovery boot menu · Chinese/English · full CLI**
 
+> **Download (single file)**: [Releases](https://github.com/WooMonlee/SysRecover-Windows-System-Restore-Backup/releases/latest) →
+> `SysRecover-Portable-<version>.exe`. Double-click for the GUI; pass arguments for the CLI (`... version` / `... list` / `... restore ...`).
+
 ![Restore mode](docs/img/gui-restore.png)
 
 ![Backup mode](docs/img/gui-backup.png)

@@ -8,6 +8,9 @@
 
 **不到 50MB · 启动比 WinPE 快 · 支持 CA2023 · 可备份 ESP · 可返回安装前的系统 · 可安装启动菜单兜底 · 中英双语 · 完整命令行**
 
+> **下载（单文件版）**：[Releases](https://github.com/WooMonlee/SysRecover-Windows-System-Restore-Backup/releases/latest) →
+> `SysRecover-Portable-<版本>.exe`。双击开界面；带参数就是命令行（`... version` / `... list` / `... restore ...`）。
+
 ![还原模式](docs/img/gui-restore.png)
 
 ![备份模式](docs/img/gui-backup.png)
