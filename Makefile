@@ -335,14 +335,20 @@ PORTABLE_GUI = dist\SysRecover-Portable.exe
 PORTABLE_CLI = dist\SysRecover-Portable-CLI.exe
 
 PORTABLE_STUB = build/portable_stub.exe
+PORTABLE_RC = build/portable_rc.o
 PORTABLE_OUT = dist/SysRecover-Portable.exe
 
-$(PORTABLE_STUB): src/tools/portable_main.cpp
+# PIT-204：单文件也要带品牌图标（否则 Explorer/任务栏是白板）。
+# 只嵌 ICON，不进清单（清单保持默认 asInvoker：真正要提权的是它拉起的 UI 子进程）。
+$(PORTABLE_RC): src/tools/portable.rc resources/SysRecover.ico
 	@if not exist build mkdir build
-	$(MINGW32)/bin/i686-w64-mingw32-g++ -O2 -std=c++17 -DUNICODE -D_UNICODE -D_WIN32_WINNT=0x0601 $< -o $@ -static -municode -mconsole -s -lshell32 -luser32
+	$(MINGW32)/bin/windres.exe -I . -I resources $< -o $@
 
-# 单文件（GUI+CLI 合一）：无参数开界面；带参数跑命令行（附着调用者控制台）。
-# 顺带按版本号拷一份到 D:\九转大还原<版本>.exe（用户 2026-11-01 规格）。
+$(PORTABLE_STUB): src/tools/portable_main.cpp $(PORTABLE_RC)
+	@if not exist build mkdir build
+	$(MINGW32)/bin/i686-w64-mingw32-g++ -O2 -std=c++17 -DUNICODE -D_UNICODE -D_WIN32_WINNT=0x0601 $< $(PORTABLE_RC) -o $@ -static -municode -mconsole -s -lshell32 -luser32
+
+
 portable: package $(PORTABLE_STUB)
 	@echo === portable: single-file pack ===
 	$(PYTHON) tools/portable-pack.py "$(PORTABLE_STUB)" "$(PORTABLE_OUT)" dist D:\\

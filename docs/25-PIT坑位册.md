@@ -1911,3 +1911,17 @@
     PIT-201 已加 `ZJ_ORIGIN_DIR` + 0 结果兜底。
   · 本轮再加：兜底扫描非系统盘时，从"根 + 一级子目录"扩到 **根 + 一级 + 二级**
     （用户习惯 `D:\系统镜像\Win11\xx.esd`）。只多一层，`kCap=500` 仍生效。
+
+### PIT-204
+
+- PIT-204 **单文件（便携）版没有图标**（用户 2026-11-01 发现）
+  · 现象：`九转大还原0.9.78.exe` 在资源管理器/任务栏是白板图标。
+  · 根因：portable stub（`src/tools/portable_main.cpp`）编译时**没有带 .rc** →
+    PE 里连 `.rsrc` 段都没有（`objdump -h` 只有 .text/.data）。
+  · 修复：新增 `src/tools/portable.rc`（`1 ICON "resources/SysRecover.ico"`），
+    Makefile 用 **i686 windres** 编成 `build/portable_rc.o` 并链进 stub。
+    只嵌图标、不嵌清单 —— stub 本身保持 `asInvoker`，真正要提权的是它拉起的 UI 子进程。
+  · **口径**：根目录 `SysRecover.exe`（CLI 启动器）按 §17.3 仍是**不带**图标；
+    单文件版是面向用户的"一个文件"，按 UI 口径**带**品牌图标。
+  · 验证：`objdump -h build/portable_stub.exe` 出现 `.rsrc`；
+    `[System.Drawing.Icon]::ExtractAssociatedIcon("D:\九转大还原0.9.79.exe")` → 32×32。
