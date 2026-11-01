@@ -498,8 +498,40 @@ emit_result(){
         say "===== end (photograph this screen) ====="
     fi
 }
+# PIT-197（2026-11-01 现场死循环）：暂存用的"一次性启动项"必须**在进入救援的最早
+# 时刻**失效。原先这段逻辑放在 zjrestore-lite.sh 的 ESP 修复段（swap **之后**），
+# 一旦 swap 早退（~new 缺失等）就永远走不到 → 临时内核始终在 ESP 上 → 固件每次都
+# 把我们这条（BootOrder 置顶）启动项拉起来 → 无限重启进救援。
+# 现在改到 init 里、且在调用 lite **之前**执行；reboot_now 里再兜一次。
+disarm_staged_entry(){
+    _dn=0
+    for _dd in /dev/nvme*n*p* /dev/sd*[0-9] /dev/vd*[0-9] /dev/mmcblk*p*; do
+        [ -b "$_dd" ] || continue
+        _dt=$(timeout 20 blkid -s TYPE -o value "$_dd" 2>>/tmp/zj_disarm.err)
+        case "$_dt" in vfat|fat|fat32|msdos) ;; *) continue ;; esac
+        mkdir -p /tmp/zj_dis
+        if timeout 20 mount -t vfat -o rw "$_dd" /tmp/zj_dis 2>>/tmp/zj_disarm.err; then
+            if [ -f /tmp/zj_dis/EFI/ZJRESTORE/vmlinuz-zjtemp.efi ]; then
+                if rm -f /tmp/zj_dis/EFI/ZJRESTORE/vmlinuz-zjtemp.efi; then
+                    sync
+                    say "staged boot entry disarmed ($_dd)"
+                    _dn=$((_dn + 1))
+                else
+                    say "WARN: cannot remove temp kernel on $_dd (ESP read-only?)"
+                fi
+            fi
+            umount /tmp/zj_dis
+        else
+            say "WARN: cannot mount $_dd to disarm staged entry"
+        fi
+    done
+    [ "$_dn" -gt 0 ] || say "staged entry disarm: nothing to do"
+    return 0
+}
+
 reboot_now(){
     say "AUTO-RECOVER: rebooting now (open SysRecover on next Windows start for the report)"
+    disarm_staged_entry   # PIT-197：退场前再兜一次（幂等）
     sync
     sleep 2
     reboot -f
@@ -558,6 +590,7 @@ if [ -x /zjrestore-lite.sh ] && { [ -n "$found_log" ] || [ -f /tmp/restore-task.
 _rc=0
 _rt=0
 if [ "$_ran" = "1" ]; then
+    disarm_staged_entry   # PIT-197：先让一次性启动项失效，再干活
     say "run restore: target=${TARGET_DEV:-<from offset>}"
     while :; do
         /bin/sh /zjrestore-lite.sh "$TARGET_DEV"

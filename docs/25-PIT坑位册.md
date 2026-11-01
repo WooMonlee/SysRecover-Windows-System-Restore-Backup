@@ -1754,3 +1754,26 @@
     `temporary kernel ready`），并置隐藏+系统属性。
   · **教训（通用）**：凡是"卸载/关闭资源之后再做的复核"，都要检查它依赖的资源是否还在；
     这次的复核对象一半在 NVRAM、一半在 ESP，混在一个函数里就埋了雷。
+
+### PIT-197
+
+- PIT-197 **重启后无限循环进救援（能进 Linux、反复重启、起不来）**：一次性启动项没失效 + `~new` 不在了
+  （`0.9.71`，2026-11-01，维护者本机）
+  · **现象**：重启后不断进 Linux 救援、每次重启又回来，Windows 起不来。
+  · **日志证据**（ESP `ZJRESTORE-logs\ZJRESTORE-status.txt` + `zjrestore-debug.log`）：
+    - `result=FAILED step=swap-failed`；`SWAP: ERROR: ~new missing or incomplete (.zj-done absent)`、
+      `ZJ: swap rc=2` —— 救援层找不到 `C:\~new`（解压数据），只能拒绝交换并退场重启；
+    - 固件里 `BootOrder[0] = Boot0003 (SysRecover Temporary Restore)`、`BootNext = Boot0003`，
+      而 ESP 上 `vmlinuz-zjtemp.efi` **始终存在** → 每次开机都被这条置顶项拉回救援 → 死循环。
+  · **根因一（代码缺陷，主因）**：0.9.69 加的"临时内核自失效"被放在
+    `zjrestore-lite.sh` 的 **ESP 修复段（swap 之后，第 1751 行）**；而 swap 在第 1216 行，
+    swap 一失败就 `exit` 走 EXIT trap 退场，**永远执行不到自失效** → 临时内核留在 ESP
+    → 循环。→ 现在把 `disarm_staged_entry()` 放进 **init**，在**调用 lite 之前**执行，
+    并在 `reboot_now()` 里再兜一次（幂等）。
+  · **根因二（数据面）**：`C:\~new` 在救援运行前就没了（疑为清理工具/人工删除；正常 swap
+    只在成功搬完后才删 `~new`）。→ 新增保护：`DeleteSwapLeftover` **发现目标盘根有
+    `_zjresy*.log`（= 还有暂存任务）时绝不删 `~new`**，只记 WARN。
+  · **现场恢复办法**（救援层还在循环时）：在 Windows 侧（或 PE）把固件里描述为
+    `SysRecover Temporary Restore` 的启动项删掉并把 `BootOrder` 的 Windows Boot Manager
+    放回首位，再删 ESP 上的 `\EFI\ZJRESTORE\vmlinuz-zjtemp.efi` —— 立刻恢复可启动。
+    常驻菜单项 `SysRecover` 不受影响。

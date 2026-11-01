@@ -551,6 +551,22 @@ bool LastDeleteBootCleanupScheduled() { return g_bootCleanupScheduled; }
 void DeleteSwapLeftover(const SwapLeftInfo& i, DeleteProgressFn progress) {
     if (!i.drive) return;
     g_bootCleanupScheduled = false;
+    // PIT-197（2026-11-01 现场）：有暂存任务时**绝不能删 ~new** —— 删掉它救援层
+    // 就换不动（zjswap 报 swap rc=2），只能反复重启进救援。判据用目标盘根上的
+    // 契约日志 `_zjresy*.log`（救援层就是靠它找任务的）。注意不能用
+    // ContractDir()：程序目录可能和暂存时不是同一份（现场就是 C:\九转还原 vs
+    // D:\...\dist 两处）。
+    if (i.isNew) {
+        WIN32_FIND_DATAW fd = {};
+        const std::wstring pat = RootPath(i.drive) + L"_zjresy*.log";
+        HANDLE h = FindFirstFileW(pat.c_str(), &fd);
+        if (h != INVALID_HANDLE_VALUE) {
+            FindClose(h);
+            LogWarn("swap leftover: ~new kept (staged restore pending: " +
+                    ToUtf8(fd.cFileName) + ")");
+            return;
+        }
+    }
     std::wstring dir = RootPath(i.drive) + (i.isNew ? L"~new" : L"~old");
     BusyMark(i.drive);
     auto t0 = std::chrono::steady_clock::now();
