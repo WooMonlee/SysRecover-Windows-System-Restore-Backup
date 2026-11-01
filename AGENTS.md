@@ -1,8 +1,8 @@
-> ⚠️ **当前版本见 `src/common/version.h`**（唯一来源；`0.9.49`）。公开前准备、发布闸门与 1.0 观察期见 [`docs/26`](docs/26-公开前准备与1.0观察期.md)；**PIT 正文已搬到 [`docs/25`](docs/25-PIT坑位册.md)**，本文件 §13 只留活跃约束索引。
+> ⚠️ **当前版本见 `src/common/version.h`**（唯一来源）。公开前准备、发布闸门与 1.0 观察期见 [`docs/26`](docs/26-公开前准备与1.0观察期.md)；**PIT 正文已搬到 [`docs/25`](docs/25-PIT坑位册.md)**，本文件 §13 只留活跃约束索引。
 
 # AGENTS.md - SysRecover（一键还原，C++ 重写）开发指南
 
-> **当前状态（2026-10-28）**：主线 = **0.9.x**（0.9.0 异机还原 → 0.9.4x 分区/引导自足与界面收口）；下一步 = 真机矩阵回归 + 1.0 收口（`docs/26`）。
+> **当前状态（2026-11-01）**：主线 = **0.9.x**（0.9.0 异机还原 → 0.9.4x 分区/引导自足 → 0.9.5x–0.9.6x 镜像加密 ZJENC2 / 增量备份 / 异机驱动收窄 / 删除旧系统加固 → 0.9.7x 重启交接收口（BootOrder 置顶 + 临时内核自失效）/ **单文件版**）；下一步 = 真机矩阵回归 + 1.0 收口（`docs/26`）。
 > **封存线** = **0.6.54**（Linux apply 架构，tag `v0.6.54`）：现状/未闭环/资产见 [`docs/20-项目封存说明（当前线，2026-10-09）`](docs/20-项目封存说明（当前线，2026-10-09）.md)。
 > **新线（0.7 起）** = A 引擎（Windows 原生解压 + Linux 仅改名交换）：协议见 [`docs/22-P0原型验证计划（0.7）`](docs/22-P0原型验证计划（0.7）.md)，方案复审见 [`docs/23`](docs/23-0.7方案复审与最小自测清单（专家组）.md)。
 > 其它入口：[`docs/21`](docs/21-新软件策划与计划（专家组）.md)（策划）｜[`graveyard/README.md`](graveyard/README.md)（弃码不删，移此）。
@@ -74,9 +74,9 @@
 | 配置 | **Release + x64**（另需 x86 构建时再加）；`-O2`；静态链接优先 **`-static`**（PE 零依赖，MinGW 无 `/MT` 概念）；子系统按 exe 区分（CLI=`-mconsole`，GUI=`-mwindows`）；提权清单用 windres 编入 **GUI 与 CLI 两个 exe**（`src/gui/SysRecoverUI.rc` / `src/cli/SysRecover.rc` + 同名 `.manifest` → `build/*_rc.o`，见 PIT-018） |
 | libwim 引入 | 预编译 `wimlib.h + libwim.lib + libwim-15.dll` 放 `third_party/wimlib/`；运行时 DLL 与 EXE 同目录分发；**严禁静态链接 libwim，严禁抄 `wimlib-imagex.c`** |
 | Duilib 引入 | **已换库：经典 `Duilib`（MIT/BSD）**，`third_party/duilib-master/`（35 cpp，静态库 `build/libduilib.a`）。原因：`nim_duilib` 运行时强制 Skia（`GlobalManager` 无 GDI 回退），Skia 体积违背 <10MB 目标，弃用（源码留存 `third_party/nim_duilib-main/` 不再编译）；MinGW 移植补丁见 PIT-012；XML 皮肤随包 `dist/skin/`，禁止依赖外部散文件 |
-| 构建命令 | **`mingw32-make -f Makefile package`** = ★**双架构发布包**（启动器 + `dist/x86` + `dist/x64` + 共享资源；需两套工具链）/ `... all`（仅 x64 → `dist/x64`）/ `... ARCH=x86 all`（仅 x86 → `dist/x86`）/ `... check`（单元测试，零依赖 `tests/`）/ `... clean`（Makefile 写死两套 MinGW 路径，其余用相对路径）|
+| 构建命令 | **`mingw32-make -f Makefile package`** = ★**双架构发布包**（启动器 + `dist/x86` + `dist/x64` + 共享资源；需两套工具链）/ `... all`（仅 x64 → `dist/x64`）/ `... ARCH=x86 all`（仅 x86 → `dist/x86`）/ `... check`（单元测试，零依赖 `tests/`）/ `... portable`（**单文件版** → `dist/SysRecover-Portable.exe`，并自动复制 `D:\九转大还原<版本>.exe`）/ `... clean`（Makefile 写死两套 MinGW 路径，其余用相对路径）|
 | 救援层构建 | `python tools/build-debian-rescue.py`（**当前**：Debian 签名内核 + 存储子集模块 + Alpine 用户态；纯 Windows/Python，无需 Linux 环境）。用户态组装复用 `tools/vmtest/build-alpine-initramfs.py`（从 `tools/vmtest/dl/alpine/*.apk`），见 PIT-044/045/046、PLAN §11 |
-| 输出物 | `SysRecover.exe` + `libwim-15.dll` + `boot/{vmlinuz,initramfs,restore.sh,grldr,grldr.mbr,menu.lst模板}` + `version.json` + SHA256 |
+| 输出物 | `SysRecover.exe` + `libwim-15.dll` + `boot/{vmlinuz,initramfs,restore.sh,grldr,grldr.mbr,menu.lst模板}` + `version.json` + SHA256；**单文件版** `SysRecover-Portable.exe`（GUI+CLI 合一，49MB，`src/tools/portable_main.cpp` + `tools/portable-pack.py`，见 PIT-201/204）|
 | 门禁 | 体积检查（见 PLAN.md §1 体积目标 < 10 MB）+ `objdump -p` / `x86_64-w64-mingw32-objdump` 或 Dependencies 零依赖检查 + `diag` 自检通过 |
 
 版本号：SemVer `主.次.修订` —— **唯一来源 `src/common/version.h`**（`SYSRECOVER_VERSION`），
@@ -230,9 +230,15 @@ CLI：`SysRecover.exe <cmd> [opts]`，无 `--no-gui`（默认就是 CLI），`--
 |---|---|
 | `list [--json]` | 列磁盘/分区/GPT-MBR/盘符 |
 | `backup --dest <wim> [--source C:/] [--compress fast\|maximum\|recovery] [--append] [--verify] [--yes]` | 热备（源路径注意尾斜杠） |
-| `restore --image <f> --disk N --part M [--index 1] [--no-repair-boot] [--yes]` | 先做 ESP/BitLocker/恢复分区/镜像在目标分区四检查 |
+| `restore --image <f> --disk N --part M [--index 1] [--keep-old\|--no-keep-old] [--reboot] [--no-repair-boot] [--engine swap\|block] [--universal] [--yes]` | 先做 ESP/BitLocker/恢复分区/镜像在目标分区四检查；目标是运行中的系统盘则暂存+重启执行，否则就地还原；**默认不保留旧系统**（`--keep-old` 可保留），**默认不自动重启**（`--reboot` 用） |
 | `verify / images / diag / version` | 校验 / 列镜像 / 自检 / 版本 |
 | `extract --file <镜像> [--index N] --path <镜像内路径> [--path ...] --dest <目录>` | **从镜像里取单个/一组文件**（支持通配符，如 `\Users\*\Desktop\*.txt`）——"还原前先看看、只捞一个文件出来" |
+| `check-staged` | 暂存任务"数据面"自检（契约 + `~new` + UEFI 启动项），输出 `staged: ok/missing-new/no-contract/no-boot-entry`（PIT-198） |
+| `repair-boot [--disk N --part M]` | 修引导（ESP 的 BCD/bootmgfw），引导坏了不用重装 |
+| `returnold [--disk N --part M] [--yes]` | 返回旧系统（把 `~old` 搬回根，重启进救援层执行） |
+| `support [--out <zip>]` / `scan-ea` | 一键收集诊断资料 / 扫描 EA |
+| `history [--last N]` | 操作历史（`logs/history.jsonl`） |
+| `--lang zh\|en`（全局） | 指定界面语言（也可用 `SYSRECOVER_LANG`） |
 | `export-drivers [--dest <目录>]` | 只导出**本机启动关键**驱动（存储/输入类），供异机还原；不是 1.8GB 全量 |
 | `diag --zip [--out <zip>]` | **导出诊断包**（diag 文本 + `logs/` + 契约文件 + `version.json`）→ 用户直接把这个 zip 发回来即可排错。ZIP 由 `src/common/zip.{h,cpp}` 自写（store 模式、零依赖）|
 | GUI 自动模式（Phase 5） | `--auto-backup --source C: --dest D:\x.wim` / `--auto-restore --image <f> --disk N --part M`（对齐老 `MainWindow.xaml.cs`，CLI 先行，GUI 后移植） |
@@ -241,7 +247,7 @@ CLI：`SysRecover.exe <cmd> [opts]`，无 `--no-gui`（默认就是 CLI），`--
 
 控制台进度：一行刷新 `[hh:mm:ss] 百分比/GB/速度/ETA`。
 
-GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText`；必须 `::PostMessage(WM_WIM_PROGRESS)` 到 UI 线程（100ms 节流）；XML 皮肤进 RC 资源；DPI 用 Per-Monitor V2；PE 字体回退链 `YaHei→SimSun→System`；提权（**已落地**：GUI 带 `requireAdministrator` 清单，双击即由加载器弹一次 UAC，无需右键"以管理员身份运行"；**CLI 也必须提权**——机房批量部署靠"父进程已是管理员/SYSTEM"（管理员命令行、计划任务最高权限、PsExec `-s`、SCCM）实现**全程静默不弹窗**：这类上下文里进程本就是高完整性、清单不会触发 UAC；反之若留 asInvoker，写 BCD / 分区时会因权限不足失败）+ **GUI 单实例互斥** `Global\SysRecoverUI_SingleInstance`（命中即弹三选对话框：`使用之前的程序`[默认] / `使用现在新程序` / `退出`，见 `src/gui/instance_dlg.cpp` + `skin/instance.xml`；旧实例正在备份/还原时灰掉"使用现在新程序"，用 `WM_SR_QUERY_BUSY` 跨进程查询，查询失败一律当"忙"以免误关正在写盘的进程）；**副作用：非管理员会话下 `tools/ui/` 截图脚本启动 GUI 会弹 UAC 阻塞自动化**（见 §15）。
+GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText`；必须 `::PostMessage(WM_WIM_PROGRESS)` 到 UI 线程（100ms 节流）；XML 皮肤进 RC 资源；DPI 用 Per-Monitor V2；PE 字体回退链 `YaHei→SimSun→System`；提权（**已落地**：GUI 带 `requireAdministrator` 清单，双击即由加载器弹一次 UAC；**CLI 自 0.9.74 起改 `asInvoker` + 运行期按需提权**（PIT-200）——只读命令（`version/help/history/images/verify/extract`）在普通命令行即可用；需要管理员的命令（`list/restore/backup/repair-boot/returnold/diag/support/export-drivers/scan-ea/check-staged`）先 `ShellExecute runas` 弹 UAC 并透传退出码，提不上就明确报错（退出码 3）。机房批量部署（管理员命令行/计划任务最高权限/PsExec `-s`/SCCM）父进程本就高完整性 → 不弹窗、静默；原"CLI 清单强制 requireAdministrator"在 UAC 关闭/PE/非交互会话下会**完全没输出**）+ **GUI 单实例互斥** `Global\SysRecoverUI_SingleInstance`（命中即弹三选对话框：`使用之前的程序`[默认] / `使用现在新程序` / `退出`，见 `src/gui/instance_dlg.cpp` + `skin/instance.xml`；旧实例正在备份/还原时灰掉"使用现在新程序"，用 `WM_SR_QUERY_BUSY` 跨进程查询，查询失败一律当"忙"以免误关正在写盘的进程）；**副作用：非管理员会话下 `tools/ui/` 截图脚本启动 GUI 会弹 UAC 阻塞自动化**（见 §15）。
 
 **还原确认与「静默模式」（2026-09-16 用户规格）**：`Silent` 勾选框默认**不勾选**。还原时——
 - **未勾选**：只弹**一个**选择框（`CConfirmDlg` + `skin/confirm.xml`，非 `MessageBox`）——文案与默认项**跟随真实行为**（PIT-072）：
@@ -492,7 +498,14 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 - 改**救援层脚本**（`bootfiles/alpine/init`、`bootfiles/zjrestore-lite.sh`）后必须 `python tools/build-debian-rescue.py` 重建 initramfs（脚本是打进 initramfs 的）。
 - 改**译文**（`tools/i18n-en.py`）后必须 `python tools/i18n-wrap.py --gen-lang` 重新生成 `lang/en.lang` —— **直接改 `lang/en.lang` 会被 `check-i18n` 的 C5 拦下**（只有 `dist/` 是交付物，`lang/en.lang` 要进 `dist/lang/`）。
 - 新增/改了 UI 中文字面量后：`python tools/i18n-wrap.py --apply` 回填 `Tr()` → `python tools/i18n-wrap.py --skeleton` 补齐新键 → 填英文 → `--gen-lang`。**顺序不能反**（`--skeleton` 只保留已存在的 value）。
-- 提交前顺序：`make check`（单测 + 一致性）→ `make package`。
+- 提交前顺序：`make check`（单测 + 一致性）→ `make package` → `make portable`。
+- **出包/发布流程（2026-11-01 用户规格，每次改进都做）**：
+  1. `make check` → `make package` → `make portable`（自动产出 `dist\SysRecover-Portable.exe`，并复制 `D:\九转大还原<版本>.exe`；旧版本删掉）；
+  2. 手验三项：`九转大还原<ver>.exe version` 有输出、无参数能开界面、图标正常；
+  3. 建 GitHub Release `v<版本>`（标题「九转大还原 <版本>（单文件版）」）+ 上传 `SysRecover-Portable-<版本>.exe`（附件名用 ASCII）+ 说明含参数表/截图/SHA256；
+  4. 只保留最新一个 Release（旧的删掉，tag 按需保留）。
+  ⚠️ 中文字符串别写进 `.ps1` 字面量（PS 5.1 无 BOM 按 ANSI 解析 → 乱码）；需要中文 JSON 时
+     先用 Python 生成 UTF-8 文件，再 `[IO.File]::ReadAllBytes` 直接 POST。
 
 ### 17.3 品牌与术语约束（改界面/文案前必查）
 | 项 | 值 | 能不能改 |
@@ -582,4 +595,4 @@ python tools/check-i18n.py                 # 单独跑门禁
 SysRecover.exe --lang en help              # CLI 指定语言
 set SYSRECOVER_LANG=en && SysRecover.exe   # 环境变量指定语言（机房批量）
 `
-- 当前词条：**344**（en.lang 约 37 KB）。每增一语种 ≈ +37 KB。
+- 当前词条：**760**（en.lang 约 89 KB）。每增一语种 ≈ +89 KB。
