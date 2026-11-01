@@ -1925,3 +1925,17 @@
     单文件版是面向用户的"一个文件"，按 UI 口径**带**品牌图标。
   · 验证：`objdump -h build/portable_stub.exe` 出现 `.rsrc`；
     `[System.Drawing.Icon]::ExtractAssociatedIcon("D:\九转大还原0.9.79.exe")` → 32×32。
+
+### PIT-205
+
+- PIT-205 **命令行的"要不要重启 / 要不要保留旧系统"没写进帮助和文档**（`0.9.80`，2026-11-01，用户指出）
+  · 现象：`help restore` 只把 `--keep-old/--no-keep-old` 塞进用法行、**没有任何解释**；
+    而且**根本没有"暂存后自动重启"的开关**（GUI 会重启，CLI 只打印"请重启"）。
+  · 修复：
+    - 新增 **`--reboot`**：暂存成功后 `shutdown /r /t 5`（反悔 `shutdown /a`）；
+      默认仍是**不自动重启**（脚本/批量可控），并明确打印"请手动重启（或加 --reboot）"；
+    - `help restore` 补全参数说明：`--keep-old`（保留可回退）/ `--no-keep-old`（默认，当场删）/
+      `--reboot` / `--no-repair-boot` / `--engine` / `--universal` / `--yes` + 两条示例；
+    - README（中英）"还原镜像"章节补同样的三问：**是否重启、是否保留旧系统、怎么自动重启**；
+    - 发布说明同步。
+  · 教训：凡是"行为开关"，只写进 usage 行不算文档 —— 必须有一句**默认值 + 反义开关 + 例子**。

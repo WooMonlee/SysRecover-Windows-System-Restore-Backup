@@ -318,6 +318,7 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 - PIT-202 · CLI 默认不保留旧系统；删除由救援层做（ACL 免疫），`--keep-old` 可保留 · [正文](docs/25-PIT坑位册.md#pit-202)
 - PIT-203 · 镜像搜索覆盖一、二级目录；单文件版靠 `ZJ_ORIGIN_DIR` 定位 · [正文](docs/25-PIT坑位册.md#pit-203)
 - PIT-204 · 单文件版要嵌品牌图标（stub 也要 .rc） · [正文](docs/25-PIT坑位册.md#pit-204)
+- PIT-205 · CLI 的"是否重启/是否保留旧系统"必须写进帮助与 README（`--reboot`） · [正文](docs/25-PIT坑位册.md#pit-205)
 
 ### 13.2 未闭环（正文带 🚧，别当"已经好了"）
 

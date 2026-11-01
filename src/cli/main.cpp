@@ -250,7 +250,7 @@ bool ValidateCommandArgs(const std::vector<std::string>& a) {
     } else if (cmd == "restore") {
         // --repair-boot 是默认行为的显式写法（网友常这么写）→ 接受且无操作
         flags = {"--no-repair-boot", "--repair-boot", "--universal", "--yes",
-                 "-y", "--keep-old", "--no-keep-old"};
+                 "-y", "--keep-old", "--no-keep-old", "--reboot"};
         values = {"--image", "--disk", "--part", "--index", "--engine",
                   "--drivers", "--password"};
     } else if (cmd == "verify") {
@@ -538,8 +538,22 @@ int CmdRestore(const std::vector<std::string>& a) {
             std::printf("%s\n", advice.c_str());
         return (rc == 2 || rc == 4 || rc == 5) ? rc : 1;
     }
-    if (needReboot)
+    if (needReboot) {
         std::printf(Tr("已暂存还原任务，重启后由引导层执行。\n"));
+        // PIT-205（用户 2026-11-01）：命令行默认**不自动重启**（脚本可控），
+        // 加 --reboot 才 5 秒后重启（同 GUI 口径，不带 shutdown 通知文本）。
+        if (Has(a, "--reboot")) {
+            std::string sout;
+            const int src = sysrecover::RunProcess(
+                sysrecover::SysToolPath(L"shutdown.exe"), L"/r /t 5", sout);
+            if (src == 0)
+                std::printf(Tr("将在 5 秒后重启（反悔：shutdown /a）。\n"));
+            else
+                std::printf(Tr("自动重启失败（rc=%d），请手动重启。\n"), src);
+        } else {
+            std::printf(Tr("请手动重启以执行（或加 --reboot 让它自动重启）。\n"));
+        }
+    }
     // PIT-202 安全提示：不保留旧系统 = 交换成功后旧系统当场删除，**没有后悔药**。
     // 首次换系统建议 --keep-old，确认新系统能起来再删 ~old。
     if (needReboot && !req.keepOld)
@@ -1086,7 +1100,22 @@ const CmdHelp* CmdHelpTable(size_t* n) {
     {"backup",
      Tr("backup --dest <文件> [--source <目录>] [--compress fast|maximum|recovery]\n" "       [--name <名>] [--append] [--verify] [--esp] [--no-snapshot] [--password <pwd>] [--yes]\n" "  --source 写盘符根（`C:` 或 `C:/` 都行）即自动走 VSS 热备；\n" "  --compress 决定体积/速度；--verify 写完立即校验；--append 追加为同一 WIM 的新子镜像；\n" "  --esp 把 ESP 分区并入同一镜像（子镜像名 ESP，还原系统时自动恢复回 ESP）；\n" "  --no-snapshot 冷备（PE/离线卷/VHD 卷上 VSS 不可用时用）；\n" "  本机没有 ESP 时自动跳过（不算失败）。")},
     {"restore",
-     Tr("restore --image <文件> --disk N --part M [--index N] [--keep-old] [--no-keep-old] [--no-repair-boot] [--engine block|swap] [--universal [--drivers <目录>]] [--yes]\n" "  目标是正在运行的系统盘 → 暂存并重启进救援层；否则就地还原（不重启）。\n" "  用 `list` 先确认磁盘号/分区号；镜像必须在**本地分区**。\n" "  --universal 异机还原（仅 Win10/11；仅 A 引擎/PE 就地）：启用内置启动存储驱动，\n" "  --drivers 额外注入用户驱动文件夹（DISM，离线，不随包内置厂商驱动）。")},
+     Tr("restore --image <文件> --disk N --part M [--index N] [--keep-old]\n"
+        "        [--no-keep-old] [--reboot] [--no-repair-boot] [--engine block|swap]\n"
+        "        [--universal [--drivers <目录>]] [--yes]\n"
+        "  什么时候「重启后还原」：**自动判定**——目标是正在运行的系统盘就暂存并\n"
+        "  重启进恢复环境执行；目标是其它分区（或在 PE 里）就就地还原、不重启。\n"
+        "  --keep-old      保留旧系统（C:\\~old），之后可「返回旧系统」；\n"
+        "  --no-keep-old   **默认**：交换成功后当场删除旧系统（省空间、无后悔药）。\n"
+        "  --reboot        暂存成功后立即重启（默认不自动重启，等你手动重启；\n"
+        "                  5 秒倒计时，反悔用 shutdown /a）。\n"
+        "  --no-repair-boot 不修引导（只允许就地还原；暂存路径会直接拒绝）。\n"
+        "  --engine swap | block  换 swap=Windows 解压+Linux 交换（默认、快）；\n"
+        "                  block=旧路径（Linux 直接 apply，慢但兼容性强）。\n"
+        "  --universal [--drivers <目录>]  异机还原（仅 Win10/11；自动注入存储/输入驱动）。\n"
+        "  --yes           跳过确认；--index 选子镜像（默认 1）。\n"
+        "  例：restore --image D:\\SYSTEM.WIM --disk 0 --part 3 --yes --reboot\n"
+        "      restore --image D:\\SYSTEM.WIM --disk 0 --part 3 --yes --keep-old")},
     {"verify", Tr("verify --image <文件>\n  校验镜像完整性（成功 0，失败 5）。")},
     {"repair-boot",
      Tr("repair-boot [--disk N --part M]\n" "  修复引导（ESP 上的 BCD/bootmgfw）：给**引导坏了的机器**用，不必重装。\n" "  不给 --disk/--part 时自动找系统盘；流程 = bcdboot（缺失时用内置引导资产）+ 产物校验（docs/15）。")},

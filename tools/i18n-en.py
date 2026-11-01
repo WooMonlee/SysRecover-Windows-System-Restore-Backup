@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：756/757 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：756/760 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n已登记为「下次开机自动清除」（重启后会自动删完）。': '\n\nThe remaining files are scheduled for automatic removal at the next boot (they will be gone after a reboot).',
@@ -103,7 +103,7 @@ EN = {
     'list\n  列出磁盘/分区/文件系统/盘符/ESP 与系统标记。': 'list\n  List disks/partitions/filesystems/letters/ESP and system flags.',
     'pnputil /enum-drivers 失败（rc=': 'pnputil /enum-drivers failed (rc=',
     'repair-boot [--disk N --part M]\n  修复引导（ESP 上的 BCD/bootmgfw）：给**引导坏了的机器**用，不必重装。\n  不给 --disk/--part 时自动找系统盘；流程 = bcdboot（缺失时用内置引导资产）+ 产物校验（docs/15）。': 'repair-boot [--disk N --part M]\n  Repair boot (BCD/bootmgfw on the ESP): for a machine that will not boot, without reinstalling.\n  Without --disk/--part the system disk is found automatically; the flow is bcdboot (or the built-in boot assets when it is missing) plus artifact verification (docs/15).',
-    'restore --image <文件> --disk N --part M [--index N] [--keep-old] [--no-keep-old] [--no-repair-boot] [--engine block|swap] [--universal [--drivers <目录>]] [--yes]\n  目标是正在运行的系统盘 → 暂存并重启进救援层；否则就地还原（不重启）。\n  用 `list` 先确认磁盘号/分区号；镜像必须在**本地分区**。\n  --universal 异机还原（仅 Win10/11；仅 A 引擎/PE 就地）：启用内置启动存储驱动，\n  --drivers 额外注入用户驱动文件夹（DISM，离线，不随包内置厂商驱动）。': 'restore --image <file> --disk N --part M [--index N] [--keep-old] [--no-keep-old] [--no-repair-boot] [--engine block|swap] [--universal [--drivers <dir>]] [--yes]\n  Target is the running system disk -> stage and reboot into the recovery environment; otherwise restore in place (no reboot).\n  --keep-old keeps the old system as ~old (can return to it); default deletes it after the swap.\n',
+    'restore --image <文件> --disk N --part M [--index N] [--keep-old]\n        [--no-keep-old] [--reboot] [--no-repair-boot] [--engine block|swap]\n        [--universal [--drivers <目录>]] [--yes]\n  什么时候「重启后还原」：**自动判定**——目标是正在运行的系统盘就暂存并\n  重启进恢复环境执行；目标是其它分区（或在 PE 里）就就地还原、不重启。\n  --keep-old      保留旧系统（C:\\~old），之后可「返回旧系统」；\n  --no-keep-old   **默认**：交换成功后当场删除旧系统（省空间、无后悔药）。\n  --reboot        暂存成功后立即重启（默认不自动重启，等你手动重启；\n                  5 秒倒计时，反悔用 shutdown /a）。\n  --no-repair-boot 不修引导（只允许就地还原；暂存路径会直接拒绝）。\n  --engine swap | block  换 swap=Windows 解压+Linux 交换（默认、快）；\n                  block=旧路径（Linux 直接 apply，慢但兼容性强）。\n  --universal [--drivers <目录>]  异机还原（仅 Win10/11；自动注入存储/输入驱动）。\n  --yes           跳过确认；--index 选子镜像（默认 1）。\n  例：restore --image D:\\SYSTEM.WIM --disk 0 --part 3 --yes --reboot\n      restore --image D:\\SYSTEM.WIM --disk 0 --part 3 --yes --keep-old': 'restore --image <file> --disk N --part M [--index N] [--keep-old]\n        [--no-keep-old] [--reboot] [--no-repair-boot] [--engine block|swap]\n        [--universal [--drivers <dir>]] [--yes]\n  When does it restore after a reboot? Decided automatically: if the target\n  is the running system disk it stages and reboots into the recovery\n  environment; otherwise (other partition / in PE) it restores in place.\n  --keep-old      keep the old system (C:\\~old); you can return to it later.\n  --no-keep-old   DEFAULT: delete the old system right after the swap.\n  --reboot        reboot immediately after a successful staging (default is\n                  to wait for you; 5s countdown, cancel with shutdown /a).\n  --no-repair-boot  skip boot repair (in-place only; staging is refused).\n  --engine swap | block  swap=Windows extract + Linux swap (default, fast);\n                  block=legacy Linux apply (slower, wider compatibility).\n  --universal [--drivers <dir>]  cross-machine restore (Win10/11 only).\n  --yes           skip confirmation; --index picks the sub-image (default 1).\n  e.g. restore --image D:\\SYSTEM.WIM --disk 0 --part 3 --yes --reboot\n       restore --image D:\\SYSTEM.WIM --disk 0 --part 3 --yes --keep-old',
     'returnold [--disk N --part M] [--yes]\n  返回旧系统：把 ~old 的旧系统搬回根目录，当前新系统被丢弃。\n  暂存后重启进 Linux 救援层执行反向交换（在 Windows 里改名正在运行\n  的系统树不可回滚）；不给 --disk/--part 时自动找带 ~old\\Windows 的盘。\n  非交互式（批处理/管道）必须加 --yes；交互式会先问一次，取消=退出码 6。': 'returnold [--disk N --part M] [--yes]\n  Return to the old system: move the old system in ~old back to the root directory;\n  the current new system is discarded.\n  The task is staged, then the machine reboots into the Linux rescue layer to run the\n  reverse swap (renaming a running system tree inside Windows cannot be rolled back);\n  without --disk/--part it auto-detects the drive that has ~old\\Windows.\n  Non-interactive runs (batch/pipes) must pass --yes; interactive runs ask once,\n  cancel returns exit code 6.',
     'shortcut --target <exe> [--args <...>] [--name <名>] [--startmenu]\n  在桌面建快捷方式；--startmenu 改放开始菜单。': 'shortcut --target <exe> [--args <...>] [--name <name>] [--startmenu]\n  Create a desktop shortcut; --startmenu puts it in the Start Menu instead.',
     'support [--out <zip>]\n  一键收集诊断资料：各盘日志 + explorer 转储 + 事件日志 → 打包成一个 zip\n  （不给 --out 时输出到桌面 SysRecover-logs-<时间>.zip）。': 'support [--out <zip>]\n  Collect diagnostics in one go: logs from all drives + explorer dumps + event logs -> one zip\n  (without --out it writes SysRecover-logs-<time>.zip on the Desktop).',
@@ -311,6 +311,7 @@ EN = {
     '将创建：系统盘 %lluGB（整盘，不创建数据盘）': 'Will create: system %lluGB (whole disk; no data partition)',
     '将删除开机启动菜单里的 SysRecover 条目，\n并清理目标分区上的救援文件。\n确定继续吗？': 'This removes the SysRecover entry from the boot menu\nand deletes the rescue files on the target partition.\nContinue?',
     '将删除旧系统、启动菜单以及本程序，': 'This will delete the old system, the boot menu and this program;',
+    '将在 5 秒后重启（反悔：shutdown /a）。\n': 'Rebooting in 5 seconds (cancel with: shutdown /a).\n',
     '将对整个镜像做完整性校验（逐字节扫描）。\n几十 GB 的镜像可能需要十几分钟。\n确定现在校验吗？': 'The whole image will be verified byte by byte.\nA tens-of-GB image may take 10+ minutes.\nVerify now?',
     '将把当前分区的新状态作为第 %d 个时间点追加到：\n%ls\n\n未变更的文件不重复占空间；改动过的文件会整份重存。\n旧时间点全部保留（镜像只增不减），还原时可选任一版本。\n\n确定开始追加吗？': 'Append the current partition state as time point %d to:\n%ls\n\nUnchanged files are not stored twice; changed files are stored again in full.\nAll previous time points are kept (the image only grows); you can restore any of them later.\n\nStart appending?',
     '将按上次任务参数重新执行还原（镜像→目标分区）。\n': 'The restore will re-run with the previous task parameters (image -> target partition).\n',
@@ -619,6 +620,7 @@ EN = {
     '缺少目标镜像路径': 'Missing target image path',
     '缺少镜像路径': 'Missing image path',
     '自删 = 删旧系统 + 启动菜单 + 本程序（不可恢复）': 'Self-delete = old system + boot menu + this program (irreversible)',
+    '自动重启失败（rc=%d），请手动重启。\n': 'Automatic reboot failed (rc=%d); please reboot manually.\n',
     '解压并安装': 'Extract + Install',
     '解密失败': 'Decryption failed',
     '解密文件改名失败（目标被占用？）': 'Failed to rename the decrypted file (target in use?)',
@@ -644,6 +646,7 @@ EN = {
     '请先选择已存在的镜像文件': 'Select an existing image file first',
     '请先选择镜像与目标分区，再安装到启动': 'Select an image and target partition before adding to boot',
     '请先选择镜像文件': 'Please choose an image file first',
+    '请手动重启以执行（或加 --reboot 让它自动重启）。\n': 'Please reboot manually to run it (or add --reboot to reboot automatically).\n',
     '请把这个文件发给技术支持；\n': 'Please send this file to technical support;\n',
     '请设置备份密码（忘记后无法恢复镜像）：': 'Set a backup password (the image cannot be recovered if you forget it): ',
     '请输入系统盘大小（GB）': 'Enter the system partition size (GB)',

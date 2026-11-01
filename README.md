@@ -120,12 +120,26 @@ SysRecover.exe restore --image D:\backup\win10.esd --disk 0 --part 3 --index 1 -
 
 - `--yes` 必填，确认覆盖目标分区
 - `--index N`：指定子镜像，默认 1
-- `--no-repair-boot`：不自动修引导
-- 自动二选一：
+- `--no-repair-boot`：不自动修引导（只允许就地还原）
+- **是否"重启后再还原"：自动判定**
   - 目标是正在运行的系统盘 → 暂存，重启进救援层自动完成替换和修引导；
   - 目标未被占用（PE 里 / 非系统盘）→ 就地还原，不重启。
+- **旧系统保不保留**（仅"重启后还原"路径有效）
+  - `--no-keep-old`（**默认**）：交换成功后当场删除旧系统 `C:\~old`（省空间、无后悔药）；
+  - `--keep-old`：保留旧系统，之后可「返回旧系统」。
+- **要不要自动重启**
+  - 默认**不自动重启**（脚本/批量更可控），命令行会提示手动重启；
+  - `--reboot`：暂存成功后 5 秒自动重启（反悔：`shutdown /a`）。
 - 镜像带 ESP 子镜像（备份时 `--esp`）会自动一并恢复
 - 镜像必须放在本地分区，救援层访问不到网络
+
+```bat
+:: 换系统（默认：不保留旧系统，手动重启）
+SysRecover.exe restore --image D:\SYSTEM.WIM --disk 0 --part 3 --yes
+
+:: 换系统（保留旧系统可回退，暂存后自动重启）
+SysRecover.exe restore --image D:\SYSTEM.WIM --disk 0 --part 3 --yes --keep-old --reboot
+```
 
 > PE 注意：根目录 `SysRecoverUI.exe` 是 **x64 总入口（带图标）**，会调用 `x64\SysRecoverUI.exe`；纯 x64 PE（例如 NewBee 20210523）可以直接运行。32 位 Windows 请用 `SysRecoverUI_x86.exe`。该 PE 没有 `dism.exe`，异机驱动注入不可用，请改用带 DISM 的完整 PE/Windows。
 

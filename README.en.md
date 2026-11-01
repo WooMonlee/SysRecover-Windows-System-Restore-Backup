@@ -120,12 +120,26 @@ SysRecover.exe restore --image D:\backup\win10.esd --disk 0 --part 3 --index 1 -
 
 - `--yes` is required to confirm overwriting the target partition
 - `--index N`: sub-image index, default 1
-- `--no-repair-boot`: do not repair boot files automatically
-- Automatic mode selection:
+- `--no-repair-boot`: do not repair boot files automatically (in-place restore only)
+- **Restore after reboot?** Decided automatically:
   - target is the running system disk: stage the restore, reboot into the rescue layer, then replace the system and repair boot;
   - target is not in use (PE / non-system disk): restore in place without rebooting.
+- **Keep the old system?** (staged path only)
+  - `--no-keep-old` (**default**): delete `C:\~old` right after the swap (frees space, no way back);
+  - `--keep-old`: keep the old system so you can "return to the old system" later.
+- **Reboot automatically?**
+  - by default the CLI does **not** reboot (better for scripts) and asks you to reboot;
+  - `--reboot`: reboot 5 seconds after a successful staging (cancel with `shutdown /a`).
 - An image with an ESP sub-image (created with `--esp`) restores the ESP automatically.
 - Keep the image on a local partition; the rescue layer cannot access the network.
+
+```bat
+:: Reinstall (default: old system deleted, manual reboot)
+SysRecover.exe restore --image D:\SYSTEM.WIM --disk 0 --part 3 --yes
+
+:: Reinstall, keep the old system as a fallback, reboot automatically
+SysRecover.exe restore --image D:\SYSTEM.WIM --disk 0 --part 3 --yes --keep-old --reboot
+```
 
 > PE note: root `SysRecoverUI.exe` is the **x64 entry with icon** and launches `x64\SysRecoverUI.exe`; an x64-only PE (for example NewBee 20210523) can run it directly. On 32-bit Windows use `SysRecoverUI_x86.exe`. That PE also lacks `dism.exe`, so universal driver injection is unavailable; use a full PE/Windows with DISM.
 
