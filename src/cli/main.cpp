@@ -540,6 +540,13 @@ int CmdRestore(const std::vector<std::string>& a) {
     }
     if (needReboot)
         std::printf(Tr("已暂存还原任务，重启后由引导层执行。\n"));
+    // PIT-202 安全提示：不保留旧系统 = 交换成功后旧系统当场删除，**没有后悔药**。
+    // 首次换系统建议 --keep-old，确认新系统能起来再删 ~old。
+    if (needReboot && !req.keepOld)
+        std::printf(
+            Tr("提示：本次**不保留旧系统**——还原成功后旧系统将被删除，无法"
+               "「返回旧系统」。\n"
+               "      若想保留可回退，请加 --keep-old 重新暂存。\n"));
     else
         std::printf(Tr("还原已完成（目标分区未被占用，直接就地还原，无需重启）。\n"));
     // Q1 settle 警告（2026-10-18）：程序目录在目标盘上但没找到安全分区

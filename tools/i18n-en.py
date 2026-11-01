@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：755/756 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：756/757 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n已登记为「下次开机自动清除」（重启后会自动删完）。': '\n\nThe remaining files are scheduled for automatic removal at the next boot (they will be gone after a reboot).',
@@ -424,6 +424,7 @@ EN = {
     '提取失败：%ls\n': 'Extraction failed: %ls\n',
     '提示：含 EFS 加密文件或特殊重解析点的镜像只能用「还原后重启」（--engine swap，默认）；「重启后还原」会被自动拒绝。\n': 'Note: images containing EFS-encrypted files or special reparse points can only use "Restore & Reboot" (--engine swap, the default); "Reboot & Restore" will be refused.\n',
     '提示：异机还原只能配合「还原后重启」（--engine swap）或 PE 就地还原；当前引擎会被拒绝。\n': 'Note: dissimilar-hardware restore works only with "Restore & Reboot" (--engine swap) or in-place restore from PE; the current engine will be rejected.\n',
+    '提示：本次**不保留旧系统**——还原成功后旧系统将被删除，无法「返回旧系统」。\n      若想保留可回退，请加 --keep-old 重新暂存。\n': 'Note: this run does **not keep the old system** - after a successful restore the old system is deleted and "return to the old system" is no longer possible.\n      To keep it, re-stage with --keep-old.\n',
     '提示：自动使用程序目录 Drivers\\ 下的 %d 个 .inf。\n': 'Note: automatically using %d .inf file(s) under the program folder Drivers\\.\n',
     '搜索': 'Search',
     '搜集还原日志与诊断信息并打包到桌面（含 explorer 转储、事件日志）': 'Collect restore logs and diagnostics and package them to the Desktop (includes explorer dumps and event logs)',
