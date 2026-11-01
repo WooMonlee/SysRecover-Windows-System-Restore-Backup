@@ -1802,3 +1802,28 @@
   · **验证**：
     - CLI 实测四态（none / missing-new / no-contract / no-boot-entry）输出与预期一致；
     - QEMU 实机演练见下条（一次性启动项自失效）。
+
+### PIT-199
+
+- PIT-199 **根目录启动器被编译成 x64 → 32 位 Windows 上"命令行用不了"；缺 `x64\` 目录也直接报错退出**
+  （`0.9.73`，2026-11-01，网友反馈触发）
+  · **现象**：有网友说"新版本命令行用不了了"。
+  · **核实结论**：CLI 本体没问题（0.9.72 实测 `version/list/diag/help/history/images/extract/check-staged`
+    与中文+空格路径、三种入口全部正常，退出码正确）。**用不了的是入口层**，能复现 4 种：
+    1. **32 位 Windows**：`dist\SysRecover.exe`（根启动器）是用 **x64 工具链**编译的 → 双击/命令行都是
+       "不是有效的 Win32 应用程序"。（AGENTS 写的是"根目录 x86 整套（入口）"，实现与文档不一致。）
+    2. **只拿走 `SysRecover.exe`（缺 `x64\` 目录）**：`64-bit program not found: ...\x64\SysRecover.exe`。
+    3. **只拷 exe（缺 `libwim-15.dll` / `ucrt*.dll`）**：静默退出，退出码 `0xC0000135`
+       （STATUS_DLL_NOT_FOUND），没有任何提示。
+    4. **普通（非管理员）命令行**：清单自 0.3.16 起就是 `requireAdministrator` →
+       **完全没有输出**（Windows 直接拦下）。这是设计（§9/PIT-018），不是新版本引入的。
+  · **修复（本轮）**：
+    - 根启动器改用 **i686 工具链**编译（`LAUNCHER_CXX = $(MINGW32)/…`，windres 同步换 32 位）；
+    - `launcher.cpp` 增加回退：**32 位系统 或 缺 `x64\` 目录 → 用同目录的 `SysRecover*_x86.exe`**，
+      不再直接报错；报错文案也改成"把 x64 子目录与 *_x86.exe 一起保留"。
+  · **验证**：根启动器机器类型 `0x014C`（x86）；64 位机器上 `SysRecover.exe version` 正常转发到 x64；
+    只放 `SysRecover.exe + SysRecover_x86.exe + dll`（无 `x64\`）时也能输出
+    `SysRecover 0.9.72 (contract v1, MinGW 14.2.0)`。
+  · **遗留（待定，需产品决策）**：只读命令（`version/help/history`）在非管理员命令行下仍然"没反应"。
+    可选方案：CLI 清单改 `asInvoker` + 运行期按需自提权（只读命令免提权，其余命令给明确提示）。
+    这会改变 §9/PIT-018 的"CLI 必须提权"约定，需要确认后再动。

@@ -29,9 +29,11 @@ std::wstring StripExeToken(const std::wstring& cmdline) {
 
 #ifdef ZJ_LAUNCH_GUI
 const wchar_t* kTarget = L"x64\\SysRecoverUI.exe";
+const wchar_t* kFallback = L"SysRecoverUI_x86.exe";
 const wchar_t* kLabel = L"SysRecoverUI";
 #elif defined(ZJ_LAUNCH_CHECK)
 const wchar_t* kTarget = L"x64\\SysRecoverCheck.exe";
+const wchar_t* kFallback = L"SysRecoverCheck_x86.exe";
 const wchar_t* kLabel = L"SysRecoverCheck";
 
 // 父进程是不是「自动化宿主」（命令解释器 / 计划任务 / 我们的门禁脚本）。
@@ -95,21 +97,51 @@ void MarkConsoleForChildIfOwned() {
 }
 #else
 const wchar_t* kTarget = L"x64\\SysRecover.exe";
+const wchar_t* kFallback = L"SysRecover_x86.exe";   // 32 位系统 / 缺 x64 目录
 const wchar_t* kLabel = L"SysRecover";
 #endif
+
+// 本机是不是 64 位 Windows（WOW64 下也返回原生架构）。
+bool HostIs64() {
+    SYSTEM_INFO si = {};
+    GetNativeSystemInfo(&si);
+    return si.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64 ||
+           si.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_ARM64 ||
+           si.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_IA64;
+}
 
 int Launch(bool wait) {
     wchar_t self[MAX_PATH] = {};
     if (!GetModuleFileNameW(nullptr, self, MAX_PATH)) return 1;
     const std::wstring dir = DirOf(self);
-    const std::wstring target = dir + L"\\" + kTarget;
+    std::wstring target = dir + L"\\" + kTarget;
+    // PIT-199（2026-11-01 网友反馈「命令行用不了了」）：
+    //   根目录启动器是**通用入口**，必须两种机器都能用：
+    //   · 64 位系统 → x64\…（原逻辑）
+    //   · **32 位系统**（x64 版根本无法执行）或发布包缺 x64\ 目录
+    //     → 回退到同目录的 32 位版 SysRecover*_x86.exe，而不是直接报错退出。
+    //   以前根启动器是用 x64 工具链编译的 → 32 位 Windows 上双击就是
+    //   "不是有效的 Win32 应用程序"，命令行自然"用不了"。
+    bool useFallback = !HostIs64();
+    if (GetFileAttributesW(target.c_str()) == INVALID_FILE_ATTRIBUTES)
+        useFallback = true;
+    if (useFallback) {
+        const std::wstring fb = dir + L"\\" + kFallback;
+        if (GetFileAttributesW(fb.c_str()) != INVALID_FILE_ATTRIBUTES)
+            target = fb;
+    }
     if (GetFileAttributesW(target.c_str()) == INVALID_FILE_ATTRIBUTES) {
 #ifdef ZJ_LAUNCH_GUI
-        std::wstring msg = L"64-bit program not found:\n" + target +
-                           L"\n\nKeep the x64 subfolder in the release package.";
+        std::wstring msg = L"Program not found:\n" + target +
+                           L"\n\nKeep the x64 subfolder and the *_x86.exe files "
+                           L"from the release package together.";
         MessageBoxW(nullptr, msg.c_str(), kLabel, MB_OK | MB_ICONERROR);
 #else
-        std::fwprintf(stderr, L"64-bit program not found: %ls\n", target.c_str());
+        std::fwprintf(stderr,
+                      L"Program not found: %ls\n"
+                      L"Keep the x64 subfolder and the *_x86.exe files from the "
+                      L"release package together.\n",
+                      target.c_str());
 #endif
         return 1;
     }

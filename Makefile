@@ -165,7 +165,10 @@ $(GUI_OUT): $(GUI_SRC) $(GUI_RC_OBJ) $(DUI_LIB) $(APP_LIB) src/common/version.h 
 # ---- x64 总入口（图标 + 调用 x64\ 下的真程序）----
 # 根目录只放这个 x64 启动器；纯 x64 PE（没有 WOW64）也能运行。
 # 32 位兼容程序是 dist\SysRecoverUI_x86.exe / SysRecover_x86.exe（由 ARCH=x86 构建）。
-LAUNCHER_CXX = $(MINGW64)/bin/x86_64-w64-mingw32-g++
+# PIT-199：根启动器必须是 **32 位** 的通用入口 —— 64 位系统上它转发到 x64\，
+# 32 位系统上转发到同目录的 *_x86.exe；用 x64 工具链编译会让 32 位 Windows
+# 直接报"不是有效的 Win32 应用程序"（网友反馈"命令行用不了了"）。
+LAUNCHER_CXX = $(MINGW32)/bin/i686-w64-mingw32-g++
 LAUNCHER_UI  = dist/SysRecoverUI.exe
 LAUNCHER_CLI = dist/SysRecover.exe
 LAUNCHER_CHECK = dist/SysRecoverCheck.exe
@@ -176,11 +179,11 @@ launchers: $(LAUNCHER_UI) $(LAUNCHER_CLI) $(LAUNCHER_CHECK)
 
 $(LAUNCHER_UI_RC): src/launcher/SysRecoverLauncherUI.rc src/gui/SysRecoverUI.manifest resources/SysRecover.ico
 	@if not exist build mkdir build
-	$(MINGW64)/bin/windres.exe -I resources -I src/gui $< -o $@
+	$(MINGW32)/bin/windres.exe -I resources -I src/gui $< -o $@
 
 $(LAUNCHER_CLI_RC): src/launcher/SysRecoverLauncherCLI.rc src/cli/SysRecover.manifest
 	@if not exist build mkdir build
-	$(MINGW64)/bin/windres.exe -I src/cli $< -o $@
+	$(MINGW32)/bin/windres.exe -I src/cli $< -o $@
 
 $(LAUNCHER_UI): src/launcher/launcher.cpp $(LAUNCHER_UI_RC)
 	@if not exist dist mkdir dist
