@@ -2357,6 +2357,22 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
             }
         }
         if (!reuse) {
+        // PIT-198：旧 ~new 删不掉（被占用/权限）时**改名让位**，别让整次暂存失败。
+        // 改出来的 `~new.zj-old-<时间>` 会在 swap 时随根目录一起进 ~old，
+        // 用户删除旧系统时一并清掉。
+        if (GetFileAttributesW(newDir.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            wchar_t ts[40] = {};
+            SYSTEMTIME st = {};
+            GetLocalTime(&st);
+            swprintf(ts, 40, L"%04u%02u%02u-%02u%02u%02u", st.wYear, st.wMonth,
+                     st.wDay, st.wHour, st.wMinute, st.wSecond);
+            const std::wstring alt = newDir + L".zj-old-" + ts;
+            if (MoveFileExW(newDir.c_str(), alt.c_str(), 0))
+                LogWarn("A-engine: ~new undeletable -> renamed " + W2U(alt));
+            else
+                LogWarn("A-engine: ~new undeletable and rename failed err=" +
+                        std::to_string(GetLastError()));
+        }
         SwapSpaceEstimate se;
         if (!EstimateSwapSpace(target, content, se) || !se.enough) {
             char buf[256];
@@ -3174,6 +3190,169 @@ int StageRestoreMenu(const RestoreRequest& req, std::string& err,
     bool needReboot = false;
     return StageRestoreImpl(req, err, &needReboot, progress, adv,
                             /*menuEntry=*/true);
+}
+
+namespace {
+
+bool ReadWholeSmall(const std::wstring& path, std::string& out) {
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                           OPEN_EXISTING, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    char buf[4096];
+    DWORD rd = 0;
+    out.clear();
+    while (ReadFile(h, buf, sizeof(buf), &rd, nullptr) && rd > 0) {
+        out.append(buf, rd);
+        if (out.size() > (256u << 10)) break;
+    }
+    CloseHandle(h);
+    return !out.empty();
+}
+
+std::string FieldOf(const std::string& body, const char* key) {
+    const std::string k = std::string(key) + "=";
+    size_t pos = 0;
+    while (pos < body.size()) {
+        size_t e = body.find('\n', pos);
+        if (e == std::string::npos) e = body.size();
+        std::string line = body.substr(pos, e - pos);
+        if (line.compare(0, k.size(), k) == 0) {
+            std::string v = line.substr(k.size());
+            while (!v.empty() && (v.back() == '\r' || v.back() == '\n'))
+                v.pop_back();
+            return v;
+        }
+        pos = e + 1;
+    }
+    return std::string();
+}
+
+// `~new\.zj-done` 里的 content=NNN（无/坏 = 0）
+unsigned long long DoneMarkerBytes(const std::wstring& dir) {
+    std::string t;
+    if (!ReadWholeSmall(dir + L"\\.zj-done", t)) return 0;
+    const std::string v = FieldOf(t, "content");
+    if (v.empty()) return 0;
+    return strtoull(v.c_str(), nullptr, 10);
+}
+
+}  // namespace
+
+StagedTaskState CheckStagedTaskState(std::string* detailOut) {
+    auto setD = [&](const std::string& d) {
+        if (detailOut) *detailOut = d;
+    };
+    const std::wstring pend = LogBaseDir() + L"\\logs\\pending-restore.txt";
+    std::string body;
+    if (!ReadWholeSmall(pend, body)) {
+        setD("no pending-restore marker at " + W2U(pend));
+        return StagedTaskState::None;
+    }
+    const std::string tgt = FieldOf(body, "target");
+    if (tgt.empty()) {
+        setD("pending marker has no target");
+        return StagedTaskState::NoContract;
+    }
+    const wchar_t drive = (wchar_t)toupper((unsigned char)tgt[0]);
+    const std::wstring root = std::wstring(1, drive) + L":\\";
+
+    // ① 目标盘根的契约日志（救援层就是靠它找任务）
+    std::wstring contractName;
+    {
+        WIN32_FIND_DATAW fd = {};
+        HANDLE h = FindFirstFileW((root + L"_zjresy*.log").c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE) {
+            setD("no _zjresy contract on target root");
+            return StagedTaskState::NoContract;
+        }
+        contractName = fd.cFileName;
+        FindClose(h);
+    }
+
+    // ② ~new 是否完整（.zj-done 的 content 必须与契约里的 image_size 一致）
+    const std::wstring newDir = root + L"~new";
+    const unsigned long long doneBytes = DoneMarkerBytes(newDir);
+    if (doneBytes == 0) {
+        setD("~new\\.zj-done missing or empty");
+        return StagedTaskState::MissingNew;
+    }
+    unsigned long long wantBytes = 0;
+    {
+        std::string c;
+        if (ReadWholeSmall(root + contractName, c))
+            wantBytes = strtoull(FieldOf(c, "image_size").c_str(), nullptr, 10);
+    }
+    if (wantBytes > 0 && doneBytes != wantBytes) {
+        char b[160];
+        snprintf(b, sizeof(b),
+                 "~new content=%llu but image_size=%llu (mismatch)",
+                 doneBytes, wantBytes);
+        setD(b);
+        return StagedTaskState::MissingNew;
+    }
+
+    // ③ UEFI：临时启动项在 + **临时内核真的在 ESP 上**。
+    // 只看 NVRAM 不够：救援层跑过一次就会把临时内核删掉（自失效，PIT-197），
+    // 此时条目还在、BootOrder[0] 也还是它 → 会误判"可以重启"，用户白重启一次。
+    if (IsUefiFirmware()) {
+        std::string d;
+        if (!UefiTempBootStateOk(d)) {
+            setD("temporary boot entry not ready: " + d);
+            return StagedTaskState::NoBootEntry;
+        }
+        int diskIdx = -1;
+        for (const auto& dk : EnumerateDisks())
+            for (const auto& pt : dk.parts)
+                if (!pt.letter.empty() &&
+                    (wchar_t)towupper(pt.letter[0]) == drive)
+                    diskIdx = (int)dk.index;
+        std::wstring espRoot;
+        bool guidMatched = false;
+        std::string blog;
+        if (diskIdx < 0 || !AcquireEspRoot(espRoot, guidMatched, blog, diskIdx)) {
+            setD("cannot mount ESP to verify the temporary kernel");
+            return StagedTaskState::NoBootEntry;
+        }
+        const DWORD ka = GetFileAttributesW(
+            (espRoot + L"EFI\\ZJRESTORE\\vmlinuz-zjtemp.efi").c_str());
+        UnmountEsp(espRoot, blog);
+        if (ka == INVALID_FILE_ATTRIBUTES) {
+            setD("temporary kernel missing on ESP (staged entry already disarmed)");
+            return StagedTaskState::NoBootEntry;
+        }
+    }
+    setD("staged task ready (contract + ~new + boot entry)");
+    return StagedTaskState::Ok;
+}
+
+int CleanupStaleStagedTask() {
+    int n = 0;
+    const std::wstring pend = LogBaseDir() + L"\\logs\\pending-restore.txt";
+    if (DeleteFileW(pend.c_str())) ++n;
+    // 目标盘根的陈旧契约（_zjresy*.log）
+    DWORD mask = GetLogicalDrives();
+    for (wchar_t c = L'C'; c <= L'Z'; ++c) {
+        if (!(mask & (1u << (c - L'A')))) continue;
+        const std::wstring pat = std::wstring(1, c) + L":\\_zjresy*.log";
+        WIN32_FIND_DATAW fd = {};
+        HANDLE h = FindFirstFileW(pat.c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            const std::wstring p = std::wstring(1, c) + L":\\" + fd.cFileName;
+            SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_NORMAL);
+            if (DeleteFileW(p.c_str())) ++n;
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    // UEFI 临时启动项（含 BootNext）
+    if (IsUefiFirmware()) {
+        std::string log;
+        if (RemoveUefiBootEntry(log, /*temporary=*/true)) ++n;
+    }
+    if (n > 0)
+        LogWarn("stale staged task cleaned (" + std::to_string(n) + " item(s))");
+    return n;
 }
 
 // ── 返回旧系统（PIT-139，方案 C）──────────────────────────────────────

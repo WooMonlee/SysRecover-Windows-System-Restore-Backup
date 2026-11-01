@@ -202,6 +202,8 @@ bool ValidateCommandArgs(const std::vector<std::string>& a) {
     } else if (cmd == "extract") {
         flags = {"--all"};
         values = {"--file", "--image", "--path", "--dest", "--index", "--password"};
+    } else if (cmd == "check-staged") {
+        // 无参数：只做暂存任务"数据面"自检（PIT-198）
     } else if (cmd == "diag") {
         flags = {"--zip"};
         values = {"--out"};
@@ -1086,6 +1088,26 @@ int main() {
     // 未知选项/缺值在写日志、枚举磁盘之前就拒绝（退出码 2）。
     if (!ValidateCommandArgs(args))
         return 2;
+    // PIT-198：「暂存任务自检」必须在**启动清理之前**跑 —— 启动流程会把
+    // logs\pending-restore.txt 当"已提示过"消费掉，之后再查就永远"没有待执行任务"。
+    if (args[0] == "check-staged") {
+        std::string detail;
+        const sysrecover::StagedTaskState st =
+            sysrecover::CheckStagedTaskState(&detail);
+        const char* name = "none";
+        switch (st) {
+            case sysrecover::StagedTaskState::Ok: name = "ok"; break;
+            case sysrecover::StagedTaskState::MissingNew: name = "missing-new"; break;
+            case sysrecover::StagedTaskState::NoContract: name = "no-contract"; break;
+            case sysrecover::StagedTaskState::NoBootEntry: name = "no-boot-entry"; break;
+            default: break;
+        }
+        std::printf("staged: %s (%s)\n", name, detail.c_str());
+        if (st == sysrecover::StagedTaskState::Ok ||
+            st == sysrecover::StagedTaskState::None)
+            return 0;
+        return 3;
+    }
     std::wstring logsDir = sysrecover::LogBaseDir() + L"\\logs";
     sysrecover::LogInit(logsDir);
     sysrecover::ProgressInit(logsDir);

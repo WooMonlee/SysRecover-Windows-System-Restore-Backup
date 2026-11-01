@@ -1777,3 +1777,28 @@
     `SysRecover Temporary Restore` 的启动项删掉并把 `BootOrder` 的 Windows Boot Manager
     放回首位，再删 ESP 上的 `\EFI\ZJRESTORE\vmlinuz-zjtemp.efi` —— 立刻恢复可启动。
     常驻菜单项 `SysRecover` 不受影响。
+
+### PIT-198
+
+- PIT-198 **只凭"待执行标记"就让用户重启，不看 `~new` 还在不在**（`0.9.72`，2026-11-01，用户规格）
+  · **现象**：上次暂存后因为别的原因没重启成功；用户把 `C:\~new` 删掉（或清理工具删了），
+    再打开程序，界面只说"上次任务未执行，请重试/重启"——重启后救援层当然找不到 `~new`，
+    只能失败退场（PIT-197 的循环前提）。
+  · **根因**：`logs\pending-restore.txt` 只记录"曾经暂存过"，**不校验数据面**；
+    `CheckLastRescueFailure` 见到它就提示重启，从不检查契约 / `~new` / 启动项。
+  · **修复**：
+    1. 新增 `ops::CheckStagedTaskState()`：四态自检 —— `none` / `ok` / `missing-new`
+       （`~new\.zj-done` 缺失或 `content=` 与契约 `image_size` 不一致）/ `no-contract`
+       （目标盘根没有 `_zjresy*.log`）/ `no-boot-entry`（UEFI 临时启动项不在）。
+    2. `CheckLastRescueFailure` 在提示前先跑这个自检：
+       - `ok` → "暂存数据完好，可一键重试并重启"；
+       - `missing-new / no-contract / no-boot-entry` → 明确写"**暂存数据已失效**，
+         直接重启不会再进入恢复环境"，**并自动清掉陈旧契约 + 临时启动项**，
+         引导用户点「一键重试」（重新校验 + 重新解压）。
+    3. 暂存时旧 `~new` 删不掉 → **改名让位**（`~new.zj-old-<时间>`，随 `~old` 一起清），
+       不再让整次暂存失败。
+    4. 新增 CLI `check-staged`（**在启动清理之前**执行，否则标记早被消费），
+       输出 `staged: ok|missing-new|no-contract|no-boot-entry (detail)`，供排错。
+  · **验证**：
+    - CLI 实测四态（none / missing-new / no-contract / no-boot-entry）输出与预期一致；
+    - QEMU 实机演练见下条（一次性启动项自失效）。

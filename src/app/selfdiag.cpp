@@ -1,5 +1,7 @@
 #include "selfdiag.h"
 
+#include "ops.h"  // CheckStagedTaskState / CleanupStaleStagedTask（PIT-198）
+
 #include <windows.h>
 #include <shlobj.h>  // SHGetFolderPathW（桌面路径）
 
@@ -1071,16 +1073,34 @@ RescueNotice CheckLastRescueFailure() {
     times.pendingTime = pendExists ? StatusField(pend, "time") : std::string();
     RescueReport rep = DecideRescueReport(times);
     if (rep == RescueReport::TaskNotExecuted) {
+        // PIT-198（用户 2026-11-01 规格）：**先**核对暂存数据还在不在，再决定
+        // 说什么。"有 marker" 只证明曾经暂存过；~new 被删/契约没了/启动项没了
+        // 时，让用户"再重启一次"就是白等（甚至进救援后失败）。
+        std::string stDetail;
+        const StagedTaskState st = CheckStagedTaskState(&stDetail);
         DeleteFileW(pendFile.c_str());
         // 救援层从未执行 = A 类（未动目标）→ 可一键重试（PIT-148）。
         out.retryable = true;
         out.step = "interrupted";
-        out.msg = Tr(L"上次系统还原任务未执行（可能未进入恢复环境）。\n");
-        out.msg += Tr(L"时间 ") + Utf8ToW(times.pendingTime) + Tr(L"，目标 ") +
-                   Utf8ToW(StatusField(pend, "target")) + L"\n";
-        out.msg += Tr(L"请重试；若反复如此，把 logs 文件夹发给技术支持。");
-        LogWarn("restore task staged but never executed: time=" +
-                times.pendingTime);
+        if (st == StagedTaskState::MissingNew ||
+            st == StagedTaskState::NoContract ||
+            st == StagedTaskState::NoBootEntry) {
+            CleanupStaleStagedTask();  // 陈旧契约/临时启动项一并清掉
+            out.msg = Tr(L"上次还原任务没有执行，而且**暂存数据已失效**：\n");
+            out.msg += Utf8ToW(stDetail) + L"\n";
+            out.msg += Tr(L"直接重启不会再进入恢复环境；请点「一键重试」"
+                          L"（会重新校验并重新解压）。");
+            LogWarn("staged task INVALID: " + stDetail +
+                    " -> cleanup + offer re-stage");
+        } else {
+            out.msg = Tr(L"上次系统还原任务未执行（可能未进入恢复环境）。\n");
+            out.msg += Tr(L"时间 ") + Utf8ToW(times.pendingTime) + Tr(L"，目标 ") +
+                       Utf8ToW(StatusField(pend, "target")) + L"\n";
+            out.msg += Tr(L"暂存数据完好，可点「一键重试」重新暂存并重启；"
+                          L"若反复如此，把 logs 文件夹发给技术支持。");
+            LogWarn("restore task staged but never executed: time=" +
+                    times.pendingTime);
+        }
         return out;
     }
     if (pendExists)

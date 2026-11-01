@@ -237,4 +237,21 @@ bool CanRestoreInLinuxOnly(const std::wstring& image, int index,
 void ResetBootBlocked();
 bool TakeBootBlocked();
 
+// ── 暂存任务"数据面"自检（PIT-198，2026-11-01 用户规格）──────────────
+// 光看 logs\pending-restore.txt 只能证明"曾经暂存过"，**证明不了现在还能执行**。
+// 重启前必须再看三件事：目标盘根契约 `_zjresy*.log` + `~new\.zj-done` 完整
+//（含 content 与镜像体积一致）+（UEFI）临时启动项仍在。
+// 任一不满足 → **不能**"继续重启"，必须重新暂存（缺 ~new 就重新解压）。
+enum class StagedTaskState {
+    None,        // 没有待执行标记
+    Ok,          // 三样都在，可以重启
+    MissingNew,  // ~new 不在 / .zj-done 缺失 / content 与镜像不符
+    NoContract,  // 目标盘根找不到 _zjresy*.log
+    NoBootEntry  // UEFI 临时启动项不在了
+};
+StagedTaskState CheckStagedTaskState(std::string* detail = nullptr);
+
+// 清掉失效暂存留下的痕迹（陈旧 _zjresy 契约 + UEFI 临时启动项），返回清除项数。
+int CleanupStaleStagedTask();
+
 }  // namespace sysrecover
