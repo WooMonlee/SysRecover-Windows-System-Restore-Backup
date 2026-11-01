@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：750/753 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：754/756 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n已登记为「下次开机自动清除」（重启后会自动删完）。': '\n\nThe remaining files are scheduled for automatic removal at the next boot (they will be gone after a reboot).',
@@ -44,6 +44,7 @@ EN = {
     ' 或 ': ' or ',
     '%d - %ls（%.1f GB）': '%d - %ls (%.1f GB)',
     '%s，用时 %s。\n': '%s, took %s.\n',
+    '**本次未执行任何操作**。正确用法：\n\n': '**Nothing was executed**. Correct usage:\n\n',
     '--compress 只支持 fast/maximum/recovery\n': '--compress supports only fast/maximum/recovery\n',
     '--disk/--part 必须是有效数字\n': '--disk/--part must be a valid number\n',
     '--disk/--part/--index 必须是有效正整数\n': '--disk/--part/--index must be valid positive integers\n',
@@ -485,6 +486,7 @@ EN = {
     '未找到系统盘（没有分区含 \\Windows\\System32\\winload.exe）。\n若指定了 --disk/--part，请确认分区号正确且有盘符。\n当前分区表：\n': 'No system disk found (no partition contains \\Windows\\System32\\winload.exe).\nIf --disk/--part was given, check that the partition number is correct and that it has a drive letter.\nCurrent partition table:\n',
     '未检测到内置硬盘（磁盘可能未联机）。\n请先在磁盘管理中联机后再试。': 'No internal disk detected (it may be offline).\nBring it online in Disk Management and try again.',
     '未知参数：%s\n': 'Unknown option: %s\n',
+    '未知参数：%s（是否想写 %s？）\n': 'Unknown option: %s (did you mean %s?)\n',
     '未知选项': 'Unknown option',
     '未设置': 'Not set',
     '未选择驱动文件夹': 'No driver folder selected',
@@ -631,6 +633,7 @@ EN = {
     '诊断包已导出到桌面。\n': 'The diagnostics bundle was exported to the Desktop.\n',
     '诊断包已导出：': 'Diagnostics bundle exported: ',
     '该分区上没有可用的旧系统（~old\\Windows）。\n': 'This partition has no usable old system (~old\\Windows).\n',
+    '该命令需要管理员权限（要写引导/分区/固件变量）。\n请右键「以管理员身份运行」，或从管理员命令行执行。\n**本次未执行任何操作**。': 'This command needs administrator rights (boot/partition/firmware writes).\nRight-click "Run as administrator", or run it from an elevated command prompt.\n**Nothing was executed**.',
     '该文件不是可用的镜像：': 'This file is not a usable image: ',
     '该镜像不是 Windows 7 及以上的系统镜像（缺少 \\Windows\\system32\\winload.exe；Vista 以前系统 / 安装源/ 不完整镜像均不支持还原），已中止，未动目标分区。': 'This image is not a Windows 7 or later system image (missing \\Windows\\system32\\winload.exe; pre-Vista systems / install-source images / incomplete images are not supported for restore). Aborted before touching the target partition.',
     '该镜像已加密，请输入密码：': 'This image is encrypted. Enter the password: ',

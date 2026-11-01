@@ -40,6 +40,10 @@ using sysrecover::Tr;
 
 namespace {
 
+// 前向声明（放在**外层**匿名命名空间，与 1110 行的定义同域）：
+// 缺参/错参时要当场打印该命令的正确用法。
+bool PrintCmdUsage(const char* cmd);
+
 int CmdVersion() {
     std::printf("%s %s (contract v%d, MinGW %s)\n", SYSRECOVER_NAME,
                 SYSRECOVER_VERSION, SYSRECOVER_CONTRACT_VERSION, __VERSION__);
@@ -174,6 +178,65 @@ bool OptInt(const std::vector<std::string>& a, const char* key, int def,
     return true;
 }
 
+// ── 按需提权（PIT-200）────────────────────────────────────────────────
+// 命令分两类：只读命令不需要管理员；其余（写 BCD/分区/固件变量/驱动）需要。
+bool CliNeedsAdmin(const std::string& cmd) {
+    static const char* kNeed[] = {"list",      "restore",        "backup",
+                                  "repair-boot", "returnold",    "diag",
+                                  "support",   "export-drivers", "scan-ea",
+                                  "check-staged"};
+    for (const char* n : kNeed)
+        if (cmd == n)
+            return true;
+    return false;
+}
+
+bool IsElevatedNow() {
+    HANDLE tok = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok))
+        return false;
+    TOKEN_ELEVATION te = {};
+    DWORD got = 0;
+    const BOOL ok = GetTokenInformation(tok, TokenElevation, &te, sizeof(te),
+                                        &got);
+    CloseHandle(tok);
+    return ok && te.TokenIsElevated;
+}
+
+// 用 UAC 重新拉起自己并等待；成功返回 true 并写 exitCode。
+bool RelaunchElevated(int* exitCode) {
+    wchar_t self[MAX_PATH] = {};
+    if (!GetModuleFileNameW(nullptr, self, MAX_PATH))
+        return false;
+    // 参数 = 命令行去掉程序名那一段
+    const std::wstring cl = GetCommandLineW();
+    size_t i = 0;
+    while (i < cl.size() && cl[i] == L' ') ++i;
+    if (i < cl.size() && cl[i] == L'"') {
+        const size_t j = cl.find(L'"', i + 1);
+        i = (j == std::wstring::npos) ? cl.size() : j + 1;
+    } else {
+        const size_t j = cl.find(L' ', i);
+        i = (j == std::wstring::npos) ? cl.size() : j;
+    }
+    const std::wstring params = cl.substr(i);
+    SHELLEXECUTEINFOW sei = {};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpVerb = L"runas";
+    sei.lpFile = self;
+    sei.lpParameters = params.empty() ? nullptr : params.c_str();
+    sei.nShow = SW_SHOWNORMAL;
+    if (!ShellExecuteExW(&sei) || !sei.hProcess)
+        return false;
+    WaitForSingleObject(sei.hProcess, INFINITE);
+    DWORD c = 0;
+    GetExitCodeProcess(sei.hProcess, &c);
+    CloseHandle(sei.hProcess);
+    if (exitCode) *exitCode = (int)c;
+    return true;
+}
+
 bool ValidateCommandArgs(const std::vector<std::string>& a) {
     if (a.empty())
         return true;
@@ -185,7 +248,9 @@ bool ValidateCommandArgs(const std::vector<std::string>& a) {
                  "--yes", "-y"};
         values = {"--dest", "--source", "--compress", "--name", "--password"};
     } else if (cmd == "restore") {
-        flags = {"--no-repair-boot", "--universal", "--yes", "-y"};
+        // --repair-boot 是默认行为的显式写法（网友常这么写）→ 接受且无操作
+        flags = {"--no-repair-boot", "--repair-boot", "--universal", "--yes",
+                 "-y"};
         values = {"--image", "--disk", "--part", "--index", "--engine",
                   "--drivers", "--password"};
     } else if (cmd == "verify") {
@@ -235,13 +300,38 @@ bool ValidateCommandArgs(const std::vector<std::string>& a) {
                  (OneOf(a[i + 1], values) || OneOf(a[i + 1], flags)));
             if (nextMissing) {
                 std::printf(Tr("参数 %s 缺少值\n"), a[i].c_str());
+                std::printf(Tr("**本次未执行任何操作**。正确用法：\n\n"));
+                PrintCmdUsage(cmd.c_str());
                 return false;
             }
             ++i;
         } else if (OneOf(a[i], flags)) {
             continue;
         } else {
-            std::printf(Tr("未知参数：%s\n"), a[i].c_str());
+            // PIT-200（网友实测 `-repair-boot`）：以前只回一句"未知参数"，
+            // 用户以为命令跑了、重启后"没变化"。现在把话说全：没执行任何操作
+            // + 最接近的正确写法。
+            std::string hint;
+            for (const char* f : flags) {
+                const std::string fs(f);
+                if (a[i].size() > 2) {
+                    const std::string tail = a[i].substr(a[i].rfind('-') + 1);
+                    if (!tail.empty() && fs.find(tail) != std::string::npos) {
+                        hint = fs;
+                        break;
+                    }
+                    const std::string no = "--no-" + tail;
+                    if (no == fs) { hint = fs; break; }
+                }
+            }
+            if (!hint.empty())
+                std::printf(Tr("未知参数：%s（是否想写 %s？）\n"),
+                            a[i].c_str(), hint.c_str());
+            else
+                std::printf(Tr("未知参数：%s\n"),
+                            a[i].c_str());
+            std::printf(Tr("**本次未执行任何操作**。正确用法：\n\n"));
+            PrintCmdUsage(cmd.c_str());
             return false;
         }
     }
@@ -288,6 +378,7 @@ int CmdBackup(const std::vector<std::string>& a) {
     std::string dest = Opt(a, "--dest");
     if (dest.empty()) {
         std::printf(Tr("缺少 --dest <wim路径>\n"));
+        PrintCmdUsage("backup");
         return 2;
     }
     sysrecover::BackupRequest req;
@@ -311,6 +402,7 @@ int CmdBackup(const std::vector<std::string>& a) {
     if (attr != INVALID_FILE_ATTRIBUTES && !req.append && !Has(a, "--yes") &&
         !Has(a, "-y")) {
         std::printf(Tr("目标文件已存在，覆盖需加 --yes 确认（追加请用 --append）\n"));
+        PrintCmdUsage("backup");
         return 2;
     }
     std::string err;
@@ -355,6 +447,7 @@ int CmdRestore(const std::vector<std::string>& a) {
     std::string partS = Opt(a, "--part");
     if (image.empty() || diskS.empty() || partS.empty()) {
         std::printf(Tr("缺少 --image/--disk/--part\n"));
+        PrintCmdUsage("restore");
         return 2;
     }
     if (!Has(a, "--yes") && !Has(a, "-y")) {
@@ -366,6 +459,7 @@ int CmdRestore(const std::vector<std::string>& a) {
         !OptInt(a, "--part", 0, part) || part < 1 ||
         !OptInt(a, "--index", 1, index) || index < 1) {
         std::printf(Tr("--disk/--part/--index 必须是有效正整数\n"));
+        PrintCmdUsage("restore");
         return 2;
     }
     bool repairBoot = !Has(a, "--no-repair-boot");
@@ -558,6 +652,7 @@ int CmdVerify(const std::vector<std::string>& a) {
     std::string image = Opt(a, "--image");
     if (image.empty()) {
         std::printf(Tr("缺少 --image\n"));
+        PrintCmdUsage("verify");
         return 2;
     }
     const std::wstring wimg = ToWide(image);
@@ -614,6 +709,7 @@ int CmdImages(const std::vector<std::string>& a) {
     std::string file = Opt(a, "--file");
     if (file.empty()) {
         std::printf(Tr("缺少 --file\n"));
+        PrintCmdUsage("images");
         return 2;
     }
     const std::wstring wfile = ToWide(file);
@@ -658,6 +754,7 @@ int CmdExtract(const std::vector<std::string>& a) {
     int index = 1;
     if (!OptInt(a, "--index", 1, index) || index < 1) {
         std::printf(Tr("--index 必须是有效正整数\n"));
+        PrintCmdUsage("extract");
         return 2;
     }
     // --path 可重复（Opt 只取第一个匹配，所以自己扫一遍）
@@ -914,6 +1011,7 @@ int CmdShortcut(const std::vector<std::string>& a) {
     std::string targetArgs = Opt(a, "--args");
     if (target.empty()) {
         std::printf(Tr("缺少 --target <exe路径>\n"));
+        PrintCmdUsage("shortcut");
         return 2;
     }
     wchar_t folder[MAX_PATH] = {};
@@ -1064,6 +1162,10 @@ int main() {
             ++i;
         }
     }
+    // PIT-200：单横线长参数自动纠正（`-image` → `--image`）；`-y`/`-h` 保持原样
+    for (auto& a : args) {
+        if (a.size() > 2 && a[0] == '-' && a[1] != '-') a = "-" + a;
+    }
     sysrecover::InitI18n(langArg.empty() ? nullptr : langArg.c_str());
     sysrecover::EnsureTempDir();  // 同 GUI（PIT-192）
     // （Q1「先落盘后搬家」，用户 2026-10-18：启动搬迁块已删除 —— 搬家等用户
@@ -1088,6 +1190,18 @@ int main() {
     // 未知选项/缺值在写日志、枚举磁盘之前就拒绝（退出码 2）。
     if (!ValidateCommandArgs(args))
         return 2;
+    // PIT-200：需要管理员的命令，先确保提权 —— 提不上就**明确报错**，
+    // 绝不"什么都不做"（用户 2026-11-01 规格）。
+    if (CliNeedsAdmin(args[0]) && !IsElevatedNow()) {
+        int code = 3;
+        if (RelaunchElevated(&code))
+            return code;  // UAC 通过 → 子进程已跑完，透传退出码
+        std::printf("%s\n",
+                    Tr("该命令需要管理员权限（要写引导/分区/固件变量）。\n"
+                       "请右键「以管理员身份运行」，或从管理员命令行执行。\n"
+                       "**本次未执行任何操作**。"));
+        return 3;
+    }
     // PIT-198：「暂存任务自检」必须在**启动清理之前**跑 —— 启动流程会把
     // logs\pending-restore.txt 当"已提示过"消费掉，之后再查就永远"没有待执行任务"。
     if (args[0] == "check-staged") {

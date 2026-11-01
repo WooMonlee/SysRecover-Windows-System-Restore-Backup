@@ -19,7 +19,12 @@
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
-        <requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
+        <!-- PIT-200（2026-11-01 用户规格）：CLI 改 asInvoker + **运行期按需提权**。
+         原 requireAdministrator 在"UAC 关闭 / PE / 非交互会话"下会让进程
+         直接起不来且**没有任何输出**（技术员反馈"命令行用不了、什么都不做"）。
+         现在：只读命令（version/help/history/images/verify/extract）直接可用；
+         需要管理员的命令由程序自己弹 UAC（ShellExecute runas）或给出明确提示。 -->
+    <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
       </requestedPrivileges>
     </security>
   </trustInfo>

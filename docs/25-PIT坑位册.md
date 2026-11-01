@@ -1827,3 +1827,28 @@
   · **遗留（待定，需产品决策）**：只读命令（`version/help/history`）在非管理员命令行下仍然"没反应"。
     可选方案：CLI 清单改 `asInvoker` + 运行期按需自提权（只读命令免提权，其余命令给明确提示）。
     这会改变 §9/PIT-018 的"CLI 必须提权"约定，需要确认后再动。
+
+### PIT-200
+
+- PIT-200 **命令行参数写错时"什么都不做"**（单横线 `-repair-boot` 被当成未知参数，退出码 2，无操作）
+  （`0.9.74`，2026-11-01，网友实测）
+  · **用户命令**：`SysRecover.exe restore --image E:\SYSTEM.WIM --disk 0 --part 1 --index 1 --yes -repair-boot`
+    → 我们只回一句 `未知参数:-repair-boot`、退出码 2、**什么都没做**；用户以为跑了，重启后"没变化"。
+  · **两层原因**：
+    ① `-repair-boot` 是**单横线**（习惯写法），我们的解析只认 `--xxx`；
+    ② 我们只有 `--no-repair-boot`，**没有正向的 `--repair-boot`**（修复引导本来就是默认）。
+  · **修复**：
+    - 单横线长参数**自动纠正**（`-image` → `--image`，`-dest`/`-source`/`-y` 等一并生效；
+      `-y`/`-h` 两字符短开关保持原样）；
+    - `restore` **接受 `--repair-boot`**（等价默认行为，无操作）；
+    - 未知参数提示升级为：`未知参数：X（是否想写 Y？）` + `**本次未执行任何操作**；运行
+      SysRecover.exe help <cmd> 查看参数`；
+    - **CLI 清单改 `asInvoker` + 运行期按需提权**：只读命令（version/help/history/images/
+      verify/extract）不再要求管理员；需要管理员的命令（list/restore/backup/repair-boot/
+      returnold/diag/support/export-drivers/scan-ea/check-staged）先 `ShellExecute runas`
+      弹 UAC，**提不上就明确打印"该命令需要管理员权限…**本次未执行任何操作**"并退出码 3**
+      —— 不再"静默什么都不做"（原 `requireAdministrator` 在 UAC 关闭/PE/非交互会话下
+      进程根本起不来、一个字都不输出）。
+  · **验证**：原命令现在会进入真正流程（本机因 `E:\SYSTEM.WIM` 不存在 → 退出码 5 +
+    "镜像不可用"）；`-dest/-source/-y` 单横线备份成功；非提权（restricted token）下
+    `version` 正常输出；各种缺参命令均有明确提示与退出码 2。
