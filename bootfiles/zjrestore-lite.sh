@@ -1223,8 +1223,14 @@ if [ "$ENGINE" = "swap" ]; then
         exit 1
     fi
     # zjswap 自己挂载目标（ntfs3 → ntfs-3g 兜底），不需要预先挂载
+        # PIT-202：keep_old=0 → 交换完成后**直接删掉旧系统树**（Linux root 不受
+        # Windows ACL 限制；以前靠新系统首启的 `rd /s /q`，遇到 TrustedInstaller
+        # ACL 必失败，~old 会一直留着 —— 用户实测就是这个问题）。
+        ZJ_KEEP_OLD=$(get_task keep_old)
+        case "$ZJ_KEEP_OLD" in 0|1) ;; *) ZJ_KEEP_OLD=1 ;; esac
+        say "keep_old=$ZJ_KEEP_OLD (0=delete old system after swap)"
     _s0=$(date +%s)
-    sh "$ZJSWAP" "$TARGET_DEV" /tmp/zj_swap_mnt
+    ZJ_KEEP_OLD="$ZJ_KEEP_OLD" sh "$ZJSWAP" "$TARGET_DEV" /tmp/zj_swap_mnt
     swap_rc=$?
     _s1=$(date +%s)
     say "swap rc=$swap_rc elapsed=$((_s1 - _s0))s"

@@ -250,7 +250,7 @@ bool ValidateCommandArgs(const std::vector<std::string>& a) {
     } else if (cmd == "restore") {
         // --repair-boot 是默认行为的显式写法（网友常这么写）→ 接受且无操作
         flags = {"--no-repair-boot", "--repair-boot", "--universal", "--yes",
-                 "-y"};
+                 "-y", "--keep-old", "--no-keep-old"};
         values = {"--image", "--disk", "--part", "--index", "--engine",
                   "--drivers", "--password"};
     } else if (cmd == "verify") {
@@ -471,6 +471,9 @@ int CmdRestore(const std::vector<std::string>& a) {
     req.part = part;
     req.index = index;
     req.repairBoot = repairBoot;
+    // PIT-202（用户 2026-11-01 需求）：默认**不保留**旧系统（~old 由救援层直接删）；
+    // `--keep-old` = 保留，用于"还原后还能返回旧系统"。
+    req.keepOld = Has(a, "--keep-old") && !Has(a, "--no-keep-old");
     // 0.7（docs/23）：--engine swap = A 引擎（Windows 原生解压 + Linux 仅改名交换）
     // 默认 swap（A 引擎）；--engine block 回退 B 引擎（Linux apply）。
     req.engine = Opt(a, "--engine");
@@ -1076,7 +1079,7 @@ const CmdHelp* CmdHelpTable(size_t* n) {
     {"backup",
      Tr("backup --dest <文件> [--source <目录>] [--compress fast|maximum|recovery]\n" "       [--name <名>] [--append] [--verify] [--esp] [--no-snapshot] [--password <pwd>] [--yes]\n" "  --source 写盘符根（`C:` 或 `C:/` 都行）即自动走 VSS 热备；\n" "  --compress 决定体积/速度；--verify 写完立即校验；--append 追加为同一 WIM 的新子镜像；\n" "  --esp 把 ESP 分区并入同一镜像（子镜像名 ESP，还原系统时自动恢复回 ESP）；\n" "  --no-snapshot 冷备（PE/离线卷/VHD 卷上 VSS 不可用时用）；\n" "  本机没有 ESP 时自动跳过（不算失败）。")},
     {"restore",
-     Tr("restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--engine block|swap] [--universal [--drivers <目录>]] [--yes]\n" "  目标是正在运行的系统盘 → 暂存并重启进救援层；否则就地还原（不重启）。\n" "  用 `list` 先确认磁盘号/分区号；镜像必须在**本地分区**。\n" "  --universal 异机还原（仅 Win10/11；仅 A 引擎/PE 就地）：启用内置启动存储驱动，\n" "  --drivers 额外注入用户驱动文件夹（DISM，离线，不随包内置厂商驱动）。")},
+     Tr("restore --image <文件> --disk N --part M [--index N] [--keep-old] [--no-keep-old] [--no-repair-boot] [--engine block|swap] [--universal [--drivers <目录>]] [--yes]\n" "  目标是正在运行的系统盘 → 暂存并重启进救援层；否则就地还原（不重启）。\n" "  用 `list` 先确认磁盘号/分区号；镜像必须在**本地分区**。\n" "  --universal 异机还原（仅 Win10/11；仅 A 引擎/PE 就地）：启用内置启动存储驱动，\n" "  --drivers 额外注入用户驱动文件夹（DISM，离线，不随包内置厂商驱动）。")},
     {"verify", Tr("verify --image <文件>\n  校验镜像完整性（成功 0，失败 5）。")},
     {"repair-boot",
      Tr("repair-boot [--disk N --part M]\n" "  修复引导（ESP 上的 BCD/bootmgfw）：给**引导坏了的机器**用，不必重装。\n" "  不给 --disk/--part 时自动找系统盘；流程 = bcdboot（缺失时用内置引导资产）+ 产物校验（docs/15）。")},

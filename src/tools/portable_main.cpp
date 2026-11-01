@@ -20,13 +20,12 @@
 
 namespace {
 
-#ifdef ZJ_PORTABLE_GUI
-const wchar_t* kTarget = L"SysRecoverUI.exe";
+// PIT-202：单文件**合并成一个**（用户 2026-11-01 规格）——
+// 有参数 → 附着到调用者控制台跑 SysRecover.exe（CLI，输出可见、退出码透传）；
+// 无参数 → 开 SysRecoverUI.exe（GUI）。
+const wchar_t* kCliExe = L"SysRecover.exe";
+const wchar_t* kGuiExe = L"SysRecoverUI.exe";
 const wchar_t* kTitle = L"NineTurn SysRecover";
-#else
-const wchar_t* kTarget = L"SysRecover.exe";
-const wchar_t* kTitle = L"NineTurn SysRecover CLI";
-#endif
 
 std::wstring DirOf(const std::wstring& p) {
     const size_t k = p.find_last_of(L"\\/");
@@ -159,40 +158,81 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     //（否则解压到 %LOCALAPPDATA% 后，"exe 上一级"规则扫的是程序目录，找不到镜像）。
     SetEnvironmentVariableW(L"ZJ_ORIGIN_DIR", DirOf(self).c_str());
 
-    const std::wstring target = dest + L"\\" + kTarget;
+    // 判断有没有参数（去掉 exe 自身那一段后是否还有内容）
+    std::wstring args = GetCommandLineW();
+    {
+        size_t i = 0;
+        while (i < args.size() && args[i] == L' ') ++i;
+        if (i < args.size() && args[i] == L'"') {
+            const size_t j = args.find(L'"', i + 1);
+            i = (j == std::wstring::npos) ? args.size() : j + 1;
+        } else {
+            const size_t j = args.find(L' ', i);
+            i = (j == std::wstring::npos) ? args.size() : j;
+        }
+        args = args.substr(i);
+        while (!args.empty() && args[0] == L' ') args.erase(0, 1);
+    }
+    const bool wantCli = !args.empty();
+
+    const std::wstring target =
+        dest + L"\\" + (wantCli ? kCliExe : kGuiExe);
     if (GetFileAttributesW(target.c_str()) == INVALID_FILE_ATTRIBUTES) {
         MessageBoxW(nullptr, L"Extraction incomplete (main program missing).",
                     kTitle, MB_OK | MB_ICONERROR);
         return 1;
     }
     // 把原始命令行（去掉本 exe 那一段）透传
-    std::wstring cl = GetCommandLineW();
-    size_t i = 0;
-    while (i < cl.size() && cl[i] == L' ') ++i;
-    if (i < cl.size() && cl[i] == L'"') {
-        const size_t j = cl.find(L'"', i + 1);
-        i = (j == std::wstring::npos) ? cl.size() : j + 1;
-    } else {
-        const size_t j = cl.find(L' ', i);
-        i = (j == std::wstring::npos) ? cl.size() : j;
+    if (!wantCli) {
+        // 双击打开：立即释放控制台（减少黑窗闪烁），再开 GUI
+        FreeConsole();
+        HINSTANCE r = ShellExecuteW(nullptr, L"open", target.c_str(), nullptr,
+                                    dest.c_str(), SW_SHOWNORMAL);
+        return ((INT_PTR)r > 32) ? 0 : 1;
     }
-    std::wstring args = cl.substr(i);
-
-#ifdef ZJ_PORTABLE_GUI
-    HINSTANCE r = ShellExecuteW(nullptr, L"open", target.c_str(),
-                                args.empty() ? nullptr : args.c_str(),
-                                dest.c_str(), SW_SHOWNORMAL);
-    return ((INT_PTR)r > 32) ? 0 : 1;
-#else
+    // CLI 模式：附着到调用者控制台（cmd/PowerShell），把 stdout/stderr 接到
+    // CONOUT$，子进程继承 → 输出能看见、退出码能透传。
+    // 附着失败（从资源管理器带参数启动等）→ 退回开 GUI，不静默。
+    // 控制台子系统进程本身就有控制台；没有才附着。**附着失败也继续跑** ——
+    // 绝不能退回开 GUI（那会让 `xxx.exe version` 变成弹窗口，脚本拿不到输出）。
+    if (GetConsoleWindow() == nullptr)
+        AttachConsole(ATTACH_PARENT_PROCESS);
+    // 先看调用者是不是已经给了 stdout（cmd 的 `> file` 重定向就是这种）——
+    // 有就沿用，别用 CONOUT$ 覆盖掉，否则脚本取不到输出（实测踩过）。
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (hOut == nullptr || hOut == INVALID_HANDLE_VALUE) {
+        hOut = CreateFileW(L"CONOUT$", GENERIC_READ | GENERIC_WRITE,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                           OPEN_EXISTING, 0, nullptr);
+        if (hOut != INVALID_HANDLE_VALUE) {
+            SetStdHandle(STD_OUTPUT_HANDLE, hOut);
+            SetStdHandle(STD_ERROR_HANDLE, hOut);
+        }
+    }
+    // cmd 的 `> file` 句柄未必带可继承标志 → 直接传给子进程会失效（实测输出丢失）。
+    // 复制一份可继承的再传。
+    auto inherit = [](HANDLE h) -> HANDLE {
+        if (h == nullptr || h == INVALID_HANDLE_VALUE) return h;
+        HANDLE d = nullptr;
+        return DuplicateHandle(GetCurrentProcess(), h, GetCurrentProcess(), &d,
+                               0, TRUE, DUPLICATE_SAME_ACCESS)
+                   ? d
+                   : h;
+    };
+    hOut = inherit(hOut);
+    HANDLE hIn = inherit(GetStdHandle(STD_INPUT_HANDLE));
     STARTUPINFOW si = {};
     si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = hIn;
+    si.hStdOutput = hOut == INVALID_HANDLE_VALUE ? nullptr : hOut;
+    si.hStdError = hOut == INVALID_HANDLE_VALUE ? nullptr : hOut;
     PROCESS_INFORMATION pi = {};
-    std::wstring cmd = L"\"" + target + L"\"" + args;
+    std::wstring cmd = L"\"" + target + L"\" " + args;
     if (!CreateProcessW(target.c_str(), &cmd[0], nullptr, nullptr, TRUE, 0,
                         nullptr, dest.c_str(), &si, &pi)) {
-        wchar_t b[96] = {};
-        swprintf(b, 96, L"Cannot start (error %lu)", GetLastError());
-        std::fwprintf(stderr, L"%ls\n", b);
+        const DWORD e = GetLastError();
+        std::fwprintf(stderr, L"Cannot start (error %lu)\n", e);
         return 1;
     }
     WaitForSingleObject(pi.hProcess, INFINITE);
@@ -201,5 +241,4 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     return (int)rc;
-#endif
 }

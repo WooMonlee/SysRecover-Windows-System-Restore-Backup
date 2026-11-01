@@ -31,10 +31,11 @@ def collect(dist):
 
 
 def main():
-    if len(sys.argv) != 4:
+    if len(sys.argv) not in (4, 5):
         print(__doc__)
         return 2
     stub, out, dist = sys.argv[1], sys.argv[2], sys.argv[3]
+    release_dir = sys.argv[4] if len(sys.argv) == 5 else None
     items = collect(dist)
     if not items:
         print('portable-pack: dist is empty')
@@ -65,6 +66,25 @@ def main():
 
     total = len(stub_bytes) + len(payload) + 12
     print('portable-pack: %d file(s) -> %s (%.1f MB)' % (len(items), out, total / 1048576.0))
+
+    # 复制一份到发布目录，按版本号命名（如 D:\九转大还原0.9.76.exe）
+    if release_dir:
+        import shutil
+        ver = '0.0.0'
+        vj = os.path.join(dist, 'version.json')
+        if os.path.exists(vj):
+            import json
+            with open(vj, 'r', encoding='utf-8') as f:
+                ver = json.load(f).get('version', ver)
+        name = 'NineTurn-SysRecover-%s.exe' % ver
+        zh = '\u4e5d\u8f6c\u5927\u8fd8\u539f%s.exe' % ver
+        dst_zh = os.path.join(release_dir, zh)
+        try:
+            shutil.copyfile(out, dst_zh)
+            print('portable-pack: released -> %s' % dst_zh)
+        except OSError as e:
+            print('portable-pack: release copy FAILED: %s' % e)
+            return 1
     return 0
 
 

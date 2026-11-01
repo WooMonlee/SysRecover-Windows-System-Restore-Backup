@@ -1882,3 +1882,32 @@
     GUI 单文件能正常拉起 `SysRecoverUI`。
   · **注意**：`libwim` 仍必须**动态**链接（LGPLv3），所以"单文件"实际是"运行时解压到固定目录"，
     不是"只有一个 PE 映像"；解压目录里的 `libwim-15.dll` 仍可被用户替换（合规）。
+
+### PIT-202
+
+- PIT-202 **"还原后能不能不保留旧系统？"——CLI 默认是不保留，但删除逻辑靠新系统首启 `rd`，遇到 ACL 必失败（~old 永远留着）**
+  （`0.9.77`，2026-11-01，网友提问 + 用户规格）
+  · **现状梳理**：`RestoreRequest::keepOld` 默认 **false**（CLI 本来就"不保留"）；GUI 有勾选框。
+    keepOld=false 时 Windows 侧只往 `~new` 里塞一个 RunOnce `.cmd`：
+    `if not exist C:\~new ( rd /s /q C:\~old )` —— 以**普通用户权限**删旧系统树，
+    遇到 TrustedInstaller ACL 必然失败（PIT-190 同款），于是 `~old` 一直躺在 C: 根，
+    用户看到的就是"说好不保留，怎么还在"。
+  · **修复**：
+    1. **救援层直接删**：`zjrestore-lite.sh` 从契约读 `keep_old`，传给 `zjswap.sh`；
+       `ZJ_KEEP_OLD=0` → 交换完成后 `rm -rf ~old`（Linux root 不受 Windows ACL 限制），
+       日志写 `keep_old=0 -> removing old system tree` / `old system removed (Ns)`；
+    2. CLI 新增 **`--keep-old` / `--no-keep-old`**（默认按 `--no-keep-old` 处理）：
+       想"还原后还能返回旧系统"就写 `--keep-old`；
+    3. Windows 侧那条 `.cmd` 保留作**兜底**（救援层没删干净时再试一次）。
+  · **回答"怎样设置为重启后再还原"**：这是**自动判定**——目标是**正在运行的系统盘**时走
+    `staged-reboot`（暂存 6GB→重启进救援→交换→再重启），其它分区走就地还原（不重启）。
+    命令里不需要额外开关（`--engine swap` 是默认值；`--engine block` 是旧的 Linux apply 路径）。
+    日志里看 `restore path: staged-reboot (...)` 即表示"重启后再还原"。
+
+### PIT-203
+
+- PIT-203 **单文件版找不到镜像（续）：镜像搜索要覆盖"一、二级目录"**（`0.9.77`，2026-11-01 用户需求）
+  · 单文件解压到 `%LOCALAPPDATA%\SysRecover\app` 后，"exe 上一级"规则扫的是程序目录；
+    PIT-201 已加 `ZJ_ORIGIN_DIR` + 0 结果兜底。
+  · 本轮再加：兜底扫描非系统盘时，从"根 + 一级子目录"扩到 **根 + 一级 + 二级**
+    （用户习惯 `D:\系统镜像\Win11\xx.esd`）。只多一层，`kCap=500` 仍生效。

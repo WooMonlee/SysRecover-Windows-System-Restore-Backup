@@ -86,7 +86,27 @@ for d in "$M/~new"/* "$M/~new"/.[!.]*; do
 done
 # 删除 ~new 目录（含 .zj-done）
 rm -rf "$M/~new" 2>/dev/null || say "WARN: remove ~new failed (leftover under $M)"
+# PIT-202（用户 2026-11-01 需求）：契约 keep_old=0 → 旧系统**当场删除**，
+# 不留给新系统首启的 `rd /s /q`（那条路遇到 TrustedInstaller ACL 必失败）。
+# 注意：此时 ~new 已换位到根，~old 只是旧树，删它不影响新系统。
+if [ "${ZJ_KEEP_OLD:-1}" = "0" ] && [ -d "$M/~old" ]; then
+    say "keep_old=0 -> removing old system tree (~old)"
+    _rs=$(date +%s)
+    rm -rf "$M/~old"
+    _rrc=$?
+    _re=$(date +%s)
+    if [ -d "$M/~old" ]; then
+        say "WARN: ~old not fully removed (rc=$_rrc, $((_re - _rs))s); first-boot cleanup will retry"
+    else
+        say "old system removed ($((_re - _rs))s)"
+    fi
+    sync
+fi
 sync
 umount "$M" 2>/dev/null
-say "swap done (old tree kept at ~old; first boot should delete it)"
+if [ "${ZJ_KEEP_OLD:-1}" = "0" ]; then
+    say "swap done (old system deleted)"
+else
+    say "swap done (old tree kept at ~old)"
+fi
 exit 0

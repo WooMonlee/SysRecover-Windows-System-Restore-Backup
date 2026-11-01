@@ -137,7 +137,25 @@ void AppendNonSystemDrives(std::vector<Hit>& out) {
                 continue;
             if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0)
                 continue;
-            AppendDir(root + fd.cFileName, out);
+            const std::wstring lv1 = root + fd.cFileName;
+            AppendDir(lv1, out);
+            // PIT-203（用户 2026-11-01 需求）：再往下**一级**（二级目录）。
+            // 用户习惯把镜像放 `D:\系统镜像\Win11\xx.esd`，只扫一级会漏。
+            // 只多扫一层：再深会明显拖慢（每个分区多几千次 FindFirstFile）。
+            WIN32_FIND_DATAW fd2;
+            HANDLE h2 = ::FindFirstFileW((lv1 + L'\\*').c_str(), &fd2);
+            if (h2 == INVALID_HANDLE_VALUE) continue;
+            do {
+                if (out.size() >= kCap) break;
+                if (!(fd2.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+                if (fd2.dwFileAttributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM))
+                    continue;
+                if (wcscmp(fd2.cFileName, L".") == 0 ||
+                    wcscmp(fd2.cFileName, L"..") == 0)
+                    continue;
+                AppendDir(lv1 + L"\\" + fd2.cFileName, out);
+            } while (::FindNextFileW(h2, &fd2));
+            ::FindClose(h2);
         } while (::FindNextFileW(h, &fd));
         ::FindClose(h);
     }
