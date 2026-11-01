@@ -324,6 +324,34 @@ package: ea-apply boot-cleanup launchers
 sha256:
 	$(PYTHON) tools/write-sha256.py dist
 
+# ---- 单文件（便携）版：7-Zip SFX 自解压（PIT-201，用户 2026-11-01 需求）----
+# 交付形态：dist\SysRecover-Portable.exe（GUI）/ SysRecover-Portable-CLI.exe（命令行）。
+# 解压到 **固定目录** %LOCALAPPDATA%\SysRecover\app（不是随机 %TEMP%）：
+#   · 日志/语言包/皮肤/救援载荷的位置在多次运行之间保持稳定；
+#   · 单文件找不到镜像的问题已在 imgsearch 修掉（TEMP 运行兜底扫非系统盘）。
+# 7-Zip 只是**构建期工具**（与 Python/QEMU 同类），不随产品分发。
+SEVENZIP ?= C:\Program Files\7-Zip\7z.exe
+PORTABLE_GUI = dist\SysRecover-Portable.exe
+PORTABLE_CLI = dist\SysRecover-Portable-CLI.exe
+
+PORTABLE_GUI_STUB = build/portable_gui.exe
+PORTABLE_CLI_STUB = build/portable_cli.exe
+PORTABLE_GUI = dist/SysRecover-Portable.exe
+PORTABLE_CLI = dist/SysRecover-Portable-CLI.exe
+
+$(PORTABLE_GUI_STUB): src/tools/portable_main.cpp
+	@if not exist build mkdir build
+	$(MINGW32)/bin/i686-w64-mingw32-g++ -O2 -std=c++17 -DUNICODE -D_UNICODE -D_WIN32_WINNT=0x0601 -DZJ_PORTABLE_GUI $< -o $@ -static -municode -mwindows -s -lshell32 -luser32
+
+$(PORTABLE_CLI_STUB): src/tools/portable_main.cpp
+	@if not exist build mkdir build
+	$(MINGW32)/bin/i686-w64-mingw32-g++ -O2 -std=c++17 -DUNICODE -D_UNICODE -D_WIN32_WINNT=0x0601 $< -o $@ -static -municode -mconsole -s -lshell32 -luser32
+
+portable: package $(PORTABLE_GUI_STUB) $(PORTABLE_CLI_STUB)
+	@echo === portable: single-file pack ===
+	$(PYTHON) tools/portable-pack.py "$(PORTABLE_GUI_STUB)" "$(PORTABLE_GUI)" dist
+	$(PYTHON) tools/portable-pack.py "$(PORTABLE_CLI_STUB)" "$(PORTABLE_CLI)" dist
+
 # ---- 制品/CLI 冒烟（需先 package/all；不碰磁盘）----
 dist-check:
 	@if exist dist\logs rmdir /S /Q dist\logs

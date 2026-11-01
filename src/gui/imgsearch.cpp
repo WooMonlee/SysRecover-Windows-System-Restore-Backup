@@ -149,6 +149,20 @@ std::vector<std::wstring> imgsearch::Search() {
     std::vector<Hit> hits;
     const std::wstring exeDir = sysrecover::ExeDir();
 
+    // PIT-201（2026-11-01 用户反馈"单文件版找不到镜像"）：单文件/便携版会把
+    // 自身解压到 %TEMP%\xxxx 再运行，此时"exe 目录"和镜像所在位置毫无关系。
+    // 打包器可以用 ZJ_ORIGIN_DIR 告诉我们"用户实际把单文件放在哪"，先扫那里
+    // （及其上一级），最省事也最准。
+    {
+        wchar_t origin[MAX_PATH + 1] = {};
+        if (::GetEnvironmentVariableW(L"ZJ_ORIGIN_DIR", origin, MAX_PATH) > 0 &&
+            origin[0] != 0) {
+            AppendDir(origin, hits);
+            const std::wstring up = ParentDirOf(origin);
+            if (!up.empty()) AppendDir(up, hits);
+        }
+    }
+
     if (ExeUnderTemp(exeDir)) {
         // 规则 1：单EXE —— 父进程所在目录 + 其上一级（各一层）
         std::wstring parentExe = ParentProcessExePath();
@@ -160,6 +174,12 @@ std::vector<std::wstring> imgsearch::Search() {
                 if (!up.empty()) AppendDir(up, hits);
             }
         }
+        // 兜底（PIT-201）：单文件版多半是"从 U 盘/下载目录双击"跑的，
+        // 父进程常是 explorer.exe（→ C:\Windows，什么也没有）。这时按
+        // "程序装在 Program Files"同一套规则扫所有非系统盘，避免"一个镜像
+        // 都找不到"。
+        if (hits.empty())
+            AppendNonSystemDrives(hits);
     } else if (ExeUnderProgramFiles(exeDir)) {
         // 规则 2：程序装在 Program Files → 镜像可能在任何数据盘
         AppendNonSystemDrives(hits);
@@ -175,6 +195,11 @@ std::vector<std::wstring> imgsearch::Search() {
 
     std::vector<std::wstring> out;
     out.reserve(hits.size());
+    // PIT-201：以上规则都没找到（单文件解压到 %LOCALAPPDATA%、便携版放在
+    // 任意目录、父进程是 explorer 等）→ 兜底扫所有非系统固定盘（根 + 一级子目录）。
+    // 这一步只在"一个都没找到"时执行，不会拖慢常规启动。
+    if (hits.empty())
+        AppendNonSystemDrives(hits);
     for (auto& h : hits) out.push_back(std::move(h.path));
     return out;
 }

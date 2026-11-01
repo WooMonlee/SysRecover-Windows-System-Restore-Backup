@@ -1852,3 +1852,33 @@
   · **验证**：原命令现在会进入真正流程（本机因 `E:\SYSTEM.WIM` 不存在 → 退出码 5 +
     "镜像不可用"）；`-dest/-source/-y` 单横线备份成功；非提权（restricted token）下
     `version` 正常输出；各种缺参命令均有明确提示与退出码 2。
+
+### PIT-201
+
+- PIT-201 **单文件（便携）版：能打包，但"镜像搜索"会失效；7z.sfx 也不是安装器**（`0.9.75`，2026-11-01）
+  · **用户诉求**：希望"一个 exe 拷哪都能用"。用户自己用第三方工具打包后发现**找不到镜像文件**。
+  · **为什么找不到镜像**（`src/gui/imgsearch.cpp` 的三条规则）：
+    - 规则 1：exe 在 `%TEMP%` 下（单文件解压运行的特征）→ 只扫**父进程所在目录 + 上一级**
+      （假设是包装器从"镜像所在目录"启动）。但单文件多半是**从资源管理器双击**的，
+      父进程是 `explorer.exe` → 扫 `C:\Windows` → **一个镜像都没有**；
+    - 规则 2：装在 Program Files → 扫所有非系统盘；
+    - 规则 3：其它 → 只扫 exe 的上一级（单文件解压到 `%LOCALAPPDATA%` 时同样扫错地方）。
+  · **为什么 7-Zip SFX 不行**：标准安装包里的 `7z.sfx`/`7zCon.sfx` 是"7z.exe 前端"，
+    会把 `version` 当 7z 命令（实测 `SysRecover-Portable-CLI.exe version` →
+    `ERROR: Unknown command: version`）；能执行 `RunProgram=` 的 `7zSD.sfx` 属 7-Zip **Extra**，
+    不在标准包里。→ 自己写封装器，不依赖 7-Zip。
+  · **实现**（`make portable`）：
+    - `src/tools/portable_main.cpp`：极简自解压 stub（x86，GUI/CLI 两份），读自身尾部
+      `ZJFT + u64 偏移` 定位载荷，顺序解析 `ZJF1|nameLen|dataLen|mtime|name|data` 条目，
+      解到 **固定目录** `%LOCALAPPDATA%\SysRecover\app`（不是随机 `%TEMP%`，日志/皮肤/
+      语言包/救援载荷在多次运行间稳定），再启动 `SysRecoverUI.exe`/`SysRecover.exe`；
+    - `tools/portable-pack.py`：把 `dist\`（排除 `logs/`、`SHA256SUMS.txt`、`SysRecover-Portable*`）
+      按上述格式追加到 stub 后面；
+    - stub 启动前设置 `ZJ_ORIGIN_DIR=<单文件所在目录>`；`imgsearch` 先扫它，
+      **并且**任何规则都没找到时兜底扫所有非系统盘（只在 0 结果时执行，不影响常规启动）。
+  · **实测**：`SysRecover-Portable.exe` / `-CLI.exe` 各 **49.2 MB**；首次运行 0.5s 解压
+    71 个文件（48.9MB）到 `%LOCALAPPDATA%\SysRecover\app`；
+    `SysRecover-Portable-CLI.exe version` → `SysRecover 0.9.75 (contract v1, MinGW 14.2.0)`；
+    GUI 单文件能正常拉起 `SysRecoverUI`。
+  · **注意**：`libwim` 仍必须**动态**链接（LGPLv3），所以"单文件"实际是"运行时解压到固定目录"，
+    不是"只有一个 PE 映像"；解压目录里的 `libwim-15.dll` 仍可被用户替换（合规）。
