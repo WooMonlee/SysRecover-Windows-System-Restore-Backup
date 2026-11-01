@@ -4099,4 +4099,206 @@ bool QuerySwapSpace(const std::wstring& imagePath, int index,
     return EstimateSwapSpace(target, bytes, out);
 }
 
+
+// ── PIT-207：自我打包 / 解包 ──────────────────────────────────────────
+namespace {
+
+bool SelfPackSkip(const std::wstring& name) {
+    std::wstring low = name;
+    for (auto& c : low) c = (wchar_t)towlower(c);
+    if (low == L"logs" || low == L".zj-stamp") return true;
+    if (low.rfind(L"sysrecover-portable", 0) == 0) return true;
+    return false;
+}
+
+unsigned long long FileTime64(const FILETIME& ft) {
+    return ((unsigned long long)ft.dwHighDateTime << 32) |
+           (unsigned long long)ft.dwLowDateTime;
+}
+
+bool WriteAll(HANDLE h, const void* p, DWORD n) {
+    DWORD wr = 0;
+    return WriteFile(h, p, n, &wr, nullptr) && wr == n;
+}
+
+bool PackDir(HANDLE out, const std::wstring& dir, const std::wstring& rel,
+             std::string& err, int* count, int depth,
+             const std::wstring& skipFull) {
+    if (depth > 32) return true;
+    WIN32_FIND_DATAW fd = {};
+    HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return true;
+    bool ok = true;
+    do {
+        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L".."))
+            continue;
+        if (SelfPackSkip(fd.cFileName)) continue;
+        const std::wstring full = dir + L"\\" + fd.cFileName;
+        if (!skipFull.empty() && _wcsicmp(full.c_str(), skipFull.c_str()) == 0)
+            continue;  // 输出文件本身（用户可能就把单文件存进程序目录）
+        const std::wstring r = rel.empty() ? fd.cFileName : rel + L"/" + fd.cFileName;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            ok &= PackDir(out, full, r, err, count, depth + 1, skipFull);
+            continue;
+        }
+        HANDLE f = CreateFileW(full.c_str(), GENERIC_READ,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                               OPEN_EXISTING, 0, nullptr);
+        if (f == INVALID_HANDLE_VALUE) continue;  // 跳过打不开的（占用/权限）
+        const unsigned long long sz = FileTime64(fd.ftLastWriteTime) ? 0 : 0;
+        (void)sz;
+        LARGE_INTEGER li = {};
+        GetFileSizeEx(f, &li);
+        const unsigned long long dataLen = (unsigned long long)li.QuadPart;
+        // name -> UTF-8
+        int n8 = WideCharToMultiByte(CP_UTF8, 0, r.c_str(), -1, nullptr, 0,
+                                     nullptr, nullptr);
+        std::string name(n8 > 0 ? n8 - 1 : 0, 0);
+        if (n8 > 0)
+            WideCharToMultiByte(CP_UTF8, 0, r.c_str(), -1, &name[0], n8, nullptr,
+                                nullptr);
+        const unsigned int nameLen = (unsigned int)name.size();
+        const unsigned long long mtime = FileTime64(fd.ftLastWriteTime);
+        if (!WriteAll(out, "ZJF1", 4) || !WriteAll(out, &nameLen, 4) ||
+            !WriteAll(out, &dataLen, 8) || !WriteAll(out, &mtime, 8) ||
+            !WriteAll(out, name.data(), nameLen)) {
+            err = "write header failed";
+            CloseHandle(f);
+            ok = false;
+            break;
+        }
+        char buf[64 * 1024];
+        unsigned long long left = dataLen;
+        while (left > 0) {
+            DWORD ask = (DWORD)(left > sizeof(buf) ? sizeof(buf) : left);
+            DWORD got = 0;
+            if (!ReadFile(f, buf, ask, &got, nullptr) || got != ask) break;
+            if (!WriteAll(out, buf, got)) {
+                err = "write data failed";
+                ok = false;
+                break;
+            }
+            left -= got;
+        }
+        CloseHandle(f);
+        if (!ok) break;
+        if (count) ++(*count);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return ok;
+}
+
+}  // namespace
+
+bool PackSelfToSingleFile(const std::wstring& appDir,
+                          const std::wstring& outFile,
+                          const std::wstring& stubPath, std::string& err,
+                          int* fileCount) {
+    if (fileCount) *fileCount = 0;
+    HANDLE stub = CreateFileW(stubPath.c_str(), GENERIC_READ,
+                              FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0,
+                              nullptr);
+    if (stub == INVALID_HANDLE_VALUE) {
+        err = "stub missing: bootfiles\\portable-stub.exe";
+        return false;
+    }
+    HANDLE out = CreateFileW(outFile.c_str(), GENERIC_WRITE, 0, nullptr,
+                             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (out == INVALID_HANDLE_VALUE) {
+        CloseHandle(stub);
+        err = "cannot create output file (err=" +
+              std::to_string(GetLastError()) + ")";
+        return false;
+    }
+    // 1) 先把 stub 原样拷过去
+    unsigned long long stubSize = 0;
+    {
+        char buf[64 * 1024];
+        DWORD got = 0;
+        while (ReadFile(stub, buf, sizeof(buf), &got, nullptr) && got > 0) {
+            if (!WriteAll(out, buf, got)) {
+                err = "write stub failed";
+                CloseHandle(stub);
+                CloseHandle(out);
+                DeleteFileW(outFile.c_str());
+                return false;
+            }
+            stubSize += got;
+        }
+        CloseHandle(stub);
+    }
+    // 2) 条目
+    const bool ok = PackDir(out, appDir, L"", err, fileCount, 0, outFile);
+    // 3) 结束标记 + 尾部（stub 偏移）
+    if (ok) {
+        if (!WriteAll(out, "ZJEND", 4)) err = "write end failed";
+    }
+    if (err.empty()) {
+        if (!WriteAll(out, "ZJFT", 4) || !WriteAll(out, &stubSize, 8))
+            err = "write footer failed";
+    }
+    CloseHandle(out);
+    if (!err.empty()) {
+        DeleteFileW(outFile.c_str());  // 失败别留半成品
+        return false;
+    }
+    LogInfo("self-pack: " + std::to_string(fileCount ? *fileCount : 0) +
+            " file(s) -> " + W2U(outFile));
+    return true;
+}
+
+namespace {
+
+bool CopyDirFiltered(const std::wstring& src, const std::wstring& dst,
+                     std::string& err, int* count, int depth) {
+    if (depth > 32) return true;
+    CreateDirectoryW(dst.c_str(), nullptr);
+    WIN32_FIND_DATAW fd = {};
+    HANDLE h = FindFirstFileW((src + L"\\*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return true;
+    bool ok = true;
+    do {
+        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L".."))
+            continue;
+        if (SelfPackSkip(fd.cFileName)) continue;
+        const std::wstring s = src + L"\\" + fd.cFileName;
+        const std::wstring d = dst + L"\\" + fd.cFileName;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            ok &= CopyDirFiltered(s, d, err, count, depth + 1);
+            continue;
+        }
+        if (!CopyFileW(s.c_str(), d.c_str(), FALSE)) {
+            err = "copy failed: " + W2U(fd.cFileName);
+            ok = false;
+            continue;
+        }
+        if (count) ++(*count);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return ok;
+}
+
+}  // namespace
+
+bool ExtractSelfToFolder(const std::wstring& appDir,
+                         const std::wstring& destDir, std::string& err,
+                         int* fileCount) {
+    if (fileCount) *fileCount = 0;
+    if (!IsDir(appDir)) {
+        err = "app dir missing";
+        return false;
+    }
+    if (!CreateDirectoryW(destDir.c_str(), nullptr) &&
+        GetLastError() != ERROR_ALREADY_EXISTS) {
+        err = "cannot create destination (err=" +
+              std::to_string(GetLastError()) + ")";
+        return false;
+    }
+    const bool ok = CopyDirFiltered(appDir, destDir, err, fileCount, 0);
+    if (ok)
+        LogInfo("self-extract: " + std::to_string(fileCount ? *fileCount : 0) +
+                " file(s) -> " + W2U(destDir));
+    return ok;
+}
+
 }  // namespace sysrecover

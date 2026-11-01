@@ -24,6 +24,7 @@
 #include "common/logger.h"
 #include "common/process.h"
 #include "common/relocate.h"
+#include "common/pathutil.h"  // DriversRoot()
 #include "common/selfarch.h"  // AppDir()（导出驱动目录用）
 #include "common/sysinfo.h"
 #include "common/progress.h"
@@ -1662,6 +1663,10 @@ void CMainForm::ShowMoreMenu() {
         ::AppendMenuW(hMenu, MF_STRING, 7,
                       Tr(L"导出本机硬盘驱动供异机还原"));
     }
+    // PIT-207：与模式无关的"包"操作（两种模式都给）
+    ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+    ::AppendMenuW(hMenu, MF_STRING, 8, Tr(L"打包成单文件…"));
+    ::AppendMenuW(hMenu, MF_STRING, 9, Tr(L"解压到文件夹…"));
 
     // MoreBtn 是顶层 float 控件 → GetPos() 已是客户区坐标；换屏幕坐标再弹。
     RECT rc{};
@@ -1697,6 +1702,10 @@ void CMainForm::ShowMoreMenu() {
         StartIncrementalBackup();
     } else if (cmd == 7) {
         ExportDriversFlow();
+    } else if (cmd == 8) {
+        PackSelfFlow();
+    } else if (cmd == 9) {
+        ExtractSelfFlow();
     } else if (cmd == 6) {
         if (!m_backupPassword.empty()) {
             m_backupPassword.clear();
@@ -1735,14 +1744,175 @@ void CMainForm::ClearBootMenuEntry() {
 // 导出本机启动关键驱动（2026-10-30，用户规格）：只导 SCSIAdapter/HDC/System/
 // DiskDrive/Volume/USB/HIDClass/Keyboard/Mouse，避免 `dism /export-driver`
 // 那种 1.8GB 全量（网络/打印/蓝牙/显卡全在里面）。
+// ── PIT-207：自我打包 / 解包（用户 2026-11-01：「更多功能」里随时可用）──
+// 打包：把当前程序目录打成一个自解压单文件（stub 取自 bootfiles\portable-stub.exe）。
+void CMainForm::PackSelfFlow() {
+    if (m_busy) return;
+    wchar_t defName[96] = {};
+    swprintf(defName, 96, L"%ls%hs.exe", Tr(L"九转大还原"), SYSRECOVER_VERSION);
+    std::wstring out;
+    {
+        IFileSaveDialog* pDlg = nullptr;
+        HRESULT hr = CoCreateInstance(CLSID_FileSaveDialog, nullptr,
+                                      CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pDlg));
+        if (FAILED(hr) || !pDlg) {
+            SetStatus(Tr(L"保存对话框创建失败"));
+            return;
+        }
+        COMDLG_FILTERSPEC filters[] = {{Tr(L"单文件程序"), L"*.exe"}};
+        pDlg->SetFileTypes(1, filters);
+        pDlg->SetDefaultExtension(L"exe");
+        pDlg->SetFileName(defName);
+        pDlg->SetTitle(Tr(L"打包成单文件（保存到）"));
+        if (SUCCEEDED(pDlg->Show(m_hWnd))) {
+            IShellItem* pItem = nullptr;
+            if (SUCCEEDED(pDlg->GetResult(&pItem)) && pItem) {
+                LPWSTR psz = nullptr;
+                pItem->GetDisplayName(SIGDN_FILESYSPATH, &psz);
+                if (psz) {
+                    out = psz;
+                    CoTaskMemFree(psz);
+                }
+                pItem->Release();
+            }
+        }
+        pDlg->Release();
+    }
+    if (out.empty()) {
+        SetStatus(Tr(L"已取消打包"));
+        return;
+    }
+    SetStatus(Tr(L"正在打包成单文件..."));
+    std::string err;
+    int n = 0;
+    const std::wstring stub = AppDir() + L"\\bootfiles\\portable-stub.exe";
+    const bool ok = sysrecover::PackSelfToSingleFile(AppDir(), out, stub, err, &n);
+    if (!ok) {
+        SetStatus(Tr(L"打包失败"));
+        MessageBoxW(m_hWnd, (Tr(L"打包失败：") + U2W(err)).c_str(),
+                    Tr(L"打包成单文件"), MB_OK | MB_ICONERROR);
+        return;
+    }
+    unsigned long long sz = 0;
+    WIN32_FILE_ATTRIBUTE_DATA fad = {};
+    if (GetFileAttributesExW(out.c_str(), GetFileExInfoStandard, &fad))
+        sz = ((unsigned long long)fad.nFileSizeHigh << 32) + fad.nFileSizeLow;
+    wchar_t msg[700] = {};
+    swprintf(msg, 700,
+             Tr(L"已打包 %d 个文件 →\n%ls\n（%.1f MB）\n\n"
+                L"该单文件可选「文件→系统/系统→文件」，也可以直接当命令行用。"),
+             n, out.c_str(), sz / 1048576.0);
+    SetStatus(Tr(L"打包完成"));
+    MessageBoxW(m_hWnd, msg, Tr(L"打包成单文件"), MB_OK | MB_ICONINFORMATION);
+}
+
+// 解压：把当前程序目录复制到用户选的文件夹（跳过 logs）。
+void CMainForm::ExtractSelfFlow() {
+    if (m_busy) return;
+    std::wstring dest;
+    {
+        IFileOpenDialog* pDlg = nullptr;
+        HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, nullptr,
+                                      CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pDlg));
+        if (FAILED(hr) || !pDlg) {
+            SetStatus(Tr(L"文件夹对话框创建失败"));
+            return;
+        }
+        DWORD opts = 0;
+        pDlg->GetOptions(&opts);
+        pDlg->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM |
+                         FOS_PATHMUSTEXIST);
+        pDlg->SetTitle(Tr(L"解压到文件夹（选目标目录）"));
+        if (SUCCEEDED(pDlg->Show(m_hWnd))) {
+            IShellItem* pItem = nullptr;
+            if (SUCCEEDED(pDlg->GetResult(&pItem)) && pItem) {
+                LPWSTR psz = nullptr;
+                pItem->GetDisplayName(SIGDN_FILESYSPATH, &psz);
+                if (psz) {
+                    dest = psz;
+                    CoTaskMemFree(psz);
+                }
+                pItem->Release();
+            }
+        }
+        pDlg->Release();
+    }
+    if (dest.empty()) {
+        SetStatus(Tr(L"已取消解压"));
+        return;
+    }
+    SetStatus(Tr(L"正在解压到文件夹..."));
+    std::string err;
+    int n = 0;
+    const bool ok = sysrecover::ExtractSelfToFolder(AppDir(), dest, err, &n);
+    if (!ok) {
+        SetStatus(Tr(L"解压失败"));
+        MessageBoxW(m_hWnd, (Tr(L"解压失败：") + U2W(err)).c_str(),
+                    Tr(L"解压到文件夹"), MB_OK | MB_ICONERROR);
+        return;
+    }
+    wchar_t msg[700] = {};
+    swprintf(msg, 700,
+             Tr(L"已解压 %d 个文件到：\n%ls\n\n双击其中的 SysRecoverUI.exe 即可运行。"),
+             n, dest.c_str());
+    SetStatus(Tr(L"解压完成"));
+    MessageBoxW(m_hWnd, msg, Tr(L"解压到文件夹"), MB_OK | MB_ICONINFORMATION);
+}
+
 void CMainForm::ExportDriversFlow() {
     if (m_busy) return;
+
+    // PIT-206（用户 2026-11-01）：**导出之前先让用户选文件夹** ——
+    // 程序自身是解压到 %LOCALAPPDATA% 的（临时性质），不能"悄悄"导在那里。
+    const std::wstring root = sysrecover::DriversRoot();  // 默认建议位置
+    std::wstring picked;
+    {
+        IFileOpenDialog* pDlg = nullptr;
+        HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, nullptr,
+                                      CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pDlg));
+        if (FAILED(hr) || !pDlg) {
+            SetStatus(Tr(L"文件夹对话框创建失败"));
+            return;
+        }
+        DWORD opts = 0;
+        pDlg->GetOptions(&opts);
+        pDlg->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM |
+                         FOS_PATHMUSTEXIST);
+        pDlg->SetTitle(Tr(L"选择驱动导出的文件夹"));
+        {
+            IShellItem* psi = nullptr;
+            if (SUCCEEDED(SHCreateItemFromParsingName(root.c_str(), nullptr,
+                                                      IID_PPV_ARGS(&psi))) &&
+                psi) {
+                pDlg->SetFolder(psi);
+                psi->Release();
+            }
+        }
+        if (SUCCEEDED(pDlg->Show(m_hWnd))) {
+            IShellItem* pItem = nullptr;
+            if (SUCCEEDED(pDlg->GetResult(&pItem)) && pItem) {
+                LPWSTR psz = nullptr;
+                pItem->GetDisplayName(SIGDN_FILESYSPATH, &psz);
+                if (psz) {
+                    picked = psz;
+                    CoTaskMemFree(psz);
+                }
+                pItem->Release();
+            }
+        }
+        pDlg->Release();
+        if (picked.empty()) {
+            SetStatus(Tr(L"已取消导出驱动"));
+            return;
+        }
+    }
+
     SYSTEMTIME st = {};
     GetLocalTime(&st);
     wchar_t sub[80] = {};
-    swprintf(sub, 80, L"\\Drivers\\boot-%04u%02u%02u-%02u%02u%02u", st.wYear,
-             st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-    const std::wstring dir = AppDir() + sub;
+    swprintf(sub, 80, L"\\boot-%04u%02u%02u-%02u%02u%02u", st.wYear, st.wMonth,
+             st.wDay, st.wHour, st.wMinute, st.wSecond);
+    const std::wstring dir = picked + sub;
     SetStatus(Tr(L"正在导出本机启动驱动..."));
     std::wstring err;
     int n = 0;
@@ -1753,11 +1923,23 @@ void CMainForm::ExportDriversFlow() {
                     Tr(L"导出驱动"), MB_OK | MB_ICONERROR);
         return;
     }
-    wchar_t msg[700] = {};
-    swprintf(msg, 700,
-             Tr(L"已导出 %d 个硬盘（存储/输入）驱动到：\n%ls\n\n"
-                L"只含存储/输入类驱动，异机还原时将自动调用此驱动。"),
-             n, dir.c_str());
+    // 只有导到"自动目录"下，异机还原才会自动调用；否则提示用户手动指向。
+    std::wstring lowPick = picked, lowRoot = root;
+    for (auto& c : lowPick) c = (wchar_t)towlower(c);
+    for (auto& c : lowRoot) c = (wchar_t)towlower(c);
+    const bool autoUsed = lowPick.compare(0, lowRoot.size(), lowRoot) == 0;
+    wchar_t msg[900] = {};
+    if (autoUsed)
+        swprintf(msg, 900,
+                 Tr(L"已导出 %d 个硬盘（存储/输入）驱动到：\n%ls\n\n"
+                    L"只含存储/输入类驱动，异机还原时将自动调用此驱动。"),
+                 n, dir.c_str());
+    else
+        swprintf(msg, 900,
+                 Tr(L"已导出 %d 个硬盘（存储/输入）驱动到：\n%ls\n\n"
+                    L"该目录不在自动目录（%ls）内：异机还原时请把「驱动目录」"
+                    L"指向它，或把它复制到自动目录。"),
+                 n, dir.c_str(), root.c_str());
     SetStatus(Tr(L"启动驱动已导出"));
     MessageBoxW(m_hWnd, msg, Tr(L"导出驱动"), MB_OK | MB_ICONINFORMATION);
 }
@@ -2552,7 +2734,7 @@ void CMainForm::StartRestoreAsync() {
         req.password = sysrecover::GetImagePassword(req.image);
     if (req.universal) {
         // 只认程序目录下的 Drivers\（用户放驱动包的位置）；没有 .inf 就仅内置。
-        std::wstring drivers = ExeDir() + L"\\Drivers";
+        std::wstring drivers = sysrecover::DriversRoot();
         int n = 0;
         std::wstring uerr;
         if (GetFileAttributesW(drivers.c_str()) != INVALID_FILE_ATTRIBUTES) {

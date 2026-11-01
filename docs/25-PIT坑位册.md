@@ -1939,3 +1939,35 @@
     - README（中英）"还原镜像"章节补同样的三问：**是否重启、是否保留旧系统、怎么自动重启**；
     - 发布说明同步。
   · 教训：凡是"行为开关"，只写进 usage 行不算文档 —— 必须有一句**默认值 + 反义开关 + 例子**。
+
+### PIT-206
+
+- PIT-206 **单文件版"导出驱动"落到了隐藏的解压目录**（`0.9.81`，2026-11-01，用户实测）
+  · 现象：单文件运行时 `export-drivers` 输出到
+    `%LOCALAPPDATA%\SysRecover\app\Drivers\boot-<时间>\` —— 用户根本找不到。
+  · 根因：导出目标 = `AppDir()\Drivers`，而单文件的 AppDir 是解压目录。
+  · 修复：
+    - 新增 `pathutil::DriversRoot()`：单文件（stub 设 `ZJ_ORIGIN_DIR`）→ `<单文件目录>\Drivers`，
+      安装版 → `<程序目录>\Drivers`（异机还原的"自动调用"读同一个函数，不会漂移）；
+    - **GUI 导出前弹文件夹选择框**（`IFileOpenDialog` + `FOS_PICKFOLDERS`，默认 = DriversRoot），
+      用户自己决定导到哪；导到自动目录 → 提示"异机还原将自动调用"；
+      导到别处 → 明确提示"请把「驱动目录」指向它，或复制回自动目录"；
+    - CLI 仍是 `--dest <目录>`（不给则用 DriversRoot）。
+  · 口径：**程序自身**解压到 `%LOCALAPPDATA%`（临时性质，用户 2026-11-01 确认可以），
+    **要落盘的产物**（驱动）必须由用户指定位置。
+
+### PIT-207
+
+- PIT-207 **软件能自己"打包成单文件 / 解压成文件夹"**（`0.9.81`，2026-11-01 用户需求）
+  · 入口：GUI「更多功能>>」→ **打包成单文件…** / **解压到文件夹…**（两种模式都有）；
+    CLI：`pack-self --out <文件>` / `unpack-self --dest <目录>`（GUI 与 CLI 同一套实现）。
+  · 实现：
+    - `ops::PackSelfToSingleFile()`：把当前程序目录按 `stub + [ZJF1 条目]… + ZJEND + [ZJFT|u64]`
+      写成自解压单文件（与 `tools/portable-pack.py` 同一容器格式）；stub 取自
+      `<程序目录>\bootfiles\portable-stub.exe`（`make package` 随包分发）；
+      跳过 `logs/`、`.zj-stamp`、`SysRecover-Portable*`，以及**正在写的输出文件自身**；
+    - `ops::ExtractSelfToFolder()`：把程序目录复制到用户选的文件夹（跳过 logs）→ 绿色版目录。
+  · 单文件 stub 另加**版本戳**：`<app>\.zj-stamp`（= 单文件大小+时间），同版本第二次运行**跳过
+    49MB 解压**（原来每次运行都重写一遍）。
+  · 实测：`pack-self` 73 个文件 → 50MB；打出来的 exe `version` 正常；`unpack-self` 73 个文件、
+    目录里 `SysRecoverUI.exe` 可运行。

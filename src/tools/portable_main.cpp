@@ -95,6 +95,9 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
         return 1;
     }
 
+    // 解压目标：%LOCALAPPDATA%\SysRecover\app（用户 2026-11-01 确认：单文件默认
+    // 解到"临时性质"的目录就行，**不要**往单文件旁边解）；需要落盘的产物
+    //（如"导出驱动"）由用户自己选文件夹。
     const std::wstring dest = AppDataDir() + L"\\SysRecover\\app";
     if (!MakeDirs(dest)) {
         CloseHandle(h);
@@ -103,6 +106,49 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
         return 1;
     }
 
+    // 版本戳：同一次发布的载荷解过一次就跳过（原来每次运行都要写 49MB）。
+    // 戳 = 本 exe 的大小 + 最后写入时间（载荷追加在 exe 末尾，换版本必然变）。
+    wchar_t stampPathBuf[MAX_PATH * 2] = {};
+    _snwprintf(stampPathBuf, MAX_PATH * 2, L"%ls\\.zj-stamp", dest.c_str());
+    const std::wstring stampPath = stampPathBuf;
+    char stampNow[96] = {};
+    {
+        WIN32_FILE_ATTRIBUTE_DATA fad = {};
+        if (GetFileAttributesExW(self, GetFileExInfoStandard, &fad)) {
+            const unsigned long long sz =
+                ((unsigned long long)fad.nFileSizeHigh << 32) |
+                (unsigned long long)fad.nFileSizeLow;
+            const unsigned long long tm =
+                ((unsigned long long)fad.ftLastWriteTime.dwHighDateTime << 32) |
+                (unsigned long long)fad.ftLastWriteTime.dwLowDateTime;
+            snprintf(stampNow, sizeof(stampNow), "size=%llu time=%llu", sz, tm);
+        }
+    }
+    bool skipExtract = false;
+    if (stampNow[0]) {
+        std::string old;
+        HANDLE hs = CreateFileW(stampPath.c_str(), GENERIC_READ,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                OPEN_EXISTING, 0, nullptr);
+        if (hs != INVALID_HANDLE_VALUE) {
+            char buf[128] = {};
+            DWORD got = 0;
+            if (ReadFile(hs, buf, sizeof(buf) - 1, &got, nullptr) && got > 0)
+                old.assign(buf, got);
+            CloseHandle(hs);
+        }
+        if (old == stampNow) {
+            const std::wstring probe =
+                dest + L"\\" + L"SysRecoverUI.exe";
+            if (GetFileAttributesW(probe.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                CloseHandle(h);
+                // 已解压过（同版本）→ 直接启动，跳过 49MB 重写
+                skipExtract = true;
+            }
+        }
+    }
+
+    if (!skipExtract) {
     // 顺序解析条目并落盘（覆盖写；同名同大小则跳过以加快二次启动）
     pos.QuadPart = (LONGLONG)payload;
     SetFilePointerEx(h, pos, nullptr, FILE_BEGIN);
@@ -153,6 +199,16 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
         ++written;
     }
     CloseHandle(h);
+    if (stampNow[0]) {
+        HANDLE hs = CreateFileW(stampPath.c_str(), GENERIC_WRITE, 0, nullptr,
+                                CREATE_ALWAYS, FILE_ATTRIBUTE_HIDDEN, nullptr);
+        if (hs != INVALID_HANDLE_VALUE) {
+            DWORD wr = 0;
+            WriteFile(hs, stampNow, (DWORD)strlen(stampNow), &wr, nullptr);
+            CloseHandle(hs);
+        }
+    }
+    }  // !skipExtract
 
     // 告诉子进程"原始单文件在哪" —— imgsearch 用它先扫用户真正放文件的目录
     //（否则解压到 %LOCALAPPDATA% 后，"exe 上一级"规则扫的是程序目录，找不到镜像）。

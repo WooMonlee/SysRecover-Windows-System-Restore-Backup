@@ -254,4 +254,17 @@ StagedTaskState CheckStagedTaskState(std::string* detail = nullptr);
 // 清掉失效暂存留下的痕迹（陈旧 _zjresy 契约 + UEFI 临时启动项），返回清除项数。
 int CleanupStaleStagedTask();
 
+// ── 自我打包 / 解包（PIT-207，用户 2026-11-01：GUI「更多功能>>」里随时可用）──
+// PackSelfToSingleFile：把 appDir 打成"自解压单文件"（容器格式与
+//   tools/portable-pack.py 一致：stub + [ZJF1 条目]… + ZJEND + [ZJFT|u64]）；
+//   stub 取自 <appDir>\bootfiles\portable-stub.exe（随包分发）。
+// ExtractSelfToFolder：把 appDir 复制到 destDir（跳过 logs/.zj-stamp/单文件自身）。
+bool PackSelfToSingleFile(const std::wstring& appDir,
+                          const std::wstring& outFile,
+                          const std::wstring& stubPath, std::string& err,
+                          int* fileCount);
+bool ExtractSelfToFolder(const std::wstring& appDir,
+                         const std::wstring& destDir, std::string& err,
+                         int* fileCount);
+
 }  // namespace sysrecover

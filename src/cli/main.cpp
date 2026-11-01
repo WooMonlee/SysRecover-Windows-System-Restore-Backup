@@ -31,6 +31,7 @@
 #include "../common/process.h"
 #include "../common/progress.h"
 #include "../common/relocate.h"
+#include "../common/pathutil.h"  // DriversRoot()
 #include "../common/selfarch.h"
 #include "../common/singleton.h"
 #include "../disk/disk.h"
@@ -267,6 +268,10 @@ bool ValidateCommandArgs(const std::vector<std::string>& a) {
     } else if (cmd == "extract") {
         flags = {"--all"};
         values = {"--file", "--image", "--path", "--dest", "--index", "--password"};
+    } else if (cmd == "pack-self") {
+        values = {"--out"};
+    } else if (cmd == "unpack-self") {
+        values = {"--dest"};
     } else if (cmd == "check-staged") {
         // 无参数：只做暂存任务"数据面"自检（PIT-198）
     } else if (cmd == "diag") {
@@ -486,7 +491,7 @@ int CmdRestore(const std::vector<std::string>& a) {
         // 与 GUI 同口径（2026-10-30）：没给 --drivers 就自动用程序目录下的
         // `Drivers\`（「导出本机硬盘驱动供异机还原」写的就是这里）。
         if (req.driverDir.empty()) {
-            const std::wstring autoDir = sysrecover::AppDir() + L"\\Drivers";
+            const std::wstring autoDir = sysrecover::DriversRoot();
             int an = 0;
             std::wstring aerr;
             if (GetFileAttributesW(autoDir.c_str()) != INVALID_FILE_ATTRIBUTES &&
@@ -716,7 +721,7 @@ int CmdExportDrivers(const std::vector<std::string>& a) {
         wchar_t sub[96] = {};
         swprintf(sub, 96, L"\\Drivers\\boot-%04u%02u%02u-%02u%02u%02u",
                  st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-        dest = sysrecover::AppDir() + sub;
+        dest = sysrecover::DriversRoot() + sub;
     }
     std::wstring err;
     int n = 0;
@@ -1116,6 +1121,15 @@ const CmdHelp* CmdHelpTable(size_t* n) {
         "  --yes           跳过确认；--index 选子镜像（默认 1）。\n"
         "  例：restore --image D:\\SYSTEM.WIM --disk 0 --part 3 --yes --reboot\n"
         "      restore --image D:\\SYSTEM.WIM --disk 0 --part 3 --yes --keep-old")},
+    {"pack-self",
+     Tr("pack-self --out <输出文件>\n"
+        "  把当前程序目录打包成一个**自解压单文件**（带图标；双击开界面，\n"
+        "  带参数就是命令行）。等价于 GUI「更多功能>> 打包成单文件…」\n"
+        "  例：pack-self --out D:\\九转大还原.exe")},
+    {"unpack-self",
+     Tr("unpack-self --dest <目标目录>\n"
+        "  把当前程序目录复制到指定文件夹（跳过 logs），得到一个可直接运行的\n"
+        "  「绿色版」目录。等价于 GUI「更多功能>> 解压到文件夹…」")},
     {"verify", Tr("verify --image <文件>\n  校验镜像完整性（成功 0，失败 5）。")},
     {"repair-boot",
      Tr("repair-boot [--disk N --part M]\n" "  修复引导（ESP 上的 BCD/bootmgfw）：给**引导坏了的机器**用，不必重装。\n" "  不给 --disk/--part 时自动找系统盘；流程 = bcdboot（缺失时用内置引导资产）+ 产物校验（docs/15）。")},
@@ -1243,6 +1257,48 @@ int main() {
     }
     // PIT-198：「暂存任务自检」必须在**启动清理之前**跑 —— 启动流程会把
     // logs\pending-restore.txt 当"已提示过"消费掉，之后再查就永远"没有待执行任务"。
+    if (args[0] == "pack-self" || args[0] == "unpack-self") {
+        // PIT-207：自我打包 / 解包（GUI「更多功能>>」同一套实现；也方便脚本化）
+        const bool pack = (args[0] == "pack-self");
+        std::string err;
+        int n = 0;
+        bool ok = false;
+        if (pack) {
+            const std::wstring out = ToWide(Opt(args, "--out"));
+            if (out.empty()) {
+                std::printf("%s\n",
+                            Tr("缺少 --out <输出文件>；例：pack-self --out "
+                               "D:\\九转大还原.exe"));
+                std::printf(Tr("**本次未执行任何操作**。正确用法：\n\n"));
+                PrintCmdUsage("pack-self");
+                return 2;
+            }
+            ok = sysrecover::PackSelfToSingleFile(
+                sysrecover::AppDir(), out,
+                sysrecover::AppDir() + L"\\bootfiles\\portable-stub.exe", err,
+                &n);
+            if (ok)
+                std::printf(Tr("已打包 %d 个文件 -> %ls\n"), n, out.c_str());
+        } else {
+            const std::wstring dest = ToWide(Opt(args, "--dest"));
+            if (dest.empty()) {
+                std::printf("%s\n",
+                            Tr("缺少 --dest <目标目录>；例：unpack-self --dest "
+                               "D:\\SysRecover"));
+                std::printf(Tr("**本次未执行任何操作**。正确用法：\n\n"));
+                PrintCmdUsage("unpack-self");
+                return 2;
+            }
+            ok = sysrecover::ExtractSelfToFolder(sysrecover::AppDir(), dest, err, &n);
+            if (ok)
+                std::printf(Tr("已解压 %d 个文件 -> %ls\n"), n, dest.c_str());
+        }
+        if (!ok) {
+            std::printf("%s%s\n", Tr("失败："), err.c_str());
+            return 1;
+        }
+        return 0;
+    }
     if (args[0] == "check-staged") {
         std::string detail;
         const sysrecover::StagedTaskState st =

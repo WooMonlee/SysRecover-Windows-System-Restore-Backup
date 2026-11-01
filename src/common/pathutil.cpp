@@ -2,6 +2,8 @@
 
 #include <windows.h>
 
+#include "selfarch.h"  // AppDir()（PIT-206 驱动导出目录）
+
 #include <cwctype>
 
 namespace sysrecover {
@@ -56,6 +58,25 @@ bool MakeDirTree(const std::wstring& dir) {
         GetLastError() != ERROR_ALREADY_EXISTS)
         return false;
     return GetFileAttributesW(dir.c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+
+std::wstring DriversRoot() {
+    wchar_t origin[MAX_PATH + 1] = {};
+    if (GetEnvironmentVariableW(L"ZJ_ORIGIN_DIR", origin, MAX_PATH) > 0 &&
+        origin[0]) {
+        std::wstring d(origin);
+        while (!d.empty() && (d.back() == L'\\' || d.back() == L'/'))
+            d.pop_back();
+        if (!d.empty()) {
+            const std::wstring cand = d + L"\\Drivers";
+            // 可写判定：能建目录（或已存在）才算
+            if (GetFileAttributesW(cand.c_str()) != INVALID_FILE_ATTRIBUTES ||
+                CreateDirectoryW(cand.c_str(), nullptr))
+                return cand;
+        }
+    }
+    return AppDir() + L"\\Drivers";
 }
 
 }  // namespace sysrecover

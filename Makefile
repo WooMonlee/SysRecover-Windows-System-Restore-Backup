@@ -262,7 +262,7 @@ check: $(TEST_BIN)
 # 递归调用 make 时**必须把 $(MAKE) 的正斜杠换成反斜杠**：mingw32-make 把 $(MAKE) 展开成
 # `D:/Prog/.../mingw32-make.exe`，而 shell 是 cmd，正斜杠路径会被判为"系统找不到指定的路径"。
 SELF = $(subst /,\,$(MAKE))
-package: ea-apply boot-cleanup launchers
+package: ea-apply boot-cleanup launchers build/portable_stub.exe
 	@echo === [1/3] 构建 x64 -^> dist/x64 ===
 	$(SELF) -f Makefile ARCH=x64 all
 	@echo === [2/3] 构建 x86 -^> dist（根，入口）===
@@ -287,6 +287,8 @@ package: ea-apply boot-cleanup launchers
 	@copy /Y bootfiles\zjlog.sh dist\bootfiles\ >nul
 	@copy /Y bootfiles\zj-ea-apply.exe dist\bootfiles\ >nul
 	@copy /Y bootfiles\zj-restore-boot.exe dist\bootfiles\ >nul
+# 单文件封装 stub（PIT-207）：GUI「更多功能>> 打包成单文件」与 `pack-self` 都用它
+	@copy /Y build\portable_stub.exe dist\bootfiles\portable-stub.exe >nul
 # 异机还原：随包放一个 Drivers\ 说明（用户把启动驱动放这里；无 .inf 时仅内置）
 	@if not exist dist\Drivers mkdir dist\Drivers
 	@copy /Y bootfiles\Drivers-README.txt dist\Drivers\README.txt >nul

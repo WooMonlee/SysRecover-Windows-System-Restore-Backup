@@ -21,4 +21,12 @@ std::wstring ParentDir(const std::wstring& path);
 // 递归建目录（已存在且是目录 → 成功；已存在但是文件 → 失败）。返回是否就绪。
 bool MakeDirTree(const std::wstring& dir);
 
+// 「驱动与导出」根目录（PIT-206，用户 2026-11-01）：
+//   安装了 → `<程序目录>\Drivers`；
+//   单文件版（解压到 %LOCALAPPDATA%、但 stub 会设 ZJ_ORIGIN_DIR=单文件所在目录）
+//   → `<单文件目录>\Drivers`，这样用户**看得到**导出的驱动，
+//   而且异机还原的"自动调用"读的也是同一个目录。
+// 判据：ZJ_ORIGIN_DIR 非空且可写才用它；否则退回 AppDir()\Drivers。
+std::wstring DriversRoot();
+
 }  // namespace sysrecover

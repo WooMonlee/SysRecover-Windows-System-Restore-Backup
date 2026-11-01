@@ -159,6 +159,9 @@ private:
     // 导出本机启动关键驱动（2026-10-30）：pnputil 按 Class GUID 过滤，只导
     // 存储/输入类，输出到 <程序目录>\Drivers\boot-<时间>。
     void ExportDriversFlow();
+    // PIT-207：把自己打包成单文件 / 解压到文件夹（「更多功能>>」）
+    void PackSelfFlow();
+    void ExtractSelfFlow();
     void VerifyImageAsync();
     void StartMenuToggle(bool install,
                          const std::string& engine = "swap");  // 异步入口
