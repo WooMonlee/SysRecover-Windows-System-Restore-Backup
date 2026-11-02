@@ -352,6 +352,49 @@ bool SelfElevate(const std::wstring& logDir) {
     return true;
 }
 
+// PIT-211：B 引擎的改机器名 —— Linux 侧只会把名字写进
+// %ProgramData%\SysRecover\computer-name.txt，这里在首次登录（已提权）时落到
+// 注册表。与 Rename-Computer 等价；新名字要**下次重启**才生效（Windows 机制）。
+void ApplyComputerName() {
+    const std::wstring p = ProgramData() + L"\\SysRecover\\computer-name.txt";
+    HANDLE h = CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                           OPEN_EXISTING, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+    char buf[256] = {};
+    DWORD got = 0;
+    ReadFile(h, buf, sizeof(buf) - 1, &got, nullptr);
+    CloseHandle(h);
+    std::wstring name;
+    for (DWORD i = 0; i < got; ++i) {
+        if (buf[i] == '\r' || buf[i] == '\n' || buf[i] == ' ') continue;
+        if (!iswalnum((unsigned char)buf[i])) continue;  // ASCII 名，防御性过滤
+        name.push_back((wchar_t)buf[i]);
+    }
+    if (name.empty()) {
+        DeleteFileW(p.c_str());
+        return;
+    }
+    auto setSz = [&](const std::wstring& sub, const wchar_t* value) {
+        HKEY k = nullptr;
+        if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, sub.c_str(), 0, nullptr, 0,
+                            KEY_SET_VALUE, nullptr, &k, nullptr) !=
+            ERROR_SUCCESS)
+            return;
+        RegSetValueExW(k, value, 0, REG_SZ, (const BYTE*)name.c_str(),
+                       (DWORD)((name.size() + 1) * sizeof(wchar_t)));
+        RegCloseKey(k);
+    };
+    const std::wstring cs = L"SYSTEM\\CurrentControlSet";
+    setSz(cs + L"\\Control\\ComputerName\\ComputerName", L"ComputerName");
+    setSz(cs + L"\\Control\\ComputerName\\ActiveComputerName",
+          L"ComputerName");
+    setSz(cs + L"\\Services\\Tcpip\\Parameters", L"Hostname");
+    setSz(cs + L"\\Services\\Tcpip\\Parameters", L"NV Hostname");
+    DeleteFileW(p.c_str());
+    Log("computer name applied: " + std::string(name.begin(), name.end()) +
+        " (effective after next reboot)");
+}
+
 void RemoveStartupCmd() {
     const std::wstring p =
         ProgramData() +
@@ -412,6 +455,7 @@ int wmain(int argc, wchar_t** argv) {
         std::string(elevatedArg ? "arg" : "token") + ")");
     EnableEnvPrivilege();
 
+    ApplyComputerName();  // PIT-211：B 引擎的改机器名
     const int temp = FindUefiEntry(kTempEntryDesc);
     const bool menuUefi = FindUefiEntry(kMenuEntryDesc) >= 0;
     RemoveUefiEntry(temp);

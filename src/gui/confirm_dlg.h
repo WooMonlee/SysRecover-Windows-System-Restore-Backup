@@ -14,6 +14,24 @@
 
 using namespace DuiLib;
 
+// PIT-211（用户 2026-11-02 规格）：确认框里的可选项。
+//   · 两个"格式化"勾选框（分别管「还原后重启」与「重启后还原」）
+//   · 一个「改机器名」勾选框
+// show* = 是否显示；*Enabled = 是否可勾（灰色态：显示但点不动）；
+// 勾选结果在点按钮/回车/ESC 时回填到本结构。
+struct ConfirmOptions {
+    bool showFormatSwap = false;
+    bool formatSwapEnabled = false;
+    bool formatSwap = false;
+    bool showFormatBlock = false;
+    bool formatBlockEnabled = true;
+    bool formatBlock = true;
+    std::wstring formatBlockLabel;  // 空 = 用默认文案（就地还原用「格式化目标分区」）
+    bool showRename = false;
+    bool rename = false;
+    std::wstring renameLabel;  // 例如「改机器名：W10ASUS261013112604」
+};
+
 class CConfirmDlg : public WindowImplBase {
 public:
     enum { kExit = 0, kExitReboot = 1 };
@@ -24,7 +42,8 @@ public:
     // hl：消息里要红+粗显示的子串（如「丢失！」/「保留！」），可空。
     static int Ask2(HWND owner, const std::wstring& title, const std::wstring& msg,
                     const std::wstring& leftText, const std::wstring& rightText,
-                    bool defaultIsRight, const std::wstring& hl = std::wstring());
+                    bool defaultIsRight, const std::wstring& hl = std::wstring(),
+                    ConfirmOptions* opts = nullptr);
 
     // 通用三选（还原确认 取消/还原后重启/重启后还原、AskUndo 备返处理等）：
     // 返回 0（左）/ 1（中）/ 2（右）。
@@ -42,7 +61,8 @@ public:
                     const std::wstring& leftText, const std::wstring& midText,
                     const std::wstring& rightText, int defaultIdx,
                     bool midDisabled = false, int escIdx = 0,
-                    bool centerTitle = false, bool rightDisabled = false);
+                    bool centerTitle = false, bool rightDisabled = false,
+                    ConfirmOptions* opts = nullptr);
 
     // 通用四选（2026-10-20，用户规格：删除旧系统后自删）。
     // 返回 0（左）/ 1（中）/ 2（右）/ 3（第 4 个）。
@@ -86,4 +106,7 @@ private:
     std::wstring m_hl;        // 非空 = 消息里红+粗的子串（Ask2 专用）
     bool         m_defaultRight = true;
     int          m_defaultIdx = 1;  // 回车落点：二选 0/1、三/四选 0..2/0..3
+    ConfirmOptions  m_opt;          // 可选项（勾选框）初始状态
+    ConfirmOptions* m_optOut = nullptr;  // 结果回填目标（调用方栈上的结构）
+    int          m_optRows = 0;     // 勾选框行数（参与窗口/按钮排版）
 };

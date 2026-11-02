@@ -25,7 +25,9 @@
 #include "common/process.h"
 #include "common/relocate.h"
 #include "common/pathutil.h"  // DriversRoot()
-#include "common/selfarch.h"  // AppDir()（导出驱动目录用）
+#include "common/selfarch.h"
+#include "common/bioskey.h"   // 厂家名（PIT-211 改机器名）
+#include "common/compname.h"  // MakeComputerName / WindowsMajorOfDir  // AppDir()（导出驱动目录用）
 #include "common/sysinfo.h"
 #include "common/progress.h"
 #include "disk/disk.h"
@@ -815,12 +817,24 @@ void CMainForm::OnTaskComplete(int rc) {
         // "现在就能用还原好的系统了" ✗ —— 其实必须**重启**才能进入还原的系统
         // （我们只是没有自动重启而已）。所以明确写"重启后即可进入"。
         SetStatus(Tr(L"还原完成（用时 ") + ElapsedText() + Tr(L"）"));
-        if (!IsSilent())
-        MessageBoxW(m_hWnd,
-                    (Tr(L"系统还原已完成，用时 ") + ElapsedText() +
-                     Tr(L"。\n重启后即可进入恢复的系统。"))
-                        .c_str(),
-                    Tr(L"还原成功"), MB_OK | MB_ICONINFORMATION);
+        // 用户 2026-11-02 规格：完成要给一个「确定 / 立即重启」；**静默**
+        //（含还原中途才勾上的）→ 直接自动重启，不再多问一句。
+        if (IsSilent()) {
+            LogInfo("restore done: silent -> auto reboot");
+            SetStatus(Tr(L"还原完成，正在重启..."));
+            RebootNow();
+        } else {
+            std::wstring doneMsg =
+                Tr(L"系统还原已完成，用时 ") + ElapsedText() +
+                Tr(L"。\n重启后即可进入恢复的系统。");
+            // 左=确定（安全项，回车/ESC 都落这里）、右=立即重启
+            if (CConfirmDlg::Ask2(m_hWnd, Tr(L"还原成功"), doneMsg,
+                                  Tr(L"确定"), Tr(L"立即重启"),
+                                  /*defaultIsRight=*/false) == 1) {
+                LogInfo("restore done: user chose reboot now");
+                RebootNow();
+            }
+        }
         // Q1 settle 警告（2026-10-18）：程序目录在目标盘上但没找到安全分区
         // → 还原后程序可能被格式化掉。弹框让用户知道（fail-safe，静默模式也弹）。
         {
@@ -2546,6 +2560,9 @@ void CMainForm::StartRestore() {
     // 非静默模式下面确认框会覆盖这两个值。
     m_restoreEngine  = "swap";
     m_restoreKeepOld = false;
+    m_formatSwap     = false;
+    m_targetMode     = "format";
+    m_computerName.clear();
     // 非静默模式：需重启时弹三选（取消/还原后重启/重启后还原）；就地还原仍二选。
     // 静默模式：不弹框，直接暂存并重启（静默默认 = 还原后重启 / keepOld=false）。
     if (!IsSilent()) {
@@ -2648,6 +2665,34 @@ void CMainForm::StartRestore() {
                        Tr(L"异机还原需要在 Windows 侧注入启动驱动：只能选「还原后重启」"
                           L"（不需要 PE）"));
             }
+            // PIT-211：机器名 = W<大版本><厂家><YYMMDDHHMMSS>
+            std::wstring vendor;
+            sysrecover::LocalBootMenuKey(&vendor);
+            int major = sysrecover::WindowsMajorOfDir(
+                (part.letter.empty() ? std::wstring(L"C")
+                                     : part.letter.substr(0, 1)) +
+                L":\\Windows");
+            if (major == 0) major = 10;
+            SYSTEMTIME nowSt = {};
+            GetLocalTime(&nowSt);
+            const std::wstring newName = sysrecover::MakeComputerName(
+                vendor, major, nowSt.wYear, nowSt.wMonth, nowSt.wDay,
+                nowSt.wHour, nowSt.wMinute, nowSt.wSecond);
+            ConfirmOptions opt;
+            opt.showFormatSwap = true;
+            {
+                // 目标分区"没被占用"才谈得上格式化（PE / 非系统盘）。
+                std::string fwhy;
+                InPlaceReason freason = INPLACE_OK;
+                opt.formatSwapEnabled =
+                    sysrecover::CanRestoreInPlace(part, fwhy, &freason);
+            }
+            opt.formatSwap = opt.formatSwapEnabled;
+            opt.showFormatBlock = true;
+            opt.formatBlock = true;
+            opt.showRename = true;
+            opt.rename = false;
+            opt.renameLabel = Tr(L"改机器名：") + newName;
             if (!bootNote.empty()) {
                 wcscat(confirm, L"\n");
                 wcscat(confirm, bootNote.c_str());
@@ -2657,8 +2702,12 @@ void CMainForm::StartRestore() {
                 spaceShort ? Tr(L"空间不足") : Tr(L"还原后重启"),
                 Tr(L"重启后还原"), /*defaultIdx=*/spaceShort ? 0 : 1,
                 /*midDisabled=*/spaceShort, /*escIdx=*/0,
-                /*centerTitle=*/false, /*rightDisabled=*/universal);
+                /*centerTitle=*/false, /*rightDisabled=*/universal,
+                &opt);
             if (r == 0) return;  // 取消
+            m_formatSwap = opt.formatSwap;
+            m_targetMode = opt.formatBlock ? "format" : "keep";
+            m_computerName = opt.rename ? newName : std::wstring();
             if (r == 2 && universal) {
                 // 双保险（按钮已禁用，正常走不到这里）
                 MessageBoxW(m_hWnd,
@@ -2685,10 +2734,32 @@ void CMainForm::StartRestore() {
                 wcscat(confirm, L"\n");
                 wcscat(confirm, bootNote.c_str());
             }
+            std::wstring vendor2;
+            sysrecover::LocalBootMenuKey(&vendor2);
+            int major2 = sysrecover::WindowsMajorOfDir(
+                (part.letter.empty() ? std::wstring(L"C")
+                                     : part.letter.substr(0, 1)) +
+                L":\\Windows");
+            if (major2 == 0) major2 = 10;
+            SYSTEMTIME nowSt2 = {};
+            GetLocalTime(&nowSt2);
+            const std::wstring newName2 = sysrecover::MakeComputerName(
+                vendor2, major2, nowSt2.wYear, nowSt2.wMonth, nowSt2.wDay,
+                nowSt2.wHour, nowSt2.wMinute, nowSt2.wSecond);
+            ConfirmOptions opt2;
+            opt2.showFormatBlock = true;      // 就地还原必须格式化：显示但不可取消
+            opt2.formatBlockLabel = Tr(L"格式化目标分区");
+            opt2.formatBlockEnabled = false;
+            opt2.formatBlock = true;
+            opt2.showRename = true;
+            opt2.rename = false;
+            opt2.renameLabel = Tr(L"改机器名：") + newName2;
             if (CConfirmDlg::Ask2(m_hWnd, Tr(L"确认还原"), confirm, Tr(L"取消"),
                                   Tr(L"开始还原"), /*defaultIsRight=*/true,
-                                  Tr(L"丢失！")) != 1)
+                                  Tr(L"丢失！"), &opt2) != 1)
                 return;
+            m_formatSwap = false;  // 就地还原本身就是"格式化后再写"
+            m_computerName = opt2.rename ? newName2 : std::wstring();
             // 就地还原不走交换，引擎无意义但保持默认 swap（StageRestore 内部按需处理）
             m_restoreEngine  = "swap";
             m_restoreKeepOld = false;
@@ -2729,6 +2800,9 @@ void CMainForm::StartRestoreAsync() {
     req.engine = m_restoreEngine;       // "swap"=还原后重启 / "block"=重启后还原
     req.keepOld = m_restoreKeepOld;     // swap 时 true=保留 ~old 可返回；block 恒 false
     req.universal = IsUniversalChecked();  // 异机还原（2026-10-21）
+    req.formatSwap = m_formatSwap;               // PIT-211
+    req.targetMode = m_targetMode;               // "format" | "keep"
+    req.computerName = m_computerName;           // 空 = 不改名
     // 加密镜像：口令来自本次运行输入（LoadWimImages 里问过并记在 imgsrc 表里）。
     if (sysrecover::ImageIsEncrypted(req.image))
         req.password = sysrecover::GetImagePassword(req.image);

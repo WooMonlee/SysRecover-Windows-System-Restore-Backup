@@ -130,6 +130,10 @@ private:
     //   "block" = 重启后还原（B 引擎，Linux 直写，C 盘内容全丢）
     // 由 StartRestore 在确认框里选定，StartRestoreAsync 消费。
     std::string m_restoreEngine = "swap";
+    // PIT-211：确认框里的选项（A 引擎先格式化 / B 引擎 format|keep / 改机器名）
+    bool        m_formatSwap = false;
+    std::string m_targetMode = "format";
+    std::wstring m_computerName;
     bool        m_restoreKeepOld = false;  // swap 时 true=保留 ~old 可返回；block 恒 false
     void ApplyModeUi();
     void UpdateMainAction();

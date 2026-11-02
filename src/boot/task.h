@@ -67,6 +67,11 @@ struct RestoreTask {
     // false = 开机 RunOnce 静默删 ~old。Windows 侧消费（PIT-148 一键重试用），
     // Linux 救援层不读 —— 增量键，不升 contract_version。
     bool keepOld = false;
+    // PIT-211：Linux 侧目标处理方式：format（默认 mkntfs）| keep（保留文件系统，
+    // 清空内容后 apply）。增量键，不升 contract_version。
+    std::string targetMode = "format";
+    // PIT-211：还原后要设置的计算机名（B 引擎由首启助手落地；空 = 不改）。
+    std::wstring computerName;
     // _zjresy 恢复日志附加字段（对齐旧 C# WriteRestoreLog，Phase 5 补）
     std::wstring targetDiskName;   // 磁盘型号
     uint64_t targetDiskSize = 0;   // 整盘字节数

@@ -79,6 +79,8 @@ std::string BuildTaskConf(const RestoreTask& t) {
         "software_dir=%s\n"
         "engine=%s\n"
         "keep_old=%d\n"
+        "target_mode=%s\n"
+        "new_computer_name=%s\n"
         "contract_version=%d\n",
         (t.action.empty() ? "restore" : t.action.c_str()),
         t.ptType.c_str(), W2U(t.imagePartGuid).c_str(),
@@ -92,6 +94,8 @@ std::string BuildTaskConf(const RestoreTask& t) {
         t.repairBoot ? 1 : 0, t.partCount, W2U(t.softwareDir).c_str(),
         (t.engine.empty() ? "block" : t.engine.c_str()),
         t.keepOld ? 1 : 0,
+        (t.targetMode.empty() ? "format" : t.targetMode.c_str()),
+        W2U(t.computerName).c_str(),
         SYSRECOVER_CONTRACT_VERSION);
     return buf;
 }
@@ -108,7 +112,8 @@ std::string BuildTaskJson(const RestoreTask& t) {
         "\"esp_fix_dir\":\"%s\",\"ea_fix_dir\":\"%s\","
         "\"target_disk\":%d,\"target_part\":%d,"
         "\"target_offset\":%llu,\"target_size\":%llu,"
-        "\"repair_boot\":%s,\"partition_count\":%u}\n",
+        "\"repair_boot\":%s,\"partition_count\":%u,"
+        "\"target_mode\":\"%s\",\"new_computer_name\":\"%s\"}\n",
         (t.action.empty() ? "restore" : t.action.c_str()),
         t.ptType.c_str(), JsonEsc(W2U(t.imagePath)).c_str(),
         W2U(t.imageRelPath).c_str(), t.imageIndex,
@@ -117,7 +122,9 @@ std::string BuildTaskJson(const RestoreTask& t) {
         JsonEsc(W2U(t.eaFixDir)).c_str(),
         t.targetDisk, t.targetPart, (unsigned long long)t.targetOffset,
         (unsigned long long)t.targetSize, t.repairBoot ? "true" : "false",
-        t.partCount);
+        t.partCount,
+        (t.targetMode.empty() ? "format" : t.targetMode.c_str()),
+        W2U(t.computerName).c_str());
     return buf;
 }
 

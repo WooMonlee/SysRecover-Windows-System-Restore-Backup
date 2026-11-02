@@ -392,9 +392,11 @@ bool CGlyphCheckBoxUI::DoPaint(HDC hDC, const RECT& rcPaint, CControlUI* pStopCo
         Poly(hDC, chk, 3, 1.7f, C_CHECK_MK);
     }
     // 实测文字起点 = 方框左 + 18，13px，颜色比正文更黑
+    // PIT-211：不可勾（SetEnabled(false)）时整条变灰，和"能点"区分开。
     const int tx = rc.left + 18;
     const int by = BaselineOf(cy, 13);
-    TextAt(hDC, GetText(), tx, by, 13, C_CHECK_TX);
+    TextAt(hDC, GetText(), tx, by, 13,
+           IsEnabled() ? C_CHECK_TX : C_DIS_TEXT);
     // 快捷键字母（shortcut= 属性，光板字母无括号）：Alt+字母 的触发在
     // Duilib 内置 WM_SYSCHAR。画法规则见 ShortcutHit（词内命中只画线、
     // 未命中尾随字母）；线：基线 +2 起画、宽 = 该字母宽、静音色（禁用态随文字变灰）。

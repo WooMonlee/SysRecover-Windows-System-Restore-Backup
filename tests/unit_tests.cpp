@@ -30,6 +30,7 @@
 #include "common/rescue_decision.h"
 #include "common/sysinfo.h"
 #include "common/version.h"
+#include "common/compname.h"
 #include "common/zip.h"
 #include "common/ea.h"
 #include "disk/partscript.h"
@@ -191,6 +192,20 @@ RestoreTask SampleTask() {
     return t;
 }
 }  // namespace
+
+// PIT-211：契约里的两个增量键（Linux get_task 要读；缺省不能变）
+TEST(task_conf_target_mode_and_name) {
+    RestoreTask t;
+    t.targetMode = "keep";
+    t.computerName = L"W10ASUS261013112604";
+    const std::string c = BuildTaskConf(t);
+    CHECK(c.find("target_mode=keep") != std::string::npos);
+    CHECK(c.find("new_computer_name=W10ASUS261013112604") != std::string::npos);
+    RestoreTask d;  // 缺省 = format + 空名字
+    const std::string c2 = BuildTaskConf(d);
+    CHECK(c2.find("target_mode=format") != std::string::npos);
+    CHECK(c2.find("new_computer_name=\n") != std::string::npos);
+}
 
 TEST(task_conf_has_required_keys) {
     std::string c = BuildTaskConf(SampleTask());
@@ -836,6 +851,22 @@ TEST(bcd_list_entries_and_default_preference) {
     std::string why;
     CHECK(!BcdOsEntryTargetsVolume(text, {"c:"}, &why));
     CHECK(BcdOsEntryTargetsVolume(text, {"d:"}, &why));
+}
+
+// PIT-211：改机器名 = W + Windows 大版本 + 厂家 + YYMMDDHHMMSS
+TEST(compname_make) {
+    CHECK(MakeComputerName(L"ASUS", 10, 2026, 10, 13, 11, 26, 4) ==
+          L"W10ASUS261013112604");
+    CHECK(MakeComputerName(L"ASUSTeK", 10, 2026, 1, 2, 3, 4, 5) ==
+          L"W10ASUSTEK260102030405");
+    CHECK(MakeComputerName(L"", 11, 2026, 12, 31, 23, 59, 59) ==
+          L"W11PC261231235959");
+    // 非字母数字剔除 + 过长截断（NetBIOS 限 15，这里最多 12）
+    CHECK(MakeComputerName(L"Hewlett-Packard", 10, 2026, 5, 6, 7, 8, 9) ==
+          L"W10HEWLETTPACKA260506070809");
+    // 版本只认 7/8/10/11，其它一律按 10
+    CHECK(MakeComputerName(L"Dell", 12, 2026, 5, 6, 7, 8, 9) ==
+          L"W10DELL260506070809");
 }
 
 // ────────────────────── relocate（运行目录搬迁目的地选择） ──────────────────────

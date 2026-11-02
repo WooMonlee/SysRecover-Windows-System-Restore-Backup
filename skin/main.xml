@@ -16,7 +16,7 @@
   <Font id="2" name="Microsoft YaHei UI" size="15" />
 
   <!-- 最外层 #EEF1F6 = 窗口圆角处的露底色（1px 环） -->
-  <VerticalLayout bkcolor="#FFEEF1F6" inset="1,1,1,1">
+  <VerticalLayout bkcolor="#FF000000" inset="1,1,1,1">
 
     <!-- 面板：#FFFFFF + 1px #DFE5EE 边框 + 圆角 12（borderround = 直径 24） -->
     <VerticalLayout name="Panel" bkcolor="#FFFFFFFF" bordersize="1" bordercolor="#FFE1E7EF" borderround="24,24" inset="1,1,1,1">

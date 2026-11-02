@@ -11,7 +11,7 @@
       （Ask4，删除旧系统后自删）B 按钮 4 个、窗口加宽到 520（运行时重排）。 -->
 <Window size="420,196" caption="0,0,0,44" roundcorner="24,24" mininfo="420,196">
   <Font id="1" name="Microsoft YaHei UI" size="14" />
-  <VerticalLayout bkcolor="#FFEEF1F6" inset="1,1,1,1">
+  <VerticalLayout bkcolor="#FF000000" inset="1,1,1,1">
     <VerticalLayout name="Panel" bkcolor="#FFFFFFFF" bordersize="1" bordercolor="#FFE1E7EF" borderround="24,24" inset="1,1,1,1">
       <VerticalLayout name="Content">
         <Control name="TopBarBg" float="true" pos="0,0,416,44" bkcolor="#FFF7F9FC" />
@@ -23,6 +23,10 @@
         <SkinLabel name="DlgMsg4" float="true" pos="22,122,398,144" text="" fontsize="13" color="#FF5F6C80" />
         <SkinLabel name="DlgMsg5" float="true" pos="22,144,398,166" text="" fontsize="13" color="#FF5F6C80" />
         <SkinLabel name="DlgMsg6" float="true" pos="22,166,398,188" text="" fontsize="13" color="#FF5F6C80" />
+        <!-- PIT-211：确认框里的可选项（默认隐藏，InitWindow 按需显示并排版） -->
+        <GlyphCheck name="ChkFmtA" float="true" pos="22,120,398,146" text="" visible="false" />
+        <GlyphCheck name="ChkFmtB" float="true" pos="22,146,398,172" text="" visible="false" />
+        <GlyphCheck name="ChkRename" float="true" pos="22,172,398,198" text="" visible="false" />
         <SkinButton name="BtnExit"   float="true" pos="106,140,232,178" text="取消" fontsize="14" bkcolor="#FFFFFFFF" bordercolor="#FFE4E8EF" borderround="14,14" textcolor="#FF1B2432" />
         <SkinButton name="BtnReboot" float="true" pos="242,140,398,178" text="还原后重启" fontsize="14" bkcolor="#FF8CA0DE" bordercolor="#FF8CA0DE" borderround="14,14" textcolor="#FFFFFFFF" />
         <!-- 三选模式（Ask3，还原则确认取消/还原后重启/重启后还原）的中间按钮；

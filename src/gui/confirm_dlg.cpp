@@ -18,6 +18,7 @@ const int kCorner = 24;
 const int kButtonH = 38;
 const int kButtonGap = 18;
 const int kBottomGap = 18;
+const int kOptH = 26;   // 每个勾选框占的高度（PIT-211）
 
 // 消息行数（按 '\n' 计），上限 6（skin 里 DlgMsg1..6）。
 int MsgLineCount(const std::wstring& msg) {
@@ -31,9 +32,11 @@ int MsgLineCount(const std::wstring& msg) {
 // 自适应几何：按钮顶部 = 最后一行文字底部 + 固定间距；窗口底部 = 按钮底部
 // + 固定留白。这样不会再出现“按钮下移了、窗口没长高 → 底部被裁掉”。
 int MessageBottom(int lines) { return 56 + lines * kLineH; }
-int ButtonTop(int lines) { return MessageBottom(lines) + kButtonGap; }
-int WindowHeight(int lines) {
-    const int h = ButtonTop(lines) + kButtonH + kBottomGap;
+int ButtonTop(int lines, int optRows = 0) {
+    return MessageBottom(lines) + kButtonGap + optRows * kOptH;
+}
+int WindowHeight(int lines, int optRows = 0) {
+    const int h = ButtonTop(lines, optRows) + kButtonH + kBottomGap;
     return h > kWndH ? h : kWndH;
 }
 
@@ -110,7 +113,47 @@ void CConfirmDlg::InitWindow() {
     const bool three = !m_midText.empty();
     const bool quad = !m_moreText.empty();
     const int lines = MsgLineCount(m_msg);
-    const int buttonTop = ButtonTop(lines);
+    const int buttonTop = ButtonTop(lines, m_optRows);
+    // PIT-211：勾选框（格式化 / 改机器名）摆在正文与按钮之间
+    {
+        const int w = quad ? kQuadW : kWndW;
+        int row = 0;
+        auto place = [&](const wchar_t* name, const std::wstring& text,
+                         bool on, bool enabled) {
+            CControlUI* c = m_PaintManager.FindControl(name);
+            if (!c) return;
+            RECT r = { 22, MessageBottom(lines) + 6 + row * kOptH, w - 22,
+                       MessageBottom(lines) + 6 + row * kOptH + kOptH - 4 };
+            c->SetPos(r);
+            c->SetText(text.c_str());
+            c->SetVisible(true);
+            c->SetEnabled(enabled);
+            COptionUI* o = static_cast<COptionUI*>(c);
+            o->Selected(on, false);
+            ++row;
+        };
+        if (m_opt.showFormatSwap) {
+            std::wstring t = Tr(L"还原后重启：先格式化目标分区");
+            if (!m_opt.formatSwapEnabled)
+                t += Tr(L"（目标正在使用，无法格式化）");
+            place(_T("ChkFmtA"), t, m_opt.formatSwap,
+                  m_opt.formatSwapEnabled);
+        }
+        if (m_opt.showFormatBlock) {
+            std::wstring t = m_opt.formatBlockLabel.empty()
+                                 ? Tr(L"重启后还原：先格式化目标分区")
+                                 : m_opt.formatBlockLabel;
+            if (!m_opt.formatBlockEnabled) t += Tr(L"（必须）");
+            place(_T("ChkFmtB"), t, m_opt.formatBlock,
+                  m_opt.formatBlockEnabled);
+        }
+        if (m_opt.showRename)
+            place(_T("ChkRename"),
+                  m_opt.renameLabel.empty()
+                      ? Tr(L"还原后修改计算机名")
+                      : m_opt.renameLabel,
+                  m_opt.rename, true);
+    }
     const wchar_t* names[6] = {_T("DlgMsg1"), _T("DlgMsg2"), _T("DlgMsg3"),
                                _T("DlgMsg4"), _T("DlgMsg5"), _T("DlgMsg6")};
     if (quad && b1 && bm && b2 && b4) {
@@ -227,7 +270,7 @@ void CConfirmDlg::InitWindow() {
     // 3 行时恰好等于 196 所以以前没暴露）。这里在控件排完后再按行数**重设尺寸**。
     {
         const int w = quad ? kQuadW : kWndW;
-        const int h = WindowHeight(lines);
+        const int h = WindowHeight(lines, m_optRows);
         ::SetWindowPos(m_hWnd, nullptr, 0, 0, w, h,
                        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
@@ -235,6 +278,25 @@ void CConfirmDlg::InitWindow() {
 
 void CConfirmDlg::Finish(int result) {
     m_result = result;
+    // 回填勾选状态（PIT-211）：无论点按钮、回车还是 ESC，都以界面上的真实状态为准。
+    if (m_optOut) {
+        if (m_opt.showFormatSwap) {
+            CControlUI* c = m_PaintManager.FindControl(_T("ChkFmtA"));
+            m_optOut->formatSwap =
+                c && m_opt.formatSwapEnabled &&
+                static_cast<COptionUI*>(c)->IsSelected();
+        }
+        if (m_opt.showFormatBlock) {
+            CControlUI* c = m_PaintManager.FindControl(_T("ChkFmtB"));
+            m_optOut->formatBlock =
+                c && m_opt.formatBlockEnabled &&
+                static_cast<COptionUI*>(c)->IsSelected();
+        }
+        if (m_opt.showRename) {
+            CControlUI* c = m_PaintManager.FindControl(_T("ChkRename"));
+            m_optOut->rename = c && static_cast<COptionUI*>(c)->IsSelected();
+        }
+    }
     Close();  // → WM_CLOSE → DestroyWindow → WM_DESTROY 置 m_alive=false
 }
 
@@ -242,6 +304,13 @@ void CConfirmDlg::Notify(TNotifyUI& msg) {
     if (msg.sType != DUI_MSGTYPE_CLICK)
         return;
     CDuiString name = msg.pSender->GetName();
+    // 勾选框点击：只是切换状态，不关闭对话框；灰色项直接忽略。
+    if (name == _T("ChkFmtA") || name == _T("ChkFmtB") ||
+        name == _T("ChkRename")) {
+        if (name == _T("ChkFmtA") && !m_opt.formatSwapEnabled) return;
+        if (name == _T("ChkFmtB") && !m_opt.formatBlockEnabled) return;
+        return;
+    }
     const bool three = !m_midText.empty();
     const bool quad = !m_moreText.empty();
     if (name == _T("BtnExit"))        Finish(kExit);
@@ -280,8 +349,15 @@ int CConfirmDlg::Ask(HWND owner, const std::wstring& title,
 int CConfirmDlg::Ask2(HWND owner, const std::wstring& title,
                       const std::wstring& msg, const std::wstring& leftText,
                       const std::wstring& rightText, bool defaultIsRight,
-                      const std::wstring& hl) {
+                      const std::wstring& hl, ConfirmOptions* opts) {
     CConfirmDlg* dlg = new CConfirmDlg();
+    if (opts) {
+        dlg->m_opt = *opts;
+        dlg->m_optOut = opts;
+    }
+    dlg->m_optRows = (dlg->m_opt.showFormatSwap ? 1 : 0) +
+                     (dlg->m_opt.showFormatBlock ? 1 : 0) +
+                     (dlg->m_opt.showRename ? 1 : 0);
     dlg->m_title = title;
     dlg->m_msg = msg;
     dlg->m_leftText = leftText;
@@ -296,8 +372,16 @@ int CConfirmDlg::Ask3(HWND owner, const std::wstring& title,
                       const std::wstring& msg, const std::wstring& leftText,
                       const std::wstring& midText, const std::wstring& rightText,
                       int defaultIdx, bool midDisabled, int escIdx,
-                      bool centerTitle, bool rightDisabled) {
+                      bool centerTitle, bool rightDisabled,
+                      ConfirmOptions* opts) {
     CConfirmDlg* dlg = new CConfirmDlg();
+    if (opts) {
+        dlg->m_opt = *opts;
+        dlg->m_optOut = opts;
+    }
+    dlg->m_optRows = (dlg->m_opt.showFormatSwap ? 1 : 0) +
+                     (dlg->m_opt.showFormatBlock ? 1 : 0) +
+                     (dlg->m_opt.showRename ? 1 : 0);
     dlg->m_title = title;
     dlg->m_centerTitle = centerTitle;
     dlg->m_rightDisabled = rightDisabled;
@@ -347,7 +431,7 @@ int CConfirmDlg::RunModal(HWND owner, CConfirmDlg* dlg) {
     const bool quad = !dlg->m_moreText.empty();
     const int w = quad ? kQuadW : kWndW;
     const int lines = MsgLineCount(dlg->m_msg);
-    const int hgt = WindowHeight(lines);
+    const int hgt = WindowHeight(lines, dlg->m_optRows);
     sysrecover::LogInfo("confirm dlg: lines=" + std::to_string(lines) +
                         " h=" + std::to_string(hgt) + " msgLen=" +
                         std::to_string(dlg->m_msg.size()));

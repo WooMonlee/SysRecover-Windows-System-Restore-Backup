@@ -2052,3 +2052,46 @@
     `BcdPruneDeadEntries` 删掉指向 D: 的死条目、保留默认项，`reachable_os=1`；
     `BcdQuietSingleOsMenu` 把 `displayorder` 收敛成一条 + `timeout 0`；
     两条以上条目时**拒绝**收敛（`menu: keep`）。
+
+### PIT-210
+
+- PIT-210 **单文件版打开时先闪一下黑框**（`0.9.87`，用户 2026-11-02）
+  · 现象：双击单文件，先看到一个黑控制台窗口，然后才出界面。
+  · 根因：stub 是 **console 子系统**（为了 CLI 能附着调用者控制台），
+    而 `FreeConsole()` 原来放在 **49MB 解压之后** —— 解压要 0.x 秒，
+    控制台就一直亮着；进程创建时那一下反而只是短闪。
+  · 修复：入口**第一件事**解析命令行；没有参数（GUI 模式）→ 立刻
+    `ShowWindow(con,SW_HIDE)` + `FreeConsole()`，再解压、再开 GUI。
+    CLI 模式不受影响（照旧附着调用者控制台、透传退出码）。
+  · 为什么没改成 GUI 子系统：GUI 子系统进程 `cmd` 不会等它结束，
+    `%ERRORLEVEL%` 也拿不到 —— 脚本调用会静默错位，得不偿失。
+
+### PIT-211
+
+- PIT-211 **还原交互五件事**（`0.9.87`，用户 2026-11-02 规格）
+  1. **中途勾"静默"不自动重启** —— 就地还原完成时只弹 `MessageBox`，
+     且 `IsSilent()` 只在弹框那一刻决定"弹不弹"，从不重启。
+     现在：完成 → 静默（含中途才勾上的，读的是**实时**勾选状态）→ 直接重启；
+     非静默 → `Ask2`「确定 / 立即重启」（左=安全项，回车/ESC 都落"确定"）。
+  2. **确认框里两个"格式化"勾选框**：分别管「还原后重启」（A 引擎，先
+     `format.com` 再解压）与「重启后还原」（B 引擎，Linux 侧 format/keep）。
+     目标分区正在使用（普通 Windows 里的系统盘）时 A 那格置灰并注明；
+     PE / 未占用时默认可勾。就地还原必须格式化 → 显示为**已勾且不可取消**。
+     · 契约新增 `target_mode=format|keep`；Linux `zjrestore-lite.sh`
+       原有的 keep（保留文件系统、清空内容）路径接上（以前只认
+       `ZJ_TARGET_MODE` 环境变量，Windows 侧从来没传过）。
+  3. **改机器名**：`W<大版本><厂家><YYMMDDHHMMSS>`（如 `W10ASUS261013112604`）。
+     厂家取 `bioskey` 的识别结果、大版本读**目标系统自己**的 SOFTWARE 库
+     （`CurrentBuild`，PE 给 Win11 镜像改名也不会错）。
+     · A 引擎 / 就地还原：还原后**直接改目标盘离线 SYSTEM 库**
+       （ComputerName + ActiveComputerName + Tcpip\Parameters），首次开机就是新名；
+     · B 引擎：契约带 `new_computer_name`，救援层写到
+       `C:\ProgramData\SysRecover\computer-name.txt`，首启助手落注册表
+       （新名字**下次重启**才生效 —— Windows 机制）。
+  4. **单文件黑框** → 见 PIT-210。
+  5. **界面没有边界感** → 主窗口与所有对话框最外圈改为 **1px 黑框**
+     （把外层 `VerticalLayout` 的底色改成 `#FF000000`；圆角由窗口 region
+     裁出来，所以四角弧线上也是黑的）。
+  · 布局注意：确认框新增的勾选框会把窗口高度按 `kOptH=26/行` 撑高、
+    按钮整体下移；`WindowHeight/ButtonTop` 都加了 `optRows` 参数，
+    `RunModal` 与 `InitWindow` 必须用**同一个** rows（否则按钮被裁，PIT-186 老毛病）。

@@ -70,6 +70,30 @@ bool MakeDirs(const std::wstring& path) {
 int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     wchar_t self[MAX_PATH] = {};
     if (!GetModuleFileNameW(nullptr, self, MAX_PATH)) return 1;
+
+    // PIT-210（用户 2026-11-02：单文件打开前会闪一下黑框）：
+    // **先判断有没有参数**，GUI 模式立刻把控制台藏掉/释放 —— 以前要等 49MB
+    // 解压完才 FreeConsole，控制台窗口就一直亮着（看起来像"闪一下"甚至更久）。
+    std::wstring cmdArgs = GetCommandLineW();
+    {
+        size_t i = 0;
+        while (i < cmdArgs.size() && cmdArgs[i] == L' ') ++i;
+        if (i < cmdArgs.size() && cmdArgs[i] == L'"') {
+            const size_t j = cmdArgs.find(L'"', i + 1);
+            i = (j == std::wstring::npos) ? cmdArgs.size() : j + 1;
+        } else {
+            const size_t j = cmdArgs.find(L' ', i);
+            i = (j == std::wstring::npos) ? cmdArgs.size() : j;
+        }
+        cmdArgs = cmdArgs.substr(i);
+        while (!cmdArgs.empty() && cmdArgs[0] == L' ') cmdArgs.erase(0, 1);
+    }
+    const bool wantCli = !cmdArgs.empty();
+    if (!wantCli) {
+        if (HWND con = GetConsoleWindow()) ShowWindow(con, SW_HIDE);
+        FreeConsole();
+    }
+
     HANDLE h = CreateFileW(self, GENERIC_READ, FILE_SHARE_READ, nullptr,
                            OPEN_EXISTING, 0, nullptr);
     if (h == INVALID_HANDLE_VALUE) return 1;
@@ -214,22 +238,8 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     //（否则解压到 %LOCALAPPDATA% 后，"exe 上一级"规则扫的是程序目录，找不到镜像）。
     SetEnvironmentVariableW(L"ZJ_ORIGIN_DIR", DirOf(self).c_str());
 
-    // 判断有没有参数（去掉 exe 自身那一段后是否还有内容）
-    std::wstring args = GetCommandLineW();
-    {
-        size_t i = 0;
-        while (i < args.size() && args[i] == L' ') ++i;
-        if (i < args.size() && args[i] == L'"') {
-            const size_t j = args.find(L'"', i + 1);
-            i = (j == std::wstring::npos) ? args.size() : j + 1;
-        } else {
-            const size_t j = args.find(L' ', i);
-            i = (j == std::wstring::npos) ? args.size() : j;
-        }
-        args = args.substr(i);
-        while (!args.empty() && args[0] == L' ') args.erase(0, 1);
-    }
-    const bool wantCli = !args.empty();
+    // 参数已在入口处解析好（PIT-210：GUI 模式要尽早藏掉控制台）
+    const std::wstring& args = cmdArgs;
 
     const std::wstring target =
         dest + L"\\" + (wantCli ? kCliExe : kGuiExe);
@@ -240,8 +250,7 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     }
     // 把原始命令行（去掉本 exe 那一段）透传
     if (!wantCli) {
-        // 双击打开：立即释放控制台（减少黑窗闪烁），再开 GUI
-        FreeConsole();
+        // 双击打开：控制台在入口已释放/隐藏，直接开 GUI
         HINSTANCE r = ShellExecuteW(nullptr, L"open", target.c_str(), nullptr,
                                     dest.c_str(), SW_SHOWNORMAL);
         return ((INT_PTR)r > 32) ? 0 : 1;

@@ -1271,7 +1271,9 @@ say "target fs = ${TARGET_FS:-unknown}"
 #            前提是 mkntfs 必须带正确的 --partition-start/-H/-S（hidden sectors）。
 #            优点：干净、无残留（wimlib 卷模式不会 rc=46）、无 FUSE 清空的卡顿。
 #   keep   = 保留原 NTFS 只清空文件（历史路径，已被上面取代；留作兜底/对比）。
-TARGET_MODE=${ZJ_TARGET_MODE:-format}
+# PIT-211：确认框里的「先格式化」勾选框 → 契约 target_mode（缺省 format）。
+TARGET_MODE=${ZJ_TARGET_MODE:-$(get_task target_mode)}
+case "$TARGET_MODE" in format|keep) ;; *) TARGET_MODE=format ;; esac
 say "target prepare mode = $TARGET_MODE"
 # 大字横幅：控制台只能用内核内置字体（ASCII），中文字形不在里面、会显示成方框，
 # 所以**屏上提示一律用英文**（中文细节全部写进日志文件）。
@@ -1568,6 +1570,12 @@ goto :eof
 :done
 del "%~f0"
 ZJCM
+        # PIT-211：改计算机名（B 引擎只能等新系统首次登录时由助手落地）
+        _newname=$(get_task new_computer_name)
+        if [ -n "$_newname" ]; then
+            printf '%s\n' "$_newname" > "$BCM/ProgramData/SysRecover/computer-name.txt"
+            say "computer name: $_newname (applied by first-boot helper)"
+        fi
         sync
         if [ -s "$BCM/ProgramData/SysRecover/zj-restore-boot.exe" ] && \
            [ -s "$BCM/ProgramData/Microsoft/Windows/Start Menu/Programs/Startup/SysRecover-RestoreBoot.cmd" ]; then

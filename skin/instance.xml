@@ -5,7 +5,7 @@
      三个按钮横排：默认项「使用之前的程序」用 accent 蓝底白字，另两个白底灰边。 -->
 <Window size="460,176" caption="0,0,0,44" roundcorner="24,24" mininfo="460,176">
   <Font id="1" name="Microsoft YaHei UI" size="14" />
-  <VerticalLayout bkcolor="#FFEEF1F6" inset="1,1,1,1">
+  <VerticalLayout bkcolor="#FF000000" inset="1,1,1,1">
     <VerticalLayout name="Panel" bkcolor="#FFFFFFFF" bordersize="1" bordercolor="#FFE1E7EF" borderround="24,24" inset="1,1,1,1">
       <VerticalLayout name="Content">
         <Control float="true" pos="0,0,456,44" bkcolor="#FFF7F9FC" />

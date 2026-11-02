@@ -52,6 +52,13 @@ struct RestoreRequest {
     // 加密镜像口令（docs/30）。空 = 未提供（加密镜像会被拒绝并提示）。
     // 引擎矩阵：A 引擎（swap）/PE 就地还原支持；B 引擎（block）与常驻菜单拒绝。
     std::wstring password;
+    // ── PIT-211（用户 2026-11-02）──
+    // A 引擎：解压前先格式化目标分区（仅目标未被占用/PE 里可用）。
+    bool formatSwap = false;
+    // B 引擎：Linux 侧 "format"（默认，mkntfs）或 "keep"（保留文件系统、清空内容）。
+    std::string targetMode = "format";
+    // 非空 = 还原后把计算机名改成它（离线改 SYSTEM 库；B 引擎交给首启助手）。
+    std::wstring computerName;
 };
 
 // 备份。覆盖确认由调用方负责（CLI --yes / GUI 对话框）。

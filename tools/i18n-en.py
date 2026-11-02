@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：790/791 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：799/800 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n已登记为「下次开机自动清除」（重启后会自动删完）。': '\n\nThe remaining files are scheduled for automatic removal at the next boot (they will be gone after a reboot).',
@@ -57,6 +57,7 @@ EN = {
     'A 引擎空间不足：需要约 %.1f GB（内容+页文件+余量），目标盘可用 %.1f GB。请清理磁盘后重试，或改用 `--engine block`（B 引擎兜底：先格式化再写入，只需目标总容量 ≥ 镜像体积）。': 'A-engine space insufficient: needs about %.1f GB (content + page file + margin), target has %.1f GB free. Free up disk space and retry, or use `--engine block` (B-engine fallback: format first, then write; only needs total target capacity >= image size).',
     'A 引擎解压失败(rc=%d): ': 'A-engine extraction failed (rc=%d): ',
     'A 引擎需要约 %.1f GB 可用空间，当前 %.1f GB': 'A-engine needs ~%.1f GB free, only %.1f GB available',
+    'A 引擎：格式化目标分区失败（已中止，未解压任何文件）：': 'A engine: formatting the target partition failed (aborted; nothing was extracted): ',
     'AES 密钥流生成失败': 'Failed to generate the AES keystream',
     'AES 扇区处理失败': 'Failed to process an AES sector',
     'BitLocker 提醒': 'BitLocker notice',
@@ -448,6 +449,7 @@ EN = {
     '提示：自动使用程序目录 Drivers\\ 下的 %d 个 .inf。\n': 'Note: automatically using %d .inf file(s) under the program folder Drivers\\.\n',
     '搜索': 'Search',
     '搜集还原日志与诊断信息并打包到桌面（含 explorer 转储、事件日志）': 'Collect restore logs and diagnostics and package them to the Desktop (includes explorer dumps and event logs)',
+    '改机器名：': 'Computer name: ',
     '救援环境缺少必需组件': 'Rescue environment is missing required components',
     '教育版': 'Education',
     '文件不存在或无法访问': 'file does not exist or cannot be accessed',
@@ -521,6 +523,7 @@ EN = {
     '校验文件数据': 'Verifying file data',
     '校验通过\n': 'Verification passed\n',
     '校验镜像': 'Verifying image',
+    '格式化目标分区': 'Format the target partition',
     '格式化目标分区失败': 'Failed to format the target partition',
     '格式：': 'Fmt:',
     '检查完成：全部通过。': 'Check complete: all images passed.',
@@ -696,8 +699,11 @@ EN = {
     '返回旧系统 = 重启把旧系统搬回根目录；': 'Return to old system',
     '返回旧系统 = 重启进恢复环境，把 ~old 的旧系统搬回根目录。\n当前新系统将被丢弃，无法再使用。\n确认执行？[y/N]: ': 'Return to old system',
     '返回旧系统失败': 'Return to old system failed',
+    '还原后修改计算机名': 'Rename the computer after restore',
     '还原后重启': 'Restore & Reboot',
+    '还原后重启：先格式化目标分区': 'Restore then reboot: format target first',
     '还原完成（用时 ': 'Restore finished (took ',
+    '还原完成，正在重启...': 'Restore complete, restarting...',
     '还原将覆盖目标分区，需加 --yes 确认\n': 'Restoring will overwrite the target partition; add --yes to confirm\n',
     '还原已完成（目标分区未被占用，直接就地还原，无需重启）。\n': 'Restore finished (the target partition was not in use, so it was restored in place with no reboot).\n',
     '还原成功': 'Restore Succeeded',
@@ -721,6 +727,7 @@ EN = {
     '重启后在启动菜单选「SysRecover」还原\n镜像：%ls（第 %d 个）\n目标：%ls: 盘 —— 选中即格式化该分区': 'Restore via "SysRecover" in the boot menu\nImage: %ls (#%d)\nTarget: %ls: - selecting it formats that partition',
     '重启后按 %ls 选「SysRecover」还原\n镜像：%ls（第 %d 个）\n目标：%ls: 盘 —— 选中即格式化该分区': 'Press %ls at boot and choose "SysRecover" to restore\nImage: %ls (#%d)\nTarget: %ls: - selecting it formats that partition',
     '重启后还原': 'Reboot & Restore',
+    '重启后还原：先格式化目标分区': 'Reboot then restore: format target first',
     '重启进安全模式再测': 'Safe Mode + Retest',
     '重映射扇区': 'Reallocated sectors',
     '重试': 'Retry',
@@ -779,6 +786,8 @@ EN = {
     '（可在图形界面选择「一键重试」，或重新执行 restore）': ' (Use "One-click Retry" in the GUI, or run restore again.)',
     '（已保留 C:\\~new，修好驱动后重试无需重新解压）': ' (C:\\~new was kept; after fixing the drivers you can retry without extracting again)',
     '（已禁用）': ' (disabled)',
+    '（必须）': ' (required)',
+    '（目标正在使用，无法格式化）': ' (in use; cannot format)',
     '（还原日志将放到 ': '(restore logs will go to ',
     '（镜像写入损坏，请重新备份）': ' (the image is corrupted; please back up again)',
     '）': ')',

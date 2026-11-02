@@ -155,6 +155,92 @@ void DeleteTreeRec(const std::wstring& dir) {
     RemoveDirectoryW(dir.c_str());
 }
 
+
+// ── PIT-211：格式化目标分区（A 引擎"先格式化再解压"用）──────────────
+bool FormatTargetVolume(wchar_t letter, std::string& log) {
+    std::string out;
+    const int rc = RunProcess(SysToolPath(L"format.com"),
+                              std::wstring(1, letter) + L": /FS:NTFS /Q /Y",
+                              out);
+    log = "format.com rc=" + std::to_string(rc) + " / " + out;
+    return rc == 0;
+}
+
+// ── PIT-211：离线改计算机名（目标盘的 SYSTEM 库，不需要目标系统在运行）──
+// 与在线 Rename-Computer 等价：ComputerName + ActiveComputerName +
+// Tcpip\Parameters(Hostname / NV Hostname)；每个 ControlSet 都写。
+bool SetComputerNameOffline(const std::wstring& winDir, const std::wstring& name,
+                            std::string& log) {
+    if (name.empty()) return true;
+    const std::wstring hive = winDir + L"\\System32\\config\\SYSTEM";
+    if (GetFileAttributesW(hive.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        log += "rename: SYSTEM hive missing (" + W2U(hive) + ")\n";
+        return false;
+    }
+    auto enablePriv = [](const wchar_t* pn) {
+        HANDLE tok = nullptr;
+        if (!OpenProcessToken(GetCurrentProcess(),
+                              TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &tok))
+            return;
+        TOKEN_PRIVILEGES tp = {};
+        tp.PrivilegeCount = 1;
+        if (LookupPrivilegeValueW(nullptr, pn, &tp.Privileges[0].Luid)) {
+            tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+            AdjustTokenPrivileges(tok, FALSE, &tp, sizeof(tp), nullptr, nullptr);
+        }
+        CloseHandle(tok);
+    };
+    enablePriv(L"SeBackupPrivilege");
+    enablePriv(L"SeRestorePrivilege");
+    const wchar_t* kTmp = L"ZJ_SYSNAME";
+    RegUnLoadKeyW(HKEY_LOCAL_MACHINE, kTmp);  // 清上次异常退出的残留
+    const LONG lr = RegLoadKeyW(HKEY_LOCAL_MACHINE, kTmp, hive.c_str());
+    if (lr != ERROR_SUCCESS) {
+        log += "rename: RegLoadKey failed rc=" + std::to_string(lr) + "\n";
+        return false;
+    }
+    auto setSz = [&](const std::wstring& sub, const wchar_t* value,
+                     const std::wstring& data) {
+        HKEY k = nullptr;
+        if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, sub.c_str(), 0, nullptr, 0,
+                            KEY_SET_VALUE, nullptr, &k, nullptr) !=
+            ERROR_SUCCESS)
+            return;
+        RegSetValueExW(k, value, 0, REG_SZ, (const BYTE*)data.c_str(),
+                       (DWORD)((data.size() + 1) * sizeof(wchar_t)));
+        RegCloseKey(k);
+    };
+    bool wrote = false;
+    HKEY root = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, kTmp, 0, KEY_READ, &root) ==
+        ERROR_SUCCESS) {
+        wchar_t sub[256];
+        for (DWORD i = 0;; ++i) {
+            DWORD len = 256;
+            if (RegEnumKeyExW(root, i, sub, &len, nullptr, nullptr, nullptr,
+                              nullptr) != ERROR_SUCCESS)
+                break;
+            const std::wstring cs(sub);
+            if (_wcsnicmp(cs.c_str(), L"ControlSet", 10) != 0) continue;
+            const std::wstring base = std::wstring(kTmp) + L"\\" + cs;
+            setSz(base + L"\\Control\\ComputerName\\ComputerName",
+                  L"ComputerName", name);
+            setSz(base + L"\\Control\\ComputerName\\ActiveComputerName",
+                  L"ComputerName", name);
+            setSz(base + L"\\Services\\Tcpip\\Parameters", L"Hostname", name);
+            setSz(base + L"\\Services\\Tcpip\\Parameters", L"NV Hostname", name);
+            wrote = true;
+        }
+        RegCloseKey(root);
+    }
+    RegUnLoadKeyW(HKEY_LOCAL_MACHINE, kTmp);
+    if (!wrote)
+        log += "rename: no ControlSet found in SYSTEM hive\n";
+    else
+        log += "rename: " + W2U(name) + " stored offline\n";
+    return wrote;
+}
+
 // 递归复制目录（软件自保用；不处理 ACL）。
 bool CopyDir(const std::wstring& src, const std::wstring& dst) {
     if (!IsDir(src))
@@ -836,6 +922,15 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
             LogInfo("in-place: no winload.exe -> not a system image, skip "
                     "bcdboot");
         }
+    }
+    // PIT-211：就地还原 = 目标盘离线的完整新系统 → 直接改 SYSTEM 库
+    if (!req.computerName.empty()) {
+        std::string rlog;
+        if (SetComputerNameOffline(letter + L":\\Windows", req.computerName,
+                                   rlog))
+            LogInfo("in-place rename: " + rlog);
+        else
+            LogWarn("in-place rename failed (non-fatal): " + rlog);
     }
     ProgressDone("restore", "done");
     LogInfo("in-place restore done (no reboot needed)");
@@ -2396,7 +2491,24 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
                 }
             }
         }
+        if (req.formatSwap) {
+            if (reuse) LogInfo("A-engine: format requested -> ignore ~new reuse");
+            reuse = false;  // 要格式化就谈不上复用旧的 ~new
+        }
         if (!reuse) {
+        // PIT-211：用户勾了「还原后重启：先格式化目标分区」（仅目标未被占用/PE
+        // 里可选）→ 整个分区先格式化，再解压。失败就中止，绝不留半套系统。
+        if (req.formatSwap) {
+            std::string flog;
+            LogInfo("A-engine: format target before extract");
+            if (!FormatTargetVolume(target.letter[0], flog)) {
+                err = Tr("A 引擎：格式化目标分区失败（已中止，未解压任何文件）：") +
+                      flog;
+                LogError(err);
+                return 1;
+            }
+            LogInfo("A-engine: " + flog);
+        }
         // PIT-198：旧 ~new 删不掉（被占用/权限）时**改名让位**，别让整次暂存失败。
         // 改出来的 `~new.zj-old-<时间>` 会在 swap 时随根目录一起进 ~old，
         // 用户删除旧系统时一并清掉。
@@ -2732,6 +2844,16 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
     if (req.repairBoot)
         BcdExport(logsDir + L"\\bcd-backup");  // 改 BCD 前先备份（§11）
 
+    // PIT-211：A 引擎改计算机名 —— 此刻 ~new 里已经是新系统，直接改离线库，
+    // 换位后第一次开机就是新名字（不用等首次登录）。
+    if (!swapNewDir.empty() && !req.computerName.empty()) {
+        std::string rlog;
+        if (SetComputerNameOffline(swapNewDir + L"\\Windows", req.computerName,
+                                   rlog))
+            LogInfo("A-engine rename: " + rlog);
+        else
+            LogWarn("A-engine rename failed (non-fatal): " + rlog);
+    }
     // 3) 组装任务（字段对齐旧 C# StageRestoreAsync）
     RestoreTask t;
     t.imagePath = imagePath;
@@ -2763,7 +2885,9 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
     t.targetVolLabel = target.label;
     t.softwarePath = ExePath();
     t.engine = req.engine;  // 0.7：""/block=B 引擎；swap=A 引擎（docs/23）
-    t.keepOld = req.keepOld;  // PIT-148：写进 conf，供「一键重试」原样复刻任务
+    t.keepOld = req.keepOld;
+    t.targetMode = req.targetMode.empty() ? "format" : req.targetMode;
+    t.computerName = req.computerName;  // PIT-148：写进 conf，供「一键重试」原样复刻任务
     // 诊断日志目录（PIT-059）：优先软件目录本身；软件在目标盘（会被格式化）
     // 或只读介质上时，回退到数据盘 <数据盘>\ZJRESTORE（建好，保留给排错用）。
     {

@@ -4,7 +4,7 @@
      只用于：选中 .zje 后输入口令 / 备份加密时设置口令。 -->
 <Window size="420,196" caption="0,0,0,44" roundcorner="24,24" mininfo="420,196">
   <Font id="1" name="Microsoft YaHei UI" size="14" />
-  <VerticalLayout bkcolor="#FFEEF1F6" inset="1,1,1,1">
+  <VerticalLayout bkcolor="#FF000000" inset="1,1,1,1">
     <VerticalLayout name="Panel" bkcolor="#FFFFFFFF" bordersize="1" bordercolor="#FFE1E7EF" borderround="24,24" inset="1,1,1,1">
       <VerticalLayout name="Content">
         <Control name="TopBarBg" float="true" pos="0,0,416,44" bkcolor="#FFF7F9FC" />
