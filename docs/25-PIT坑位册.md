@@ -1971,3 +1971,38 @@
     49MB 解压**（原来每次运行都重写一遍）。
   · 实测：`pack-self` 73 个文件 → 50MB；打出来的 exe `version` 正常；`unpack-self` 73 个文件、
     目录里 `SysRecoverUI.exe` 可运行。
+
+### PIT-208
+
+- PIT-208 **「还原 100% 成功、开机却反复重启」= 引导交接只查了"有条目"，没查"指向谁"**
+  （`0.9.82`，2026-11-02，客户机实测：HFS256G32TND-N210A / GPT / UEFI / Secure Boot off）
+  · 现场：0.9.76（`engine=block`）还原 `/dev/sda3`，format rc=0、apply 100%、状态 OK；
+    重启反复回到"进不了系统"。随后进 PE 用 0.9.81 就地还原，再次成功，日志里却是
+    `ESP BCD already valid -> skip bcdboot`。Linux 侧也明确打印
+    `no bootfix needed (UEFI boot)` + `UEFI/GPT: ESP untouched, skip PBR/boot-region repair`。
+  · 根因（两个缺口叠加）：
+    ① `VerifyEspBcd()` 只验证 **displayorder 非空 + 文本里有 winload + bootmgfw/bootx64
+       存在**。一个 `winload` 条目**指向别的分区**（或指向已删除卷的孤儿条目）同样能过
+       —— 于是判定"BCD 已经有效"，跳过 bcdboot，机器自然起不来；
+    ② UEFI 还原只保证"ESP 上有一套 BCD"，**从不检查固件 BootOrder**。条目即使正确，
+       固件也可能先去启动第三方恢复工具（本机 `C:\LetRecovery_Scripts`）或指向已删
+       内核的陈旧条目 → 表现为开机反复重启。
+  · 修复：
+    - 新增纯逻辑 `bcd_parse::BcdOsEntryTargetsVolume(enumText, candidates)`：从
+      `{bootmgr}` 的 `displayorder`/`default` 出发（支持嵌套链、中文字段名），找出
+      **真正会被启动的 winload 条目**，要求它的 `device`/`osdevice` 命中目标分区的
+      卷标识（`C:` / `\?\Volume{guid}\` / `\Device\HarddiskVolumeN`）；
+      认不出目标卷身份时放行并记 note，不 fail-closed（极简 PE 无盘符也要能还原）；
+    - `VerifyEspBcd()` 接入上述判定 → "指向别处"现在会触发 bcdboot 重建；
+    - 另加 `bcd_parse::BcdOsEntryIsUefiLoader()`：UEFI 下**默认进入**的加载器必须是
+      `winload.efi`；若是 BIOS 模式建的 BCD（`winload.exe`），bootmgr 一加载就失败、
+      连日志都留不下（0xc000000e → 自动重启）。同样接入 `VerifyEspBcd()`；
+    - `EnsureWindowsBootEntry(espRoot, log, front=true)`：把固件
+      「Windows Boot Manager」条目**提到 BootOrder 第一位**；还原（就地/暂存）与
+      `repair-boot` 收尾都调用（原实现只在"缺失时补到末尾"，从不调序）；
+    - `diag` 新增 `uefi bootorder:` 快照（按 BootOrder 顺序列出 `Boot####` 描述 +
+      设备路径）—— 以后再遇到"开机先启谁"的问题，日志里就有答案；
+    - 顺手修 `history.jsonl` 的 `restore-inplace` 记录：`target` 曾误写成镜像路径。
+  · 现场修复口径（给用户）：PE 里跑 `SysRecover.exe repair-boot`（会重建/校验 BCD +
+    把 Windows Boot Manager 置顶），再到固件里删掉多余启动项。**不要**只重装系统 ——
+    数据面本来就没错。

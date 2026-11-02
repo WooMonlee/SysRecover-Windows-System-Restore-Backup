@@ -708,12 +708,6 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
                             AppDir(), /*overwriteBcd=*/true, slog, serr);
                         LogInfo(std::string("ESP self-contained boot: ") +
                                 (sok ? "ok" : "FAILED") + "\n" + slog);
-                        std::string wlog;
-                        if (EnsureWindowsBootEntry(espRoot, wlog))
-                            LogInfo("firmware Windows boot entry: " + wlog);
-                        else
-                            LogWarn("firmware Windows boot entry (non-fatal): " +
-                                    wlog);
                         if (!sok) {
                             err = Tr("就地还原已完成，但写入 ESP 引导失败：") + serr +
                                   Tr("\n可进入 PE 用 `SysRecover.exe repair-boot` 重试修复引导。");
@@ -731,6 +725,18 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
                         ProgressDone("restore", "failed");
                         return 1;
                     }
+                }
+                // PIT-208：不论"跳过 bcdboot"还是"重建"，都要确保固件里有指向
+                // Windows 的条目，并且**排在 BootOrder 第一位** —— 否则还原后
+                // 固件可能先去启动第三方恢复工具/已删内核的陈旧条目，表现就是
+                // "还原成功、开机却反复重启进不了系统"（2026-11-02 客户机）。
+                {
+                    std::string wlog;
+                    if (EnsureWindowsBootEntry(espRoot, wlog, /*front=*/true))
+                        LogInfo("firmware Windows boot entry: " + wlog);
+                    else
+                        LogWarn("firmware Windows boot entry (non-fatal): " +
+                                wlog);
                 }
                 UnmountEsp(espRoot, blog);
             } else {
@@ -2296,7 +2302,8 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
         if (needReboot)
             *needReboot = false;
         ReleaseOpLock();
-        AppendHistory("restore-inplace", req.image, imagePath,
+        AppendHistory("restore-inplace", req.image,
+                      target.letter.empty() ? L"?" : target.letter + L":",
                       GetTickCount64() - t1, rc == 0 ? "ok" : "failed");
         return rc;
     }
@@ -2974,6 +2981,7 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
                         }
                     }
                     // ④ 产物断言：displayorder 非空 + 有 winload 条目 + 关键文件齐全
+                    //    + 该条目**指向本次目标分区**（PIT-208）
                     if (!VerifyEspBcd(espRoot, winDir, detail)) {
                         UnmountEsp(espRoot, blog);
                         ReleaseOpLock();
@@ -2982,6 +2990,17 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
                               detail;
                         LogError(err);
                         return 1;
+                    }
+                    // PIT-208：固件里的 "Windows Boot Manager" 必须在 BootOrder
+                    // 第一位 —— 否则重启/还原后固件可能先启第三方恢复工具或
+                    // 已删内核的陈旧条目（2026-11-02 客户机"反复重启"）。
+                    {
+                        std::string wlog;
+                        if (EnsureWindowsBootEntry(espRoot, wlog, /*front=*/true))
+                            LogInfo("firmware Windows boot entry: " + wlog);
+                        else
+                            LogWarn("firmware Windows boot entry (non-fatal): " +
+                                    wlog);
                     }
                 }
             }
@@ -4010,17 +4029,26 @@ int RepairBoot(int disk, int part, std::string& msg) {
             /*overwriteBcd=*/false, slog, serr);
         LogInfo(std::string("repair-boot self-contained ESP: ") +
                 (sok ? "ok" : "FAILED") + "\n" + slog);
-        std::string wlog;
-        if (EnsureWindowsBootEntry(espRoot, wlog))
-            LogInfo("repair-boot firmware entry: " + wlog);
-        else
-            LogWarn("repair-boot firmware entry (non-fatal): " + wlog);
         if (!sok) {
             UnmountEsp(espRoot, blog);
             msg = Tr("修复引导失败：") + serr;
             LogError(msg);
             return 1;
         }
+    }
+    // PIT-208：修引导的收口就是"固件下一次真的去启 Windows" —— 条目必须在
+    // BootOrder 第一位（客户机 2026-11-02：还原成功却反复重启，元凶就在这）。
+    {
+        std::string wlog;
+        if (EnsureWindowsBootEntry(espRoot, wlog, /*front=*/true))
+            LogInfo("repair-boot firmware entry: " + wlog);
+        else
+            LogWarn("repair-boot firmware entry (non-fatal): " + wlog);
+        std::vector<std::string> bo;
+        UefiBootOrderSummary(bo);
+        for (size_t i = 0; i < bo.size(); ++i)
+            LogInfo(std::string("repair-boot bootorder") +
+                    (i == 0 ? "[0] " : "    ") + bo[i]);
     }
     if (!VerifyEspBcd(espRoot, winDir, detail)) {
         UnmountEsp(espRoot, blog);

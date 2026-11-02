@@ -305,6 +305,20 @@ bool DirExists(const std::wstring& p) {
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
 }
 
+// 宽 → UTF-8（bcd_parse 的判定用的是窄串）。
+std::string Narrow(const std::wstring& w) {
+    if (w.empty())
+        return std::string();
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(),
+                                      nullptr, 0, nullptr, nullptr);
+    if (n <= 0)
+        return std::string();
+    std::string s((size_t)n, 0);
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &s[0], n, nullptr,
+                        nullptr);
+    return s;
+}
+
 // 目录里是否存在匹配 pattern 的文件（如 Fonts\*_boot.ttf）。
 bool HasFileMatching(const std::wstring& dir, const wchar_t* pattern) {
     WIN32_FIND_DATAW fd;
@@ -1006,9 +1020,13 @@ bool SetUefiBootNext(std::string& log, bool temporary) {
     return false;
 }
 
-bool EnsureWindowsBootEntry(const std::wstring& espRoot, std::string& log) {
-    // 自足 UEFI 引导（2026-10-27）：没有 bcdboot 时，固件里那条 "Windows Boot
-    // Manager" 得我们自己写。已存在就只确保它在 BootOrder 里，不重复创建。
+bool EnsureWindowsBootEntry(const std::wstring& espRoot, std::string& log,
+                            bool front) {
+    // 兜底 UEFI 引导（2026-10-27）：没有 bcdboot 时固件里没有 "Windows Boot
+    // Manager"，这里自己写；已存在就只确保它在 BootOrder 里，不重复建条目。
+    // PIT-208：front=true 要 **提到 BootOrder 第一位**。还原/修引导之后必须这样，
+    //   否则固件可能先启第三方恢复工具、或已删内核的陈旧条目 —— 表现就是
+    //   "还原成功、开机却反复重启进不了系统"。
     if (!EnableEnvPrivilege(log))
         return false;
     GUID sig{};
@@ -1021,7 +1039,7 @@ bool EnsureWindowsBootEntry(const std::wstring& espRoot, std::string& log) {
     const wchar_t* kDesc = L"Windows Boot Manager";
     const std::wstring kPath = L"\\EFI\\Microsoft\\Boot\\bootmgfw.efi";
 
-    // 1) 已有同名条目？直接复用（固件启动菜单里可能还有别的自定义描述）
+    // 1) 找"同名（描述）+ 设备路径含 bootmgfw"的已有条目，复用并按需挪到最前
     int found = -1;
     std::vector<BYTE> order;
     ReadVar(L"BootOrder", order);
@@ -1040,55 +1058,133 @@ bool EnsureWindowsBootEntry(const std::wstring& espRoot, std::string& log) {
             break;
         }
     }
+
+    WORD v = 0;
     if (found >= 0) {
-        char line[96];
+        v = (WORD)found;
+        char line[112];
         snprintf(line, sizeof(line),
-                 "windows boot entry: exists Boot%04X (kept)\n", found);
+                 "windows boot entry: exists Boot%04X (%s)\n", found,
+                 front ? "move to front" : "kept");
         log += line;
-        return true;
+    } else {
+        // 2) 新建一条：磁盘格式 HardDrive + FilePath（与救援项同一套写法）
+        const int num = FindFreeEntry();
+        if (num < 0) {
+            log += "windows boot entry: no free Boot#### slot\n";
+            return false;
+        }
+        if (!BuildAndWrite(num, sig, partNum, start, size, kPath, nullptr, kDesc,
+                           log)) {
+            log += "windows boot entry: write failed\n";
+            return false;
+        }
+        v = (WORD)num;
+        char line[96];
+        snprintf(line, sizeof(line), "windows boot entry: Boot%04X created\n",
+                 num);
+        log += line;
     }
 
-    // 2) 新建一条（短格式 HardDrive + FilePath，与救援项同法）
-    const int num = FindFreeEntry();
-    if (num < 0) {
-        log += "windows boot entry: no free Boot#### slot\n";
-        return false;
+    // 3) 写 BootOrder：front=true 放第一位；否则只在"原本没有"时补到末尾
+    std::vector<BYTE> cur;
+    ReadVar(L"BootOrder", cur);
+    std::vector<WORD> ids;
+    bool present = false;
+    for (size_t i = 0; i + 1 < cur.size(); i += 2) {
+        WORD w = 0;
+        memcpy(&w, &cur[i], 2);
+        if (w == v) {
+            if (present)
+                continue;  // 去重
+            present = true;
+            if (!front)
+                ids.push_back(w);  // 非 front：保持原位
+            continue;
+        }
+        ids.push_back(w);
     }
-    if (!BuildAndWrite(num, sig, partNum, start, size, kPath, nullptr, kDesc,
-                       log)) {
-        log += "windows boot entry: write failed\n";
-        return false;
-    }
-    // 3) 挂到 BootOrder 末尾（默认仍先走原有顺序）
+    if (front)
+        ids.insert(ids.begin(), v);
+    else if (!present)
+        ids.push_back(v);
+
     std::vector<BYTE> ord;
-    ReadVar(L"BootOrder", ord);
-    WORD v = (WORD)num;
-    ord.push_back((BYTE)(v & 0xFF));
-    ord.push_back((BYTE)(v >> 8));
+    ord.reserve(ids.size() * 2);
+    for (WORD w : ids) {
+        ord.push_back((BYTE)(w & 0xFF));
+        ord.push_back((BYTE)(w >> 8));
+    }
     SetLastError(0);
     if (!SetVarW(L"BootOrder", kGlobalGuid, ord.data(), (DWORD)ord.size())) {
         log += "windows boot entry: BootOrder write failed err=" +
                std::to_string(GetLastError()) + "\n";
         return false;
     }
-    // 写后读回（安全软件可能吞写，用户 2026-10-27 反馈）
+    // 写后回读：安全软件可能"返回成功但没落盘"（用户 2026-10-27 反馈过）
     std::vector<BYTE> back;
-    bool inOrder = false;
-    if (ReadVar(L"BootOrder", back))
+    bool inOrder = false, first = false;
+    if (ReadVar(L"BootOrder", back)) {
         for (size_t i = 0; i + 1 < back.size(); i += 2) {
             WORD w = 0;
             memcpy(&w, &back[i], 2);
             if (w == v) {
                 inOrder = true;
+                first = (i == 0);
                 break;
             }
         }
-    char line[128];
+    }
+    char line[160];
     snprintf(line, sizeof(line),
-             "windows boot entry: Boot%04X created (order_verified=%d)\n", num,
-             (int)inOrder);
+             "windows boot entry: Boot%04X %s (order_verified=%d first=%d)\n", v,
+             found >= 0 ? "reused" : "created", (int)inOrder, (int)first);
     log += line;
+    if (front && !first) {
+        log += "windows boot entry: could not move to front of BootOrder\n";
+        return false;
+    }
     return inOrder;
+}
+
+void UefiBootOrderSummary(std::vector<std::string>& lines) {
+    // PIT-208："开机到底先启动谁"只能看 BootOrder，不能再靠猜。
+    // 2026-11-02 现场（还原成功却反复重启）缺的就是这份快照。
+    std::string elog;
+    if (!EnableEnvPrivilege(elog))
+        return;
+    std::vector<BYTE> order;
+    if (!ReadVar(L"BootOrder", order))
+        return;
+    const int n = (int)(order.size() / 2);
+    for (int i = 0; i < n; ++i) {
+        WORD v = 0;
+        memcpy(&v, &order[i * 2], 2);
+        char head[96];
+        std::vector<BYTE> b;
+        if (!ReadVar(VarName(v), b)) {
+            snprintf(head, sizeof(head), "Boot%04X <missing>", v);
+            lines.push_back(head);
+            continue;
+        }
+        std::wstring d, dev;
+        if (!ParseOption(b, d, dev)) {
+            snprintf(head, sizeof(head), "Boot%04X <unparsable>", v);
+            lines.push_back(head);
+            continue;
+        }
+        std::string dev8 = Narrow(dev);
+        // dev 里含 HD(...) 节点的原始字节（可打印的会变成乱码），
+        // 从第一个反斜杠起才是真正的文件路径。
+        const size_t bs = dev8.find('\\');
+        if (bs != std::string::npos && bs > 0)
+            dev8 = dev8.substr(bs);
+        if (dev8.size() > 140)
+            dev8 = dev8.substr(0, 137) + "...";
+        const std::string desc = Narrow(d);
+        snprintf(head, sizeof(head), "Boot%04X \"%s\" ", v, desc.c_str());
+        lines.push_back(std::string(head) + dev8);
+    }
 }
 
 bool IsSecureBootEnabled() {
@@ -1276,6 +1372,34 @@ bool VerifyEspBcd(const std::wstring& espRoot, const std::wstring& srcWinDir,
         std::string why;
         if (!BcdEnumShowsOsEntry(out, &why)) {
             detail = Tr("ESP 上的 BCD 不完整：") + why;
+            return false;
+        }
+        // ★ PIT-208（2026-11-02 客户机"还原成功但反复重启"）：光"有条目"不够，
+        //   还要确认**真正会被启动的那个 winload 条目**指向的就是这次还原的分区。
+        //   以前只查"displayorder 非空 + 有 winload"——一个指向别处（甚至指向
+        //   已删除卷）的孤儿条目也能过，于是跳过 bcdboot，机器就起不来。
+        //   目标卷身份认不出来（极简 PE / 无盘符）时放行并记 note，不 fail-closed。
+        std::vector<std::string> volIds;
+        if (srcWinDir.size() >= 2 && srcWinDir[1] == L':') {
+            const std::wstring dl(1, (wchar_t)towupper(srcWinDir[0]));
+            volIds.push_back(Narrow(dl + L":"));  // "C:"
+            wchar_t dosDev[1024] = {};
+            if (QueryDosDeviceW((dl + L":").c_str(), dosDev, 1024) > 0)
+                volIds.push_back(Narrow(dosDev));  // "\Device\HarddiskVolumeN"
+            wchar_t volName[MAX_PATH * 4] = {};
+            const std::wstring mount = dl + L":\\";
+            if (GetVolumeNameForVolumeMountPointW(mount.c_str(), volName,
+                                                  MAX_PATH * 4))
+                volIds.push_back(Narrow(volName));  // "\\?\Volume{guid}\"
+        }
+        std::string vwhy;
+        if (!BcdOsEntryTargetsVolume(out, volIds, &vwhy)) {
+            detail = Tr("ESP 上的 BCD 启动项没有指向本次还原的分区：") + vwhy;
+            return false;
+        }
+        // 同理：UEFI 下默认条目必须是 winload.efi（BIOS 的 .exe 一加载就重启）。
+        if (!BcdOsEntryIsUefiLoader(out, &vwhy)) {
+            detail = Tr("ESP 上的 BCD 不是 UEFI 启动项（将重建）：") + vwhy;
             return false;
         }
     }

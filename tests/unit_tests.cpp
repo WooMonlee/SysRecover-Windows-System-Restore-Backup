@@ -649,6 +649,131 @@ TEST(bcd_enum_shows_os_entry) {
         &why));
 }
 
+// PIT-208：BCD 里"真正会启动的那个 winload 条目"必须指向本次还原的分区。
+// 2026-11-02 客户机：还原 100% 成功、却反复重启 —— 旧校验只看"有 winload 条目"，
+// 指向别处（甚至指向已删除卷）的孤儿条目也能通过，于是跳过 bcdboot。
+TEST(bcd_os_entry_targets_volume) {
+    const std::string healthy =
+        "Windows Boot Manager\n--------------------\n"
+        "identifier              {bootmgr}\n"
+        "device                  partition=\\Device\\HarddiskVolume1\n"
+        "path                    \\EFI\\Microsoft\\Boot\\bootmgfw.efi\n"
+        "default                 {18c8dcd6-bbd4-11f1-9f3c-54ee759ba870}\n"
+        "displayorder            {18c8dcd6-bbd4-11f1-9f3c-54ee759ba870}\n\n"
+        "Windows Boot Loader\n-------------------\n"
+        "identifier              {18c8dcd6-bbd4-11f1-9f3c-54ee759ba870}\n"
+        "device                  partition=C:\n"
+        "path                    \\Windows\\system32\\winload.efi\n"
+        "osdevice                partition=C:\n";
+    std::string why;
+    // ① 指向 C: → 通过
+    CHECK(BcdOsEntryTargetsVolume(healthy, {"c:"}, &why));
+    // ② 卷 GUID 写法也认（bcdedit 在部分机器上写 \?\Volume{...}\）
+    std::string guidBcd = healthy;
+    const std::string kGuid = "\\\\?\\volume{e64606da-eac5-4a41-ac97-0271feb6f113}\\";
+    {
+        const std::string from = "device                  partition=C:";
+        const size_t at = guidBcd.find(from);
+        CHECK(at != std::string::npos);
+        guidBcd.replace(at, from.size(), "device                  partition=" + kGuid);
+    }
+    CHECK(BcdOsEntryTargetsVolume(guidBcd, {kGuid}, &why));
+    // ③ 指向别的分区 → 必须失败（这次客户机的病根）
+    why.clear();
+    CHECK(!BcdOsEntryTargetsVolume(healthy, {"d:"}, &why));
+    CHECK(why.find("partition=C:") != std::string::npos);
+    // ④ 认不出目标卷身份（极简 PE 无盘符）→ 放行，但留 note
+    why.clear();
+    CHECK(BcdOsEntryTargetsVolume(healthy, {}, &why));
+    CHECK(!why.empty());
+    // ⑤ displayorder 指向不存在的条目（孤儿）→ 失败
+    why.clear();
+    CHECK(!BcdOsEntryTargetsVolume(
+        "identifier              {bootmgr}\n"
+        "path                    \\EFI\\Microsoft\\Boot\\bootmgfw.efi\n"
+        "displayorder            {deadbeef-0000-0000-0000-000000000000}\n",
+        {"c:"}, &why));
+    CHECK(!why.empty());
+    // ⑥ displayorder 里只有内存检测（没有 winload）→ 失败
+    why.clear();
+    CHECK(!BcdOsEntryTargetsVolume(
+        "identifier              {bootmgr}\n"
+        "path                    \\EFI\\Microsoft\\Boot\\bootmgfw.efi\n"
+        "displayorder            {memdiag}\n\n"
+        "Windows Memory Tester\n"
+        "identifier              {memdiag}\n"
+        "path                    \\EFI\\Microsoft\\Boot\\memtest.efi\n",
+        {"c:"}, &why));
+    CHECK(!why.empty());
+    // ⑦ 嵌套（{bootmgr} → 另一个 bootmgr → loader）+ 字段名本地化（设备/显示顺序）
+    CHECK(BcdOsEntryTargetsVolume(
+        "\xef\xbb\xbf"
+        "Windows \xe5\x90\xaf\xe5\x8a\xa8\xe7\xae\xa1\xe7\x90\x86\xe5\x99\xa8\n"
+        "identifier              {bootmgr}\n"
+        "\xe8\xae\xbe\xe5\xa4\x87                  partition=\\Device\\HarddiskVolume1\n"
+        "path                    \\EFI\\Microsoft\\Boot\\bootmgfw.efi\n"
+        "\xe6\x98\xbe\xe7\xa4\xba\xe9\xa1\xba\xe5\xba\x8f            {outer}\n\n"
+        "Windows Boot Manager\n"
+        "identifier              {outer}\n"
+        "path                    \\EFI\\Microsoft\\Boot\\bootmgfw.efi\n"
+        "\xe6\x98\xbe\xe7\xa4\xba\xe9\xa1\xba\xe5\xba\x8f            {os}\n\n"
+        "Windows Boot Loader\n"
+        "identifier              {os}\n"
+        "\xe8\xae\xbe\xe5\xa4\x87                  partition=C:\n"
+        "path                    \\Windows\\system32\\winload.efi\n",
+        {"c:"}, nullptr));
+    // ⑧ 没有 device 行（无法判定）→ 放行 + note，不 fail-closed
+    why.clear();
+    CHECK(BcdOsEntryTargetsVolume(
+        "identifier              {bootmgr}\n"
+        "path                    \\EFI\\Microsoft\\Boot\\bootmgfw.efi\n"
+        "displayorder            {os}\n\n"
+        "Windows Boot Loader\n"
+        "identifier              {os}\n"
+        "path                    \\Windows\\system32\\winload.efi\n",
+        {"c:"}, &why));
+    CHECK(!why.empty());
+}
+
+// PIT-208（续）：UEFI 下默认加载器必须是 winload.efi —— BCD 若是 BIOS 模式
+// 建的（winload.exe），bootmgr 一加载就失败，表现为开机立刻重启。
+TEST(bcd_os_entry_is_uefi_loader) {
+    std::string why;
+    const std::string uefiBcd =
+        "identifier              {bootmgr}\n"
+        "path                    \\EFI\\Microsoft\\Boot\\bootmgfw.efi\n"
+        "default                 {current}\n"
+        "displayorder            {current}\n\n"
+        "Windows Boot Loader\n"
+        "identifier              {current}\n"
+        "device                  partition=C:\n"
+        "path                    \\Windows\\system32\\winload.efi\n";
+    CHECK(BcdOsEntryIsUefiLoader(uefiBcd, &why));
+
+    std::string biosBcd = uefiBcd;
+    const size_t at = biosBcd.find("winload.efi");
+    CHECK(at != std::string::npos);
+    biosBcd.replace(at, 11, "winload.exe");
+    why.clear();
+    CHECK(!BcdOsEntryIsUefiLoader(biosBcd, &why));
+    CHECK(why.find("winload.exe") != std::string::npos);
+
+    // default 指向 .efi，displayorder 里另有一个 BIOS 条目 → 以 default 为准
+    const std::string mixed =
+        "identifier              {bootmgr}\n"
+        "path                    \\EFI\\Microsoft\\Boot\\bootmgfw.efi\n"
+        "default                 {current}\n"
+        "displayorder            {current}\n"
+        "                        {legacy}\n\n"
+        "Windows Boot Loader\n"
+        "identifier              {current}\n"
+        "path                    \\Windows\\system32\\winload.efi\n\n"
+        "Windows Boot Loader\n"
+        "identifier              {legacy}\n"
+        "path                    \\Windows\\system32\\winload.exe\n";
+    CHECK(BcdOsEntryIsUefiLoader(mixed, nullptr));
+}
+
 // ────────────────────── relocate（运行目录搬迁目的地选择） ──────────────────────
 // 用户 2026-10-03 规则：系统分区之外的第一顺序可写固定分区；没有则退回系统分区。
 

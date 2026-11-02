@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：760/792 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：793/794 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n已登记为「下次开机自动清除」（重启后会自动删完）。': '\n\nThe remaining files are scheduled for automatic removal at the next boot (they will be gone after a reboot).',
@@ -65,6 +65,8 @@ EN = {
     'ESP 300MB / MSR 16MB（自动创建）': 'ESP 300MB / MSR 16MB (created automatically)',
     'ESP 上没有 \\EFI\\Microsoft\\Boot\\BCD': 'ESP has no \\EFI\\Microsoft\\Boot\\BCD',
     'ESP 上的 BCD 不完整：': 'ESP BCD is incomplete: ',
+    'ESP 上的 BCD 不是 UEFI 启动项（将重建）：': 'The BCD on the ESP is not a UEFI boot entry (will be rebuilt): ',
+    'ESP 上的 BCD 启动项没有指向本次还原的分区：': 'The boot entry on the ESP does not point at the partition restored this time: ',
     'ESP 上缺少引导字体（Fonts\\*_boot.ttf）': 'ESP is missing the boot fonts (Fonts\\*_boot.ttf)',
     'ESP 上缺少引导文件：': 'ESP is missing boot file(s): ',
     'ESP 上缺少引导语言资源目录（zh-CN / en-US）': 'ESP is missing the boot language resource directory (zh-CN / en-US)',

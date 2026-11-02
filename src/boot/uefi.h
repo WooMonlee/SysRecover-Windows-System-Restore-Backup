@@ -6,6 +6,7 @@
 // 条目按固定英文/中文描述识别；可持久（出现在固件启动菜单，Windows 坏了也能进）
 // 也可 BootNext 单次启动。删除即抹掉 Boot#### + BootOrder 里的一项。
 #include <string>
+#include <vector>
 
 namespace sysrecover {
 
@@ -48,7 +49,16 @@ bool CleanupStaleUefiEntries(std::string& log);
 // 用途：自足 UEFI 引导（2026-10-27，用户反馈 2）—— 极简 PE 里没有 bcdboot，
 // 没人给固件写这个条目；NVRAM 空/无有效项时固件会直接走 PXE/兜底路径。
 // 已存在（描述匹配）则只补 BootOrder；失败仅记日志（返回 false = 非致命）。
-bool EnsureWindowsBootEntry(const std::wstring& espRoot, std::string& log);
+// front=true（PIT-208）：把它**挪到 BootOrder 第一位**。还原/修引导后必须
+//   这样——否则固件可能先去启动第三方恢复工具/已删内核的陈旧条目，
+//   表现就是"还原成功、但开机反复重启进不了系统"。
+bool EnsureWindowsBootEntry(const std::wstring& espRoot, std::string& log,
+                           bool front = false);
+
+// 固件 BootOrder 快照（PIT-208）：每行 "Boot0001 \"描述\" 设备路径…"，
+// 按 BootOrder 顺序；读不到时返回空。给 diag / 日志用——"到底先启动谁"
+// 只能靠这个看，不能再靠猜。
+void UefiBootOrderSummary(std::vector<std::string>& lines);
 
 // 固件 Secure Boot 是否开启（读 `SecureBoot` 固件变量）。
 // 开着时：固件只加载微软签名的镜像 → 我们的内核（未签名）会被拒，

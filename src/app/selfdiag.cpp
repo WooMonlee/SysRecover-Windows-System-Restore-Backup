@@ -670,6 +670,21 @@ int DiagReportText(std::string& out, const std::vector<DiskInfo>* disks) {
         snprintf(buf, sizeof(buf), "[diag] uefi boot entry=%s (%s)\n",
                  installed ? "installed" : "not installed", detail.c_str());
         out += buf;
+        // PIT-208：BootOrder 快照 —— 开机"先启动谁"是还原后不进系统的头号嫌疑，
+        // 以前日志里只有"我们的条目在不在"，没有固件真实顺序。
+        {
+            std::vector<std::string> bo;
+            sysrecover::UefiBootOrderSummary(bo);
+            for (size_t i = 0; i < bo.size(); ++i) {
+                out += "[diag] uefi bootorder: ";
+                if (i == 0)
+                    out += "(first) ";
+                out += bo[i];
+                out += "\n";
+            }
+            if (bo.empty())
+                out += "[diag] uefi bootorder: <empty or unreadable>\n";
+        }
         // P6：固件信任哪张微软 UEFI CA（决定我们的救援环境能不能起来）
         int ca = sysrecover::FirmwareTrustedUefiCas();
         snprintf(buf, sizeof(buf), "[diag] firmware db: CA2011=%s CA2023=%s\n",
