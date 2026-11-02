@@ -774,6 +774,70 @@ TEST(bcd_os_entry_is_uefi_loader) {
     CHECK(BcdOsEntryIsUefiLoader(mixed, nullptr));
 }
 
+// PIT-209：菜单里"幽灵系统"的清理依赖两份信息：
+//   ① 谁在 displayorder 里（会出现在启动菜单）、谁是 default（默认进哪个）
+//   ② 默认项指向哪个分区 —— 默认项坏了、旁边挂着个好条目时**不能**算"有效"
+TEST(bcd_list_entries_and_default_preference) {
+    const std::string text =
+        "Windows Boot Manager\r\n--------------------\r\n"
+        "identifier              {bootmgr}\r\n"
+        "device                  partition=\\Device\\HarddiskVolume1\r\n"
+        "path                    \\EFI\\Microsoft\\Boot\\bootmgfw.efi\r\n"
+        "default                 {dead}\r\n"
+        "displayorder            {dead}\r\n"
+        "                        {good}\r\n"
+        "                        {memdiag}\r\n\r\n"
+        "Windows Boot Loader\r\n--------------------\r\n"
+        "identifier              {dead}\r\n"
+        "device                  partition=D:\r\n"
+        "path                    \\Windows\\system32\\winload.efi\r\n\r\n"
+        "Windows Boot Loader\r\n--------------------\r\n"
+        "identifier              {good}\r\n"
+        "device                  partition=C:\r\n"
+        "path                    \\Windows\\system32\\winload.efi\r\n\r\n"
+        "Windows Memory Tester\r\n--------------------\r\n"
+        "identifier              {memdiag}\r\n"
+        "path                    \\EFI\\Microsoft\\Boot\\memtest.efi\r\n";
+
+    const std::vector<BcdEntryInfo> all = BcdListEntries(text);
+    CHECK_EQ((int)all.size(), 4);  // bootmgr + 2 loader + memtest
+    int loaders = 0, reachable = 0, def = 0, nonLoaderReachable = 0;
+    for (const auto& e : all) {
+        if (e.isLoader) ++loaders;
+        if (e.reachable) ++reachable;
+        if (e.isDefault) ++def;
+        if (!e.isLoader && e.reachable) ++nonLoaderReachable;
+    }
+    CHECK_EQ(loaders, 2);
+    CHECK_EQ(reachable, 3);            // {dead} {good} {memdiag}
+    CHECK_EQ(def, 1);                  // {dead}
+    CHECK_EQ(nonLoaderReachable, 1);   // memtest 也在菜单里
+
+    const std::vector<BcdEntryInfo> os = BcdListOsEntries(text);
+    CHECK_EQ((int)os.size(), 2);
+    bool sawDead = false, sawGood = false;
+    for (const auto& e : os) {
+        if (e.id == "{dead}") {
+            sawDead = true;
+            CHECK(e.isDefault);
+            CHECK(e.reachable);
+            CHECK(e.device.find("D:") != std::string::npos);
+        }
+        if (e.id == "{good}") {
+            sawGood = true;
+            CHECK(!e.isDefault);
+            CHECK(e.reachable);
+        }
+    }
+    CHECK(sawDead && sawGood);
+
+    // ★ 默认项指向 D:（坏），displayorder 里还有个 C: 的好条目：
+    //   目标卷是 C: 时**必须判失败**（以前取并集会误判"有效"→ 跳过重建）
+    std::string why;
+    CHECK(!BcdOsEntryTargetsVolume(text, {"c:"}, &why));
+    CHECK(BcdOsEntryTargetsVolume(text, {"d:"}, &why));
+}
+
 // ────────────────────── relocate（运行目录搬迁目的地选择） ──────────────────────
 // 用户 2026-10-03 规则：系统分区之外的第一顺序可写固定分区；没有则退回系统分区。
 

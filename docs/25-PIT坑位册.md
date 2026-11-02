@@ -2012,3 +2012,43 @@
   · 现场修复口径（给用户）：PE 里跑 `SysRecover.exe repair-boot`（会重建/校验 BCD +
     把 Windows Boot Manager 置顶），再到固件里删掉多余启动项。**不要**只重装系统 ——
     数据面本来就没错。
+
+### PIT-209
+
+- PIT-209 **引导链复审：幽灵启动项 / 强制启动菜单 / 死掉的临时启动项**
+  （`0.9.87`，2026-11-02 用户反馈"只有一个系统，还原后却停在选择操作系统"）
+  · 根因链：
+    ① `bcdboot` **只新增/更新自己的条目，不会删旧条目** —— 机器上任何历史遗留
+       （换过系统、装过第三方恢复工具、PE 里手工加过）都会留在 `displayorder` 里，
+       还原后照样出现在启动菜单；旧系统分区已经不在了就是"幽灵选项"；
+    ② `{bootmgr} displaybootmenu Yes` 会让 bootmgr **即使只有一个条目也停住等**；
+    ③ 我们的 `VerifyEspBcd()` / `BiosBcdLooksValid()` 只判"有条目"（BIOS 那段更弱，
+       只看 `{default}` 里有没有 "winload" 字样）——默认项指向别处也能过；
+    ④ `CleanupStaleUefiEntries()` **从来没被调用**（死代码），而且它会把临时启动项
+       直接删掉、不检查有没有待执行任务（真调起来会害用户白重启）；
+    ⑤ 固件 `BootOrder` 里可能有多个同名 `Windows Boot Manager`（装过多次），
+       我们只补一条、从不去重；
+    ⑥ 救援层只删 ESP 上的临时内核（`vmlinuz-zjtemp.efi`），**NVRAM 里的 `Boot####`
+       还指着它** —— 固件每次开机都先去加载一个不存在的文件（有的固件就此卡住/
+       反复重启）；`bootorder.bak` 写了但**没人读**（死资产）。
+  · 修复：
+    - `bcd_parse`：新增 `BcdListEntries()` / `BcdListOsEntries()`（谁在启动菜单里、
+      谁是 default、是不是 winload 条目），纯文本、语言无关；
+      `BcdOsEntryTargetsVolume()` 改为**优先只看 default**（默认项坏了、旁边挂着好
+      条目时不能再判"有效"）；`BcdOsEntryIsUefiLoader()` 同规则；
+    - `bcd`：新增 `VerifyBcdStore()`（UEFI/BIOS 共用一套产物断言）、
+      `BcdPruneDeadEntries()`（只删**能确证**失效的：分区已不存在 / 分区在但没有
+      `\Windows`；**默认项永不删**、**指向本次目标系统的永不删**、判断不了的一律
+      保留）、`BcdQuietSingleOsMenu()`（displayorder 只有 1 条 Windows 时才收敛成
+      单条 + `timeout 0` + 清 `displaybootmenu`，有 GRUB4DOS 菜单/多系统就让路）；
+    - 调用点：就地还原（UEFI/BIOS）、暂存还原（UEFI）、`repair-boot`（UEFI/BIOS）；
+    - `EnsureWindowsBootEntry()` 增加**同 ESP 去重**（描述 + `bootmgfw.efi` + HD
+      节点起止 LBA/GUID 全等才删；别的硬盘上的条目不动）；
+    - `CleanupStaleUefiEntries()` 加待执行任务门禁，并在 `repair-boot` 里真正调用；
+    - 暂存时把 `Boot####` 编号写进 `<ESP>\EFI\ZJRESTORE\temp-entry.txt`；救援层
+      `init` 在 disarm 时**删掉这条 NVRAM 变量**（删前核对变量内容含 `zjtemp`，
+      编号被复用也不会误删别人）。
+  · 实测（本机真实 BCD 导出副本，不碰在用引导）：
+    `BcdPruneDeadEntries` 删掉指向 D: 的死条目、保留默认项，`reachable_os=1`；
+    `BcdQuietSingleOsMenu` 把 `displayorder` 收敛成一条 + `timeout 0`；
+    两条以上条目时**拒绝**收敛（`menu: keep`）。

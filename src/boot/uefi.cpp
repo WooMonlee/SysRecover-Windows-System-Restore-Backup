@@ -18,6 +18,7 @@
 #include "bcd_parse.h"
 #include "bootnames.h"
 #include "../common/process.h"
+#include "../common/relocate.h"  // LogBaseDir()：清理前确认没有待执行的暂存任务
 #include "../common/version.h"
 #include "../common/zip.h"  // Crc32（部署后校验，A6）
 
@@ -109,6 +110,33 @@ BOOL SetVarW(LPCWSTR name, LPCWSTR guid, PVOID data, DWORD size) {
     if (g_setEx)
         return g_setEx(name, guid, data, size, 0x7);
     return SetFirmwareEnvironmentVariableW(name, guid, data, size);
+}
+
+// 删固件变量（= Set 一个 0 长度的值）。
+bool DeleteVarW(const std::wstring& name) {
+    SetLastError(0);
+    return SetVarW(name.c_str(), kGlobalGuid, nullptr, 0) != FALSE;
+}
+
+// Boot#### 的 HD(...) 节点是不是指向"这块 ESP"（起止 LBA + 分区 GUID 三者全等）。
+// 用于去重：只删"同一块盘同一分区上、描述和路径都一样"的多余条目，
+// 别的硬盘上的 Windows Boot Manager 一律不碰。
+bool OptionHdMatches(const std::vector<BYTE>& b, const GUID& sig,
+                     unsigned long long partStart, unsigned long long partSize) {
+    if (b.size() < 8) return false;
+    size_t off = 6;  // Attributes(4) + FilePathListLength(2) 之后是描述
+    while (off + 2 <= b.size()) {
+        wchar_t c = 0;
+        memcpy(&c, &b[off], 2);
+        off += 2;
+        if (c == 0) break;
+    }
+    if (off + sizeof(EfiHdNode) > b.size()) return false;
+    EfiHdNode hd{};
+    memcpy(&hd, &b[off], sizeof(hd));
+    if (hd.type != 4 || hd.subType != 1) return false;
+    return hd.partStart == partStart && hd.partSize == partSize &&
+           memcmp(&hd.signature, &sig, sizeof(GUID)) == 0;
 }
 
 // 写固件变量需要 SeSystemEnvironmentPrivilege（管理员默认持有但**未启用**）。
@@ -842,6 +870,23 @@ bool InstallUefiBootEntry(const std::wstring& espRoot,
             log += "bootorder.bak saved (" + std::to_string(orig.size()) +
                    "B)\n";
         }
+        // PIT-209：把条目号留给 Linux 救援层 —— 它救完/失败重启前要能把这
+        // 条**指向已删内核**的 Boot#### 从 NVRAM 里删掉，否则固件每次开机
+        // 都先去加载一个不存在的文件（有的固件就此卡住/反复重启）。
+        {
+            char name[32];
+            snprintf(name, sizeof(name), "Boot%04X", num);
+            const std::wstring mp = espRoot + L"EFI\\ZJRESTORE\\temp-entry.txt";
+            HANDLE hm = CreateFileW(mp.c_str(), GENERIC_WRITE, 0, nullptr,
+                                    CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                                    nullptr);
+            if (hm != INVALID_HANDLE_VALUE) {
+                DWORD wr = 0;
+                WriteFile(hm, name, (DWORD)strlen(name), &wr, nullptr);
+                CloseHandle(hm);
+                log += std::string("temp entry marker: ") + name + "\n";
+            }
+        }
         log += "staged entry Boot" + std::to_string(num) +
                " promoted to BootOrder[0]\n";
     }
@@ -957,6 +1002,14 @@ bool UefiTempBootStateOk(std::string& detail) {
 // 场景：以前暂存过、救援没跑成、救援层已把 vmlinuz-zjtemp.efi 删掉 →
 // 固件里留一个永远加载失败、还顶在 BootOrder 首位的项（每次开机白等几秒）。
 bool CleanupStaleUefiEntries(std::string& log) {
+    // ★ PIT-209：这个函数会把"临时启动项"整条删掉 —— 如果此刻正有一个
+    //   **待执行**的暂存还原（重启后要进救援），删掉它 = 用户白重启一次。
+    //   以前只靠调用方自觉（注释这么写），现在自己守一道门。
+    const std::wstring pend = LogBaseDir() + L"\\logs\\pending-restore.txt";
+    if (GetFileAttributesW(pend.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        log += "stale cleanup skipped: pending staged restore exists\n";
+        return false;
+    }
     if (!EnableEnvPrivilege(log)) return false;
     int removed = 0;
     for (int guard = 0; guard < 8; ++guard) {
@@ -1084,6 +1137,37 @@ bool EnsureWindowsBootEntry(const std::wstring& espRoot, std::string& log,
         snprintf(line, sizeof(line), "windows boot entry: Boot%04X created\n",
                  num);
         log += line;
+    }
+
+    // 2b) PIT-209：清掉**同一块 ESP 上**重复的「Windows Boot Manager」条目
+    //     （装过多次/固件自己加过）—— 固件启动菜单里会出现好几个同名项，
+    //     还有一个可能指向旧 ESP。只删"描述 + bootmgfw 路径 + 同一分区 HD 节点"
+    //     三者全等的；别的硬盘上的条目一律不碰。
+    {
+        std::vector<BYTE> ord0;
+        if (ReadVar(L"BootOrder", ord0)) {
+            int dup = 0;
+            for (size_t i = 0; i + 1 < ord0.size(); i += 2) {
+                WORD w = 0;
+                memcpy(&w, &ord0[i], 2);
+                if (w == v) continue;
+                std::vector<BYTE> b;
+                if (!ReadVar(VarName(w), b)) continue;
+                std::wstring d, dev;
+                if (!ParseOption(b, d, dev)) continue;
+                if (d != kDesc) continue;
+                if (dev.find(L"bootmgfw.efi") == std::wstring::npos) continue;
+                if (!OptionHdMatches(b, sig, start, size)) continue;
+                if (DeleteVarW(VarName(w))) {
+                    ++dup;
+                    log += "windows boot entry: duplicate Boot" +
+                           std::to_string(w) + " removed\n";
+                }
+            }
+            if (dup > 0)
+                log += "windows boot entry: removed " + std::to_string(dup) +
+                       " duplicate(s)\n";
+        }
     }
 
     // 3) 写 BootOrder：front=true 放第一位；否则只在"原本没有"时补到末尾
@@ -1353,7 +1437,7 @@ bool VerifyEspBcd(const std::wstring& espRoot, const std::wstring& srcWinDir,
         detail = Tr("ESP 上没有 \\EFI\\Microsoft\\Boot\\BCD");
         return false;
     }
-    // ② bcdedit 能不能读出"有 displayorder + 有 winload 条目"
+    // ② bcdedit 能不能读出"有 displayorder + 有 winload 条目 + 默认项指向本分区"
     // 0.9.33：精简 PE（如 NewBee）没有 bcdedit.exe，但 bcdboot 可用；此时
     // 仍做文件级检查，避免把能启动的 PE 因缺少枚举工具误判成失败。
     std::string out;
@@ -1362,44 +1446,13 @@ bool VerifyEspBcd(const std::wstring& espRoot, const std::wstring& srcWinDir,
         detail = "bcdedit.exe missing; ESP BCD file-level check only";
         LogWarn("ESP BCD verify: bcdedit.exe missing, skip enum check");
     } else {
-        int rc = RunProcess(bcdedit,
-                            L"/store \"" + bcd + L"\" /enum all", out);
-        if (rc != 0) {
-            detail = Tr("bcdedit 读取 ESP 上的 BCD 失败（rc=") +
-                     std::to_string(rc) + Tr("）");
-            return false;
-        }
-        std::string why;
-        if (!BcdEnumShowsOsEntry(out, &why)) {
-            detail = Tr("ESP 上的 BCD 不完整：") + why;
-            return false;
-        }
-        // ★ PIT-208（2026-11-02 客户机"还原成功但反复重启"）：光"有条目"不够，
-        //   还要确认**真正会被启动的那个 winload 条目**指向的就是这次还原的分区。
-        //   以前只查"displayorder 非空 + 有 winload"——一个指向别处（甚至指向
-        //   已删除卷）的孤儿条目也能过，于是跳过 bcdboot，机器就起不来。
-        //   目标卷身份认不出来（极简 PE / 无盘符）时放行并记 note，不 fail-closed。
-        std::vector<std::string> volIds;
-        if (srcWinDir.size() >= 2 && srcWinDir[1] == L':') {
-            const std::wstring dl(1, (wchar_t)towupper(srcWinDir[0]));
-            volIds.push_back(Narrow(dl + L":"));  // "C:"
-            wchar_t dosDev[1024] = {};
-            if (QueryDosDeviceW((dl + L":").c_str(), dosDev, 1024) > 0)
-                volIds.push_back(Narrow(dosDev));  // "\Device\HarddiskVolumeN"
-            wchar_t volName[MAX_PATH * 4] = {};
-            const std::wstring mount = dl + L":\\";
-            if (GetVolumeNameForVolumeMountPointW(mount.c_str(), volName,
-                                                  MAX_PATH * 4))
-                volIds.push_back(Narrow(volName));  // "\\?\Volume{guid}\"
-        }
+        // 统一产物断言（PIT-208/209）：displayorder 非空 + 有 winload +
+        // **默认项指向本次还原的分区** + 加载器必须是 winload.efi。
+        // 以前只查"有条目"，指向别处（甚至指向已删除卷）的孤儿条目也能过，
+        // 于是跳过 bcdboot，机器就起不来（2026-11-02 客户机）。
         std::string vwhy;
-        if (!BcdOsEntryTargetsVolume(out, volIds, &vwhy)) {
-            detail = Tr("ESP 上的 BCD 启动项没有指向本次还原的分区：") + vwhy;
-            return false;
-        }
-        // 同理：UEFI 下默认条目必须是 winload.efi（BIOS 的 .exe 一加载就重启）。
-        if (!BcdOsEntryIsUefiLoader(out, &vwhy)) {
-            detail = Tr("ESP 上的 BCD 不是 UEFI 启动项（将重建）：") + vwhy;
+        if (!VerifyBcdStore(bcd, srcWinDir, /*uefi=*/true, vwhy)) {
+            detail = Tr("ESP 上的 BCD 不可用：") + vwhy;
             return false;
         }
     }

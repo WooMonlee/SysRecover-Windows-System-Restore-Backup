@@ -141,6 +141,7 @@ struct BcdRecord {
     std::vector<std::string> paths;     // winload 路径（原样）
     std::vector<std::string> order;     // displayorder + default 里的 GUID
     std::string def;                    // default 指向的 GUID（可空）
+    std::string desc;                   // description（可空）
     bool isLoader = false;              // path 含 winload.
     bool isBootMgr = false;             // path 含 bootmgfw / bootmgr
 };
@@ -207,6 +208,8 @@ std::vector<BcdRecord> ParseRecords(const std::string& text) {
                     r.def = g;
             }
         }
+        if (KeyIs(ll.key, "description", nullptr))
+            r.desc = ll.value;
         // 路径值不本地化：直接按内容认
         const std::string lowv = Lower(ll.value);
         if (lowv.find("winload.") != std::string::npos) {
@@ -222,9 +225,10 @@ std::vector<BcdRecord> ParseRecords(const std::string& text) {
 }
 
 struct ReachResult {
-    std::vector<const BcdRecord*> loaders;  // 可达的 Windows Boot Loader
-    const BcdRecord* defaultRec = nullptr;  // {bootmgr} 的 default 解析结果
-    int dangling = 0;                       // displayorder 指向不存在的条目
+    std::vector<const BcdRecord*> loaders;   // 可达的 Windows Boot Loader
+    std::vector<const BcdRecord*> visited;   // 可达的全部条目（含 memtest 等）
+    const BcdRecord* defaultRec = nullptr;   // {bootmgr} 的 default 解析结果
+    int dangling = 0;                        // displayorder 指向不存在的条目
     bool hasOrder = false;
 };
 
@@ -260,8 +264,10 @@ ReachResult CollectReachable(const std::vector<BcdRecord>& recs) {
     // 极少见：根记录自己就是加载器（BCD 里没有 {bootmgr} 时）
     if (!rr.hasOrder)
         for (const auto* r : roots)
-            if (r->isLoader)
+            if (r->isLoader) {
                 rr.loaders.push_back(r);
+                rr.visited.push_back(r);
+            }
 
     std::vector<std::string> seen;
     while (!queue.empty()) {
@@ -282,6 +288,7 @@ ReachResult CollectReachable(const std::vector<BcdRecord>& recs) {
             ++rr.dangling;
             continue;
         }
+        rr.visited.push_back(r);
         if (r->isLoader)
             rr.loaders.push_back(r);
         for (const auto& g : r->order)
@@ -319,8 +326,14 @@ bool BcdOsEntryTargetsVolume(const std::string& enumText,
     }
 
     // 收集实际 device 值；有 device 行才可比。
+    // ★ 优先只看 {bootmgr} 的 default：开机默认进的就是它。以前对"所有可达
+    //   条目"取并集 —— 默认项指向死分区、旁边挂着一个好条目时也会判"有效"，
+    //   结果跳过重建、开机直接失败。
+    std::vector<const BcdRecord*> check = rr.loaders;
+    if (rr.defaultRec && rr.defaultRec->isLoader)
+        check.assign(1, rr.defaultRec);
     std::vector<std::string> devs;
-    for (const auto* r : rr.loaders)
+    for (const auto* r : check)
         for (const auto& d : r->devices)
             devs.push_back(d);
     if (devs.empty()) {
@@ -382,6 +395,42 @@ bool BcdOsEntryIsUefiLoader(const std::string& enumText, std::string* why) {
                              : check.front()->paths.front();
     return fail("boot loader path is \"" + sample +
                 "\", not winload.efi (BCD was built for BIOS boot?)");
+}
+
+std::vector<BcdEntryInfo> BcdListEntries(const std::string& enumText) {
+    std::vector<BcdEntryInfo> out;
+    if (enumText.empty())
+        return out;
+    const std::vector<BcdRecord> recs = ParseRecords(enumText);
+    if (recs.empty())
+        return out;
+    const ReachResult rr = CollectReachable(recs);
+    const std::string defId =
+        rr.defaultRec ? Lower(rr.defaultRec->id) : std::string();
+
+    for (const auto& r : recs) {
+        BcdEntryInfo e;
+        e.id = r.id;
+        e.device = r.devices.empty() ? std::string() : r.devices.front();
+        e.path = r.paths.empty() ? std::string() : r.paths.front();
+        e.description = r.desc;
+        e.isLoader = r.isLoader;
+        for (const auto* L : rr.visited)
+            if (L == &r)
+                e.reachable = true;
+        e.isDefault = !defId.empty() && Lower(r.id) == defId;
+        out.push_back(e);
+    }
+    return out;
+}
+
+std::vector<BcdEntryInfo> BcdListOsEntries(const std::string& enumText) {
+    std::vector<BcdEntryInfo> all = BcdListEntries(enumText);
+    std::vector<BcdEntryInfo> out;
+    for (const auto& e : all)
+        if (e.isLoader)
+            out.push_back(e);
+    return out;
 }
 
 }  // namespace sysrecover

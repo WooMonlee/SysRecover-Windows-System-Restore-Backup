@@ -142,4 +142,50 @@ bool BcdExport(const std::wstring& backupPath);
 // 直到用本函数关闭（或用户自己 msconfig 取消），调用方必须把两个方向都做出来。
 bool BcdSetSafeBoot(bool enable, std::string& log);
 
+// ── 任意 BCD 存储（/store）的操作：产物断言与死条目清理（PIT-209）──────
+// UEFI 的库是 <ESP>\EFI\Microsoft\Boot\BCD；BIOS 的库是 <目标>:\Boot\BCD。
+// 注意：不指定 /store 时 bcdedit 操作的是**正在运行的系统**的库 —— 在 PE 里
+// 那根本不是我们要修的那一份（PIT-209 现场：PE 里枚举的是 X: 的库）。
+
+// `bcdedit /store <path> /enum all` → UTF-8 文本。失败返回 false（log 留原因）。
+bool BcdEnumStore(const std::wstring& storePath, std::string& out,
+                  std::string& log);
+
+// 删除存储里的一个条目（/delete {GUID} /f）。
+bool BcdDeleteEntry(const std::wstring& storePath, const std::wstring& guid,
+                    std::string& log);
+
+// `{bootmgr}` 元素的设置/删除（timeout / displaybootmenu / displayorder）。
+bool BcdSetStoreBootmgr(const std::wstring& storePath, const wchar_t* element,
+                        const wchar_t* value, std::string& log);
+bool BcdDelStoreBootmgr(const std::wstring& storePath, const wchar_t* element,
+                        std::string& log);
+
+// 对任意存储做**统一产物断言**（UEFI/BIOS 共用）：
+//   ① displayorder 非空 + 有 winload 条目；
+//   ② 默认启动项的 device 指向 winDir 所在分区（列不出来时放行并记 note）；
+//   ③ uefi=true 时还要求默认加载器是 winload.efi。
+// BIOS 模板 BCD 的 device 是 `boot`（随固件走），不做分区校验。
+bool VerifyBcdStore(const std::wstring& storePath, const std::wstring& winDir,
+                    bool uefi, std::string& detail);
+
+// 清理"死启动项"（PIT-209：还原/修引导后只剩一个系统、菜单里却有幽灵选项）：
+//   逐条看 displayorder 里的条目，**默认项永不删除**，只删能确证失效的：
+//     · 目标分区已不存在（设备打不开）        → 删
+//     · 目标分区存在但没有 \Windows（数据盘）  → 删（仅 Windows 加载器）
+//     · 判断不了（无盘符/离线/枚举不到）      → 保留（宁可留，不误删）
+//   我们自己的条目（ZJRESTORE / SysRecover）一律不动。
+// targetWinDir = 本次还原/修复的目标系统目录（如 L"C:\\Windows"）：
+//   指向它的条目**永不删除**（哪怕文件暂时读不到 —— BitLocker/离线也不误杀）。
+// outReachable：清完后仍在启动顺序里的 Windows 加载器条数（-1 = 判定失败）。
+// 返回删除条数（-1 = 枚举失败）。
+int BcdPruneDeadEntries(const std::wstring& storePath,
+                        const std::wstring& targetWinDir, int* outReachable,
+                        std::string& log);
+
+// 只剩一个 Windows 系统时，别让它停在"选择操作系统"菜单：
+//   displayorder 收敛成这一条 + `{bootmgr} timeout 0` + 清 displaybootmenu。
+// 返回 true = 已经收敛（或本来就只有一个）。
+bool BcdQuietSingleOsMenu(const std::wstring& storePath, std::string& log);
+
 }  // namespace sysrecover

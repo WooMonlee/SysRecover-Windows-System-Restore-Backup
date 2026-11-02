@@ -464,35 +464,37 @@ bool AcquireEspRoot(std::wstring& espRoot, bool& guidMatched, std::string& log,
 // 2026-10-27（用户反馈 2）：极简 PE 没有 bcdedit.exe → **退化为文件级判定**
 // （BCD 里 UTF-16LE 出现 winload 即认为有条目），否则永远判 invalid、
 // 白白去跑不存在的 bcdboot。
+// PIT-209：有 bcdedit 时用**与 UEFI 同一套**产物断言（displayorder + winload +
+// 默认项指向本分区）——以前只看 `{default}` 里有没有 "winload" 字样，指向
+// D: 的旧条目也能过。
 bool BiosBcdLooksValid(wchar_t letter, std::string& detail) {
     std::wstring root = std::wstring(1, letter) + L":\\";
     bool bootmgr = GetFileAttributesW((root + L"bootmgr").c_str()) !=
                    INVALID_FILE_ATTRIBUTES;
     std::wstring bcdPath = root + L"Boot\\BCD";
     bool bcd = GetFileAttributesW(bcdPath.c_str()) != INVALID_FILE_ATTRIBUTES;
-    std::string out;
-    int rc = 0;
     bool winload = false;
     bool haveBcdEdit = false;
     if (bcd) {
         const std::wstring bcdedit = SysToolPath(L"bcdedit.exe");
         haveBcdEdit = GetFileAttributesW(bcdedit.c_str()) != INVALID_FILE_ATTRIBUTES;
         if (haveBcdEdit) {
-            rc = RunProcess(bcdedit,
-                            L"/store " + bcdPath + L" /enum {default}", out);
-            winload = rc == 0 && out.find("winload") != std::string::npos;
+            std::string vd;
+            winload = VerifyBcdStore(bcdPath,
+                                     std::wstring(1, letter) + L":\\Windows",
+                                     /*uefi=*/false, vd);
+            detail = std::string("verify=") + (winload ? "ok" : "fail") +
+                     (vd.empty() ? "" : (" (" + vd + ")"));
         } else {
             std::string fd;
             winload = BcdFileLooksUsable(bcdPath, fd);
-            out = fd;
+            detail = fd;
         }
     }
     detail = "bootmgr=" + std::to_string((int)bootmgr) +
              " bcd=" + std::to_string((int)bcd) +
              " bcdedit=" + std::to_string((int)haveBcdEdit) +
-             " enum_rc=" + std::to_string(rc) +
-             " winload=" + std::to_string((int)winload) +
-             (out.empty() ? "" : " (" + out + ")");
+             " winload=" + std::to_string((int)winload) + " " + detail;
     return bootmgr && bcd && winload;
 }
 
@@ -726,6 +728,21 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
                         return 1;
                     }
                 }
+                // PIT-209：先清"幽灵启动项"（分区已删 / 分区里没有 Windows），
+                // 否则"只有一个系统"的机器也会在开机时停在选择菜单上。
+                {
+                    const std::wstring store =
+                        espRoot + L"EFI\\Microsoft\\Boot\\BCD";
+                    std::string plog, qlog;
+                    int osLeft = -1;
+                    const int pruned =
+                        BcdPruneDeadEntries(store, winDir, &osLeft, plog);
+                    LogInfo("bcd prune (uefi in-place): removed=" +
+                            std::to_string(pruned) + " reachable_os=" +
+                            std::to_string(osLeft) + "\n" + plog);
+                    BcdQuietSingleOsMenu(store, qlog);
+                    LogInfo("bcd menu policy (uefi in-place): " + qlog);
+                }
                 // PIT-208：不论"跳过 bcdboot"还是"重建"，都要确保固件里有指向
                 // Windows 的条目，并且**排在 BootOrder 第一位** —— 否则还原后
                 // 固件可能先去启动第三方恢复工具/已删内核的陈旧条目，表现就是
@@ -780,6 +797,22 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
                     }
                     if (!BiosBcdLooksValid(letter[0], vd))
                         LogWarn("BIOS boot verify note: " + vd);
+                }
+                // PIT-209：清"幽灵启动项" + 单系统菜单收敛（BIOS 的库在
+                // <目标>:\Boot\BCD；装了我们的常驻菜单时 displayorder 有 2 条，
+                // BcdQuietSingleOsMenu 会自己让路）。
+                {
+                    const std::wstring store =
+                        std::wstring(1, letter[0]) + L":\\Boot\\BCD";
+                    std::string plog, qlog;
+                    int osLeft = -1;
+                    const int pruned =
+                        BcdPruneDeadEntries(store, winDir, &osLeft, plog);
+                    LogInfo("bcd prune (bios in-place): removed=" +
+                            std::to_string(pruned) + " reachable_os=" +
+                            std::to_string(osLeft) + "\n" + plog);
+                    BcdQuietSingleOsMenu(store, qlog);
+                    LogInfo("bcd menu policy (bios in-place): " + qlog);
                 }
                 // 分区引导区/磁盘 MBR 代码：format.com 之后不保证是微软引导代码，
                 // 而 BIOS 引导缺了它就是黑屏光标闪（PIT-053）。**非致命**：安全软件
@@ -2991,6 +3024,23 @@ int StageRestoreImpl(const RestoreRequest& req, std::string& err,
                         LogError(err);
                         return 1;
                     }
+                    // PIT-209：清"幽灵启动项"；**没装常驻菜单**时再把单系统
+                    // 菜单收敛掉（装了菜单要保留 timeout>=1，用户才选得到）。
+                    {
+                        const std::wstring store =
+                            espRoot + L"EFI\\Microsoft\\Boot\\BCD";
+                        std::string plog, qlog;
+                        int osLeft = -1;
+                        const int pruned =
+                            BcdPruneDeadEntries(store, winDir, &osLeft, plog);
+                        LogInfo("bcd prune (uefi staged): removed=" +
+                                std::to_string(pruned) + " reachable_os=" +
+                                std::to_string(osLeft) + "\n" + plog);
+                        if (!menuEntry) {
+                            BcdQuietSingleOsMenu(store, qlog);
+                            LogInfo("bcd menu policy (uefi staged): " + qlog);
+                        }
+                    }
                     // PIT-208：固件里的 "Windows Boot Manager" 必须在 BootOrder
                     // 第一位 —— 否则重启/还原后固件可能先启第三方恢复工具或
                     // 已删内核的陈旧条目（2026-11-02 客户机"反复重启"）。
@@ -3990,6 +4040,19 @@ int RepairBoot(int disk, int part, std::string& msg) {
             LogInfo("repair-boot mbr: " + mrlog);
         else
             LogWarn("repair-boot mbr (non-fatal): " + mrlog);
+        // PIT-209：修完引导顺手清"幽灵启动项"，并把单系统菜单收敛掉
+        //（这是用户实际报的"只有一个系统却停在选择菜单"）。
+        {
+            const std::wstring store = root + L"Boot\\BCD";
+            std::string plog, qlog;
+            int osLeft = -1;
+            const int pruned = BcdPruneDeadEntries(store, winDir, &osLeft, plog);
+            LogInfo("repair-boot bcd prune (bios): removed=" +
+                    std::to_string(pruned) + " reachable_os=" +
+                    std::to_string(osLeft) + "\n" + plog);
+            BcdQuietSingleOsMenu(store, qlog);
+            LogInfo("repair-boot menu policy (bios): " + qlog);
+        }
         msg = Tr("引导已修复（BIOS）。");
         return 0;
     }
@@ -4007,6 +4070,15 @@ int RepairBoot(int disk, int part, std::string& msg) {
     }
     if (!guidMatched)
         LogWarn("repair-boot: ESP partition type is not EFI System; used fallback");
+    // PIT-209：清掉"指向已删内核"的临时启动项 —— 固件每次开机都会先去试它，
+    // 有的固件就此卡住/反复重启（客户机 2026-11-02 的嫌疑之一）。
+    // 有暂存任务时函数内部会自己跳过。
+    {
+        std::string clog;
+        CleanupStaleUefiEntries(clog);
+        if (!clog.empty())
+            LogInfo("repair-boot stale entry cleanup: " + clog);
+    }
     // 2026-10-27（用户反馈 2）：bcdboot 缺失/失败 → 随包资产自足（含 GUID 替换与
     // 固件 "Windows Boot Manager" 条目）。模板/空间预检只对 bcdboot 这条路生效。
     bool rebuilt = false;
@@ -4035,6 +4107,18 @@ int RepairBoot(int disk, int part, std::string& msg) {
             LogError(msg);
             return 1;
         }
+    }
+    // PIT-209：先清"幽灵启动项"（分区已删/分区里没有 Windows）+ 单系统菜单收敛。
+    {
+        const std::wstring store = espRoot + L"EFI\\Microsoft\\Boot\\BCD";
+        std::string plog, qlog;
+        int osLeft = -1;
+        const int pruned = BcdPruneDeadEntries(store, winDir, &osLeft, plog);
+        LogInfo("repair-boot bcd prune (uefi): removed=" +
+                std::to_string(pruned) + " reachable_os=" +
+                std::to_string(osLeft) + "\n" + plog);
+        BcdQuietSingleOsMenu(store, qlog);
+        LogInfo("repair-boot menu policy (uefi): " + qlog);
     }
     // PIT-208：修引导的收口就是"固件下一次真的去启 Windows" —— 条目必须在
     // BootOrder 第一位（客户机 2026-11-02：还原成功却反复重启，元凶就在这）。

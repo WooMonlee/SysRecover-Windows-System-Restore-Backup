@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：793/794 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：790/791 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n已登记为「下次开机自动清除」（重启后会自动删完）。': '\n\nThe remaining files are scheduled for automatic removal at the next boot (they will be gone after a reboot).',
@@ -64,9 +64,7 @@ EN = {
     'CPU 限制：%d%%': 'CPU limit: %d%%',
     'ESP 300MB / MSR 16MB（自动创建）': 'ESP 300MB / MSR 16MB (created automatically)',
     'ESP 上没有 \\EFI\\Microsoft\\Boot\\BCD': 'ESP has no \\EFI\\Microsoft\\Boot\\BCD',
-    'ESP 上的 BCD 不完整：': 'ESP BCD is incomplete: ',
-    'ESP 上的 BCD 不是 UEFI 启动项（将重建）：': 'The BCD on the ESP is not a UEFI boot entry (will be rebuilt): ',
-    'ESP 上的 BCD 启动项没有指向本次还原的分区：': 'The boot entry on the ESP does not point at the partition restored this time: ',
+    'ESP 上的 BCD 不可用：': 'BCD on the ESP is unusable: ',
     'ESP 上缺少引导字体（Fonts\\*_boot.ttf）': 'ESP is missing the boot fonts (Fonts\\*_boot.ttf)',
     'ESP 上缺少引导文件：': 'ESP is missing boot file(s): ',
     'ESP 上缺少引导语言资源目录（zh-CN / en-US）': 'ESP is missing the boot language resource directory (zh-CN / en-US)',
@@ -96,7 +94,6 @@ EN = {
     '[残留] %s 备返旧系统保留不动（--yes）\n': '[leftover] %s kept-old system kept (with --yes)\n',
     '[残留] %s 备返旧系统保留不动（非交互式运行）\n': '[leftover] %s kept-old system kept (non-interactive run)\n',
     'backup --dest <文件> [--source <目录>] [--compress fast|maximum|recovery]\n       [--name <名>] [--append] [--verify] [--esp] [--no-snapshot] [--password <pwd>] [--yes]\n  --source 写盘符根（`C:` 或 `C:/` 都行）即自动走 VSS 热备；\n  --compress 决定体积/速度；--verify 写完立即校验；--append 追加为同一 WIM 的新子镜像；\n  --esp 把 ESP 分区并入同一镜像（子镜像名 ESP，还原系统时自动恢复回 ESP）；\n  --no-snapshot 冷备（PE/离线卷/VHD 卷上 VSS 不可用时用）；\n  本机没有 ESP 时自动跳过（不算失败）。': 'backup --dest <file> [--source <dir>] [--compress fast|maximum|recovery]\n       [--name <name>] [--append] [--verify] [--esp] [--no-snapshot] [--password <pwd>] [--yes]\n  --source pointing at a volume root (`C:` or `C:/`) uses VSS hot backup automatically;\n  --compress controls size/speed; --verify verifies right after writing; --append appends a new sub-image to the same WIM;\n  --esp merges the ESP partition into the same image (sub-image name ESP; restored automatically when restoring the system);\n  --no-snapshot cold backup (use when VSS is unavailable: PE / offline volumes / mounted VHD volumes);\n  skipped automatically (not a failure) when this machine has no ESP.',
-    'bcdedit 读取 ESP 上的 BCD 失败（rc=': 'bcdedit failed to read the BCD on the ESP (rc=',
     'diag [--zip [--out <zip>]]\n  自检（管理员/固件/Secure Boot/启动项/wimlib）。\n  --zip 导出诊断包（diag 文本 + logs/ + 契约文件），排错时直接发回。': 'diag [--zip [--out <zip>]]\n  Self-check (admin/firmware/Secure Boot/boot entries/wimlib).\n  --zip exports a diagnostics bundle (diag text + logs/ + contract files) to send back when debugging.',
     'esd(慢)': 'esd(slow)',
     'extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]\n        [--all] [--image <镜像>]\n  从镜像里取单个/一组文件（--path 支持通配符、可重复）；--all 取整个子镜像。': 'extract --file <image> --path <path> [--path ...] --dest <dir> [--index N]\n        [--all] [--image <image>]\n  Extract one or more files from the image (--path supports wildcards and repeats); --all extracts the whole subimage.',

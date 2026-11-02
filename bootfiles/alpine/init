@@ -520,6 +520,31 @@ disarm_staged_entry(){
                     say "WARN: cannot remove temp kernel on $_dd (ESP read-only?)"
                 fi
             fi
+            # PIT-209：内核删了、NVRAM 里的 Boot#### 还指着它 —— 固件每次开机
+            # 都先去加载一个不存在的文件（部分固件就此卡住/反复重启）。条目号
+            # 由 Windows 暂存阶段写进 temp-entry.txt；删前核对变量内容确实含
+            # zjtemp，避免编号被复用后误删别人的条目。
+            _tnfile=/tmp/zj_dis/EFI/ZJRESTORE/temp-entry.txt
+            if [ -f "$_tnfile" ]; then
+                _tn=$(tr -d ' \t\r\n' < "$_tnfile")
+                case "$_tn" in
+                    Boot[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f])
+                        _tv="/sys/firmware/efi/efivars/${_tn}-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+                        if [ -f "$_tv" ]; then
+                            if tr -d '\000' < "$_tv" | grep -q 'zjtemp'; then
+                                if rm -f "$_tv"; then
+                                    say "temporary firmware entry $_tn removed"
+                                else
+                                    say "WARN: cannot remove firmware entry $_tn"
+                                fi
+                            else
+                                say "WARN: $_tn does not look like ours, left alone"
+                            fi
+                        fi
+                        ;;
+                esac
+                rm -f "$_tnfile"
+            fi
             umount /tmp/zj_dis
         else
             say "WARN: cannot mount $_dd to disarm staged entry"

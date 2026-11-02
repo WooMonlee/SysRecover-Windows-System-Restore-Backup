@@ -328,6 +328,7 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 - PIT-206 · 单文件版导出驱动必须让用户选目录（`DriversRoot`） · [正文](docs/25-PIT坑位册.md#pit-206)
 - PIT-207 · 自我打包/解压（`pack-self`/`unpack-self` + 「更多功能」） · [正文](docs/25-PIT坑位册.md#pit-207)
 - PIT-208 · 还原后反复重启：BCD 要查"指向哪个分区" + BootOrder 置顶 · [正文](docs/25-PIT坑位册.md#pit-208)
+- PIT-209 · 幽灵启动项/强制菜单：清死条目 + 单系统收敛 + 死掉的临时启动项 · [正文](docs/25-PIT坑位册.md#pit-209)
 
 ### 13.2 未闭环（正文带 🚧，别当"已经好了"）
 
