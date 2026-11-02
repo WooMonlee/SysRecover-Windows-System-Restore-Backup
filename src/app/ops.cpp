@@ -1,5 +1,6 @@
 // 备份/还原共享操作层实现。语义对齐 CLI（Phase 2-4 已验证）与旧 C# 编排器。
 #include "../common/i18n.h"
+#include "../common/xpress.h"  // PIT-213：单文件载荷压缩
 #include "ops.h"
 #include "shortcut.h"
 #include "swapleft.h"
@@ -4343,6 +4344,7 @@ bool SelfPackSkip(const std::wstring& name) {
     std::wstring low = name;
     for (auto& c : low) c = (wchar_t)towlower(c);
     if (low == L"logs" || low == L".zj-stamp") return true;
+    if (low == L"sha256sums.txt") return true;
     if (low.rfind(L"sysrecover-portable", 0) == 0) return true;
     return false;
 }
@@ -4381,11 +4383,16 @@ bool PackDir(HANDLE out, const std::wstring& dir, const std::wstring& rel,
                                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                                OPEN_EXISTING, 0, nullptr);
         if (f == INVALID_HANDLE_VALUE) continue;  // 跳过打不开的（占用/权限）
-        const unsigned long long sz = FileTime64(fd.ftLastWriteTime) ? 0 : 0;
-        (void)sz;
         LARGE_INTEGER li = {};
         GetFileSizeEx(f, &li);
-        const unsigned long long dataLen = (unsigned long long)li.QuadPart;
+        const size_t rawLen = (size_t)li.QuadPart;
+        std::vector<unsigned char> raw(rawLen);
+        DWORD got = 0;
+        bool readOk = rawLen == 0 ||
+                      (ReadFile(f, raw.data(), (DWORD)rawLen, &got, nullptr) &&
+                       got == rawLen);
+        CloseHandle(f);
+        if (!readOk) continue;
         // name -> UTF-8
         int n8 = WideCharToMultiByte(CP_UTF8, 0, r.c_str(), -1, nullptr, 0,
                                      nullptr, nullptr);
@@ -4395,28 +4402,33 @@ bool PackDir(HANDLE out, const std::wstring& dir, const std::wstring& rel,
                                 nullptr);
         const unsigned int nameLen = (unsigned int)name.size();
         const unsigned long long mtime = FileTime64(fd.ftLastWriteTime);
-        if (!WriteAll(out, "ZJF1", 4) || !WriteAll(out, &nameLen, 4) ||
-            !WriteAll(out, &dataLen, 8) || !WriteAll(out, &mtime, 8) ||
-            !WriteAll(out, name.data(), nameLen)) {
+        // PIT-213：能压就压（ZJF2），压不动（已经压缩过的内核/initramfs）就存原样
+        std::vector<unsigned char> packed;
+        const bool compressed = xpress::Compress(raw, packed);
+        const unsigned long long storedLen =
+            compressed ? (unsigned long long)packed.size() : rawLen;
+        const char* magic = compressed ? "ZJF2" : "ZJF1";
+        const unsigned long long rawLen64 = rawLen;
+        if (!WriteAll(out, magic, 4) || !WriteAll(out, &nameLen, 4) ||
+            !WriteAll(out, &storedLen, 8) || !WriteAll(out, &rawLen64, 8) ||
+            !WriteAll(out, &mtime, 8) || !WriteAll(out, name.data(), nameLen)) {
             err = "write header failed";
-            CloseHandle(f);
             ok = false;
             break;
         }
-        char buf[64 * 1024];
-        unsigned long long left = dataLen;
-        while (left > 0) {
-            DWORD ask = (DWORD)(left > sizeof(buf) ? sizeof(buf) : left);
-            DWORD got = 0;
-            if (!ReadFile(f, buf, ask, &got, nullptr) || got != ask) break;
-            if (!WriteAll(out, buf, got)) {
+        if (compressed) {
+            if (!WriteAll(out, packed.data(), (DWORD)packed.size())) {
                 err = "write data failed";
                 ok = false;
                 break;
             }
-            left -= got;
+        } else if (rawLen > 0) {
+            if (!WriteAll(out, raw.data(), (DWORD)raw.size())) {
+                err = "write data failed";
+                ok = false;
+                break;
+            }
         }
-        CloseHandle(f);
         if (!ok) break;
         if (count) ++(*count);
     } while (FindNextFileW(h, &fd));

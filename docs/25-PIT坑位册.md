@@ -2119,3 +2119,31 @@
     同步改 `ui_skin.h::C_BLUE_CARD`，两处不能只改一处。
   · **临时文件落点**：生成的一切临时程序/中间产物不得离开项目目录，一次性产物
     一律放 `temp\`（见 AGENTS §17.7）。
+
+### PIT-213
+
+- PIT-213 **单文件从 50.4MB 压到 39.2MB**（`0.9.93`，用户 2026-11-02："体积还能优化不"）
+  · 构成（未压缩）：救援层 **30.2MB**（initramfs 17.4 + Debian 内核 11.9，本身已压缩）
+    + 两套 exe/dll 约 10MB + Secure Boot 资产 3.7MB + UCRT 2.2MB + 杂项。
+  · 做
+    件事：
+    1. **容器载荷压缩**：条目按 XPRESS-Huffman（ntdll 的 `RtlCompressBuffer`，
+       零第三方依赖）压缩，存不下就退回原样（内核/initramfs 压不动，直接原样存）；
+       单文件 50.4 → **39.2MB**。容器格式加 `ZJF2`（`nameLen/storedLen/rawLen/mtime`）。
+    2. **打包器收敛成一份**：`tools/portable-pack.py` 不再自己拼容器，改成调
+       `SysRecover.exe pack-self` —— Python 侧不可能复刻 ntdll 压缩，两套实现必然漂移。
+    3. **救援层裁剪**：去掉与"还原到本机磁盘"无关的模块 —— bcachefs / f2fs /
+       dm-vdo / drbd（约 1.4MB 已 xz）。initramfs 18.75 → **17.39MB**，
+       模块 494 → 491。
+  · 踩的两个坑（都是"自测不测整条链"就会漏掉）：
+    - `XPRESS_HUFF` **不能用 `RtlDecompressBuffer`**（返回 STATUS_INVALID_PARAMETER）
+      —— 必须 `RtlDecompressBufferEx` + `RtlGetCompressionWorkSpaceSize` 给的 workspace。
+      症状：解压全失败、app 目录里只有一堆 0 字节文件。
+    - 容器头必须**两种 magic 同一个 4 字段**（nameLen/storedLen/rawLen/mtime）。
+      一开始 ZJF1 少写了 rawLen，读写错位 8 字节 → 解到第 19 个文件就"Extraction
+      incomplete"。
+  · 验证：单文件解开后与 dist 逐文件 **SHA256 比对一致**（UI.exe / initramfs 都验过）。
+  · 还能再砍的（没做，留给以后按需）：
+    - initramfs 从 gzip 换 xz（≈-2~3MB，要 QEMU 验证内核支持）；
+    - btrfs/xfs/ext4 模块（≈1.9MB，会丢掉"镜像放在 Linux 分区"这种极端场景）；
+    - libcrypto/openssl（≈1.9MB）—— 加密镜像 ZJENC2 在救援层要用，不能删。

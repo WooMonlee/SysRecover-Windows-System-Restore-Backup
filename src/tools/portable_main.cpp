@@ -18,6 +18,8 @@
 #include <string>
 #include <vector>
 
+#include "../common/xpress.h"
+
 namespace {
 
 // PIT-202：单文件**合并成一个**（用户 2026-11-01 规格）——
@@ -75,18 +77,21 @@ bool PackageHasDrivers(HANDLE h, unsigned long long payload) {
     while (ReadExact(h, magic, 4)) {
         if (memcmp(magic, "ZJEND", 4) == 0 || memcmp(magic, "ZJFT", 4) == 0)
             break;
-        if (memcmp(magic, "ZJF1", 4) != 0) break;
+        // PIT-213：ZJF1 = 原样；ZJF2 = XPRESS-Huffman 压缩（存 storedLen/rawLen）
+        const bool compressed = memcmp(magic, "ZJF2", 4) == 0;
+        if (!compressed && memcmp(magic, "ZJF1", 4) != 0) break;
         unsigned int nameLen = 0;
-        unsigned long long dataLen = 0, mtime = 0;
-        if (!ReadExact(h, &nameLen, 4) || !ReadExact(h, &dataLen, 8) ||
-            !ReadExact(h, &mtime, 8))
+        // 两种 magic 用**同一个** 4 字段头（nameLen/storedLen/rawLen/mtime）
+        unsigned long long storedLen = 0, rawLen = 0, mtime = 0;
+        if (!ReadExact(h, &nameLen, 4) || !ReadExact(h, &storedLen, 8) ||
+            !ReadExact(h, &rawLen, 8) || !ReadExact(h, &mtime, 8))
             break;
         if (nameLen == 0 || nameLen > 4096) break;
         std::vector<char> nb(nameLen);
         if (!ReadExact(h, nb.data(), nameLen)) break;
         if (nameLen >= 8 && memcmp(nb.data(), "Drivers/", 8) == 0) return true;
         LARGE_INTEGER skip = {};
-        skip.QuadPart = (LONGLONG)dataLen;
+        skip.QuadPart = (LONGLONG)storedLen;
         SetFilePointerEx(h, skip, nullptr, FILE_CURRENT);
     }
     return false;
@@ -240,11 +245,14 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     while (ReadExact(h, magic, 4)) {
         if (memcmp(magic, "ZJEND", 4) == 0 || memcmp(magic, "ZJFT", 4) == 0)
             break;
-        if (memcmp(magic, "ZJF1", 4) != 0) break;
+        // PIT-213：ZJF1 = 原样；ZJF2 = XPRESS-Huffman 压缩（存 storedLen/rawLen）
+        const bool compressed = memcmp(magic, "ZJF2", 4) == 0;
+        if (!compressed && memcmp(magic, "ZJF1", 4) != 0) break;
         unsigned int nameLen = 0;
-        unsigned long long dataLen = 0, mtime = 0;
-        if (!ReadExact(h, &nameLen, 4) || !ReadExact(h, &dataLen, 8) ||
-            !ReadExact(h, &mtime, 8))
+        // 两种 magic 用**同一个** 4 字段头（nameLen/storedLen/rawLen/mtime）
+        unsigned long long storedLen = 0, rawLen = 0, mtime = 0;
+        if (!ReadExact(h, &nameLen, 4) || !ReadExact(h, &storedLen, 8) ||
+            !ReadExact(h, &rawLen, 8) || !ReadExact(h, &mtime, 8))
             break;
         if (nameLen == 0 || nameLen > 4096) break;
         std::vector<char> nb(nameLen);
@@ -264,19 +272,33 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
         if (out == INVALID_HANDLE_VALUE) {
             // 跳过该文件的数据
             LARGE_INTEGER skip = {};
-            skip.QuadPart = (LONGLONG)dataLen;
+            skip.QuadPart = (LONGLONG)storedLen;
             SetFilePointerEx(h, skip, nullptr, FILE_CURRENT);
             continue;
         }
-        char buf[64 * 1024];
-        unsigned long long left = dataLen;
-        while (left > 0) {
-            const DWORD ask = (DWORD)(left > sizeof(buf) ? sizeof(buf) : left);
-            DWORD got = 0;
-            if (!ReadFile(h, buf, ask, &got, nullptr) || got != ask) break;
-            DWORD wr = 0;
-            WriteFile(out, buf, got, &wr, nullptr);
-            left -= got;
+        if (compressed) {
+            std::vector<unsigned char> packed((size_t)storedLen);
+            std::vector<unsigned char> raw;
+            bool ok = storedLen == 0 ||
+                      (ReadExact(h, packed.data(), (DWORD)storedLen) &&
+                       sysrecover::xpress::Decompress(
+                           packed.data(), (size_t)storedLen, (size_t)rawLen, raw));
+            if (ok && rawLen > 0) {
+                DWORD wr = 0;
+                WriteFile(out, raw.data(), (DWORD)raw.size(), &wr, nullptr);
+            }
+        } else {
+            char buf[64 * 1024];
+            unsigned long long left = storedLen;
+            while (left > 0) {
+                const DWORD ask =
+                    (DWORD)(left > sizeof(buf) ? sizeof(buf) : left);
+                DWORD got = 0;
+                if (!ReadFile(h, buf, ask, &got, nullptr) || got != ask) break;
+                DWORD wr = 0;
+                WriteFile(out, buf, got, &wr, nullptr);
+                left -= got;
+            }
         }
         CloseHandle(out);
         ++written;

@@ -110,6 +110,10 @@ EXCLUDE_PREFIXES = [
     'kernel/drivers/usb/image/',
     # 与磁盘无关的块/md
     'kernel/drivers/block/null_blk', 'kernel/drivers/md/md-cluster',
+    # PIT-213（体积）：与"还原到本机磁盘"无关的文件系统/分布式/虚拟块设备。
+    # bcachefs（新 FS）/ f2fs（闪存）/ dm-vdo / ceph / drbd 一共约 1.8MB（已 xz）。
+    'kernel/fs/bcachefs/', 'kernel/fs/f2fs/',
+    'kernel/md/dm-vdo/', 'kernel/drivers/block/drbd/',
     # DRM/KMS：Debian 的 efifb/simplefb/FRAMEBUFFER_CONSOLE **内建**
     # （CONFIG_FB_EFI/FB_SIMPLE=y），控制台不需要 KMS。（PIT-061 是 Alpine 内核
     # 的特有问题——它 SYSFB_SIMPLEFB=y 会顶掉 efifb，Debian 不存在。）

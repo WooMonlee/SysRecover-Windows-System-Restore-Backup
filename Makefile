@@ -346,7 +346,7 @@ $(PORTABLE_RC): src/tools/portable.rc resources/SysRecover.ico
 	@if not exist build mkdir build
 	$(MINGW32)/bin/windres.exe -I . -I resources $< -o $@
 
-$(PORTABLE_STUB): src/tools/portable_main.cpp $(PORTABLE_RC)
+$(PORTABLE_STUB): src/tools/portable_main.cpp src/common/xpress.h $(PORTABLE_RC)
 	@if not exist build mkdir build
 	$(MINGW32)/bin/i686-w64-mingw32-g++ -O2 -std=c++17 -DUNICODE -D_UNICODE -D_WIN32_WINNT=0x0601 $< $(PORTABLE_RC) -o $@ -static -municode -mconsole -s -lshell32 -luser32
 
