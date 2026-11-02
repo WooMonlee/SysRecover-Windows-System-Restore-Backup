@@ -26,7 +26,17 @@ bool MakeDirTree(const std::wstring& dir);
 //   单文件版（解压到 %LOCALAPPDATA%、但 stub 会设 ZJ_ORIGIN_DIR=单文件所在目录）
 //   → `<单文件目录>\Drivers`，这样用户**看得到**导出的驱动，
 //   而且异机还原的"自动调用"读的也是同一个目录。
-// 判据：ZJ_ORIGIN_DIR 非空且可写才用它；否则退回 AppDir()\Drivers。
+// 判据（PIT-212 起）：**先看 AppDir()\Drivers**（单文件"加驱动"版把驱动打进了
+// 包内，必须优先用它）；没有再看 ZJ_ORIGIN_DIR\Drivers；最后才退回 AppDir()。
 std::wstring DriversRoot();
+
+// 当前进程是不是"单文件（便携）运行"：stub 会设 ZJ_ORIGIN_DIR。
+bool IsPortableRuntime();
+
+// 单文件自身所在目录（便携运行时由 stub 设）；非便携 → 空串。
+std::wstring PortableOriginDir();
+
+// 当前登录用户名（文件命名用；失败返回 "User"）。
+std::wstring CurrentUserName();
 
 }  // namespace sysrecover

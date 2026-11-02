@@ -61,7 +61,36 @@ bool MakeDirTree(const std::wstring& dir) {
 }
 
 
+bool IsPortableRuntime() {
+    wchar_t origin[MAX_PATH + 1] = {};
+    return GetEnvironmentVariableW(L"ZJ_ORIGIN_DIR", origin, MAX_PATH) > 0 &&
+           origin[0] != 0;
+}
+
+std::wstring PortableOriginDir() {
+    wchar_t origin[MAX_PATH + 1] = {};
+    if (GetEnvironmentVariableW(L"ZJ_ORIGIN_DIR", origin, MAX_PATH) <= 0 ||
+        !origin[0])
+        return std::wstring();
+    std::wstring d(origin);
+    while (!d.empty() && (d.back() == L'\\' || d.back() == L'/'))
+        d.pop_back();
+    return d;
+}
+
+std::wstring CurrentUserName() {
+    wchar_t buf[256] = {};
+    DWORD n = 256;
+    if (GetUserNameW(buf, &n) && buf[0]) return buf;
+    return L"User";
+}
+
 std::wstring DriversRoot() {
+    // PIT-212：单文件"加驱动"版把驱动打在**包内**（AppDir\Drivers）——
+    // 便携运行时也要优先用它，否则异机还原的"自动调用"找不到刚打进去的驱动。
+    const std::wstring inApp = AppDir() + L"\\Drivers";
+    if (GetFileAttributesW(inApp.c_str()) != INVALID_FILE_ATTRIBUTES)
+        return inApp;
     wchar_t origin[MAX_PATH + 1] = {};
     if (GetEnvironmentVariableW(L"ZJ_ORIGIN_DIR", origin, MAX_PATH) > 0 &&
         origin[0]) {

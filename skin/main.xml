@@ -58,7 +58,7 @@
         <SkinLabel name="NoteLabel" float="true" pos="112,118,232,132" text="镜像说明：" color="#FF5F6C80" fontsize="13" align="right" />
 
         <!-- ══════ 第二步卡片（蓝卡，y149..284） ══════ -->
-        <VerticalLayout name="Card2" float="true" pos="16,149,725,284" bkcolor="#FFF0F5FF" bordersize="1" bordercolor="#FFF8F8FB" borderround="20,20" />
+        <VerticalLayout name="Card2" float="true" pos="16,149,725,284" bkcolor="#FFE6EEFF" bordersize="1" bordercolor="#FFF8F8FB" borderround="20,20" />
         <SkinLabel name="Step2Badge" float="true" pos="30,160,92,183" text="第二步" bkcolor="#FFE08A2E" borderround="8,8" color="#FFFFFFFF" fontsize="13" align="center" />
         <SkinLabel name="PartTitle" float="true" pos="102,164,300,182" text="系统安装位置" color="#FF1B2432" fontsize="13" />
         <SkinLabel name="PartHint"  float="true" pos="189,164,575,182" text="选择要安装恢复镜像的目标分区（移动盘已隐藏）" color="#FF5F6C80" fontsize="13" />

@@ -93,3 +93,7 @@ SysRecover-logs-*.zip
 tools/vmtest/e2e/*.exe
 tools/vmtest/e2e/*.log
 
+
+# 项目内临时目录（2026-11-02 用户规格：临时程序/文件一律放 temp，不入库）
+temp/*
+!temp/.gitkeep

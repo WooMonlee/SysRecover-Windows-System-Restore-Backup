@@ -1875,6 +1875,11 @@ void CMainForm::ExtractSelfFlow() {
 
 void CMainForm::ExportDriversFlow() {
     if (m_busy) return;
+    // PIT-212（用户 2026-11-02）：单文件运行时，驱动要**打进新的单文件**。
+    if (sysrecover::IsPortableRuntime()) {
+        ExportDriversPortableFlow();
+        return;
+    }
 
     // PIT-206（用户 2026-11-01）：**导出之前先让用户选文件夹** ——
     // 程序自身是解压到 %LOCALAPPDATA% 的（临时性质），不能"悄悄"导在那里。
@@ -1956,6 +1961,68 @@ void CMainForm::ExportDriversFlow() {
                  n, dir.c_str(), root.c_str());
     SetStatus(Tr(L"启动驱动已导出"));
     MessageBoxW(m_hWnd, msg, Tr(L"导出驱动"), MB_OK | MB_ICONINFORMATION);
+}
+
+// PIT-212：单文件版导出驱动 —— 打进包内 Drivers，再重新打包成一个新的单文件
+// （放到当前运行的单文件旁边，名字 = <用户名>加驱动.exe）。
+// 原程序不动；新程序运行时异机还原会自动用包内驱动。
+void CMainForm::ExportDriversPortableFlow() {
+    const std::wstring origin = sysrecover::PortableOriginDir();
+    if (origin.empty()) {
+        SetStatus(Tr(L"无法确定单文件所在目录"));
+        return;
+    }
+    const std::wstring outPath = origin + L"\\" +
+                                 sysrecover::CurrentUserName() +
+                                 Tr(L"加驱动") + L".exe";
+    wchar_t msg[900] = {};
+    swprintf(msg, 900,
+             Tr(L"驱动会先导出到临时文件夹，然后重新打包成本软件，放到：\n%ls\n\n"
+                L"原程序不受影响，可以继续使用。"),
+             outPath.c_str());
+    if (CConfirmDlg::Ask2(m_hWnd, Tr(L"导出驱动"), msg, Tr(L"取消"),
+                          Tr(L"确定"), /*defaultIsRight=*/true) != 1) {
+        SetStatus(Tr(L"已取消导出驱动"));
+        return;
+    }
+
+    SetStatus(Tr(L"正在导出驱动..."));
+    SYSTEMTIME st = {};
+    GetLocalTime(&st);
+    wchar_t sub[80] = {};
+    swprintf(sub, 80, L"\\boot-%04u%02u%02u-%02u%02u%02u", st.wYear, st.wMonth,
+             st.wDay, st.wHour, st.wMinute, st.wSecond);
+    const std::wstring dir = AppDir() + L"\\Drivers" + sub;
+    std::wstring err;
+    int n = 0;
+    const int rc = sysrecover::ExportBootCriticalDrivers(dir, &n, err);
+    if (rc != 0) {
+        SetStatus(Tr(L"导出启动驱动失败"));
+        MessageBoxW(m_hWnd, (Tr(L"导出启动驱动失败：") + err).c_str(),
+                    Tr(L"导出驱动"), MB_OK | MB_ICONERROR);
+        return;
+    }
+
+    SetStatus(Tr(L"正在重新打包..."));
+    std::string perr;
+    int files = 0;
+    const std::wstring stub = AppDir() + L"\\bootfiles\\portable-stub.exe";
+    if (!sysrecover::PackSelfToSingleFile(AppDir(), outPath, stub, perr, &files)) {
+        SetStatus(Tr(L"重新打包失败"));
+        MessageBoxW(m_hWnd, (Tr(L"重新打包失败：") + U2W(perr)).c_str(),
+                    Tr(L"导出驱动"), MB_OK | MB_ICONERROR);
+        return;
+    }
+    wchar_t done[900] = {};
+    swprintf(done, 900,
+             Tr(L"已导出 %d 个硬盘（存储/输入）驱动，并重新打包成：\n%ls\n\n"
+                L"这个新文件已经带驱动，异机还原时会自动使用。"),
+             n, outPath.c_str());
+    SetStatus(Tr(L"驱动已导出并重新打包"));
+    MessageBoxW(m_hWnd, done, Tr(L"导出驱动"), MB_OK | MB_ICONINFORMATION);
+    ::ShellExecuteW(nullptr, L"open", L"explorer.exe",
+                    (L"/select,\"" + outPath + L"\"").c_str(), nullptr,
+                    SW_SHOWNORMAL);
 }
 
 // 「镜像检查」= 完整校验（wimlib_verify_wim 全文件扫描，CLI 的 `verify` 命令同源）。

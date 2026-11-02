@@ -65,6 +65,56 @@ bool MakeDirs(const std::wstring& path) {
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
 }
 
+// PIT-212：单文件包是否带 Drivers（"加驱动"版才带）。
+// 预扫只读条目头、跳过数据，73 个条目毫秒级。
+bool PackageHasDrivers(HANDLE h, unsigned long long payload) {
+    LARGE_INTEGER pos = {};
+    pos.QuadPart = (LONGLONG)payload;
+    SetFilePointerEx(h, pos, nullptr, FILE_BEGIN);
+    char magic[4] = {};
+    while (ReadExact(h, magic, 4)) {
+        if (memcmp(magic, "ZJEND", 4) == 0 || memcmp(magic, "ZJFT", 4) == 0)
+            break;
+        if (memcmp(magic, "ZJF1", 4) != 0) break;
+        unsigned int nameLen = 0;
+        unsigned long long dataLen = 0, mtime = 0;
+        if (!ReadExact(h, &nameLen, 4) || !ReadExact(h, &dataLen, 8) ||
+            !ReadExact(h, &mtime, 8))
+            break;
+        if (nameLen == 0 || nameLen > 4096) break;
+        std::vector<char> nb(nameLen);
+        if (!ReadExact(h, nb.data(), nameLen)) break;
+        if (nameLen >= 8 && memcmp(nb.data(), "Drivers/", 8) == 0) return true;
+        LARGE_INTEGER skip = {};
+        skip.QuadPart = (LONGLONG)dataLen;
+        SetFilePointerEx(h, skip, nullptr, FILE_CURRENT);
+    }
+    return false;
+}
+
+// 递归删除（只用于清 app 目录里上一次留下的 Drivers）。
+void RemoveTree(const std::wstring& path) {
+    const DWORD a = GetFileAttributesW(path.c_str());
+    if (a == INVALID_FILE_ATTRIBUTES) return;
+    if (!(a & FILE_ATTRIBUTE_DIRECTORY)) {
+        SetFileAttributesW(path.c_str(), FILE_ATTRIBUTE_NORMAL);
+        DeleteFileW(path.c_str());
+        return;
+    }
+    WIN32_FIND_DATAW fd = {};
+    HANDLE h = FindFirstFileW((path + L"\\*").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L".."))
+                continue;
+            RemoveTree(path + L"\\" + fd.cFileName);
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    SetFileAttributesW(path.c_str(), FILE_ATTRIBUTE_NORMAL);
+    RemoveDirectoryW(path.c_str());
+}
+
 }  // namespace
 
 int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
@@ -173,6 +223,15 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     }
 
     if (!skipExtract) {
+    // PIT-212：多个单文件共用 %LOCALAPPDATA%\SysRecover\app —— 这次跑的包如果
+    // **不带** Drivers，必须把上次"加驱动"版留下的 Drivers 清掉，否则普通包会
+    // 悄悄用上别人的驱动。带 Drivers 的包不清（预扫只读条目头，很快）。
+    if (!PackageHasDrivers(h, payload)) {
+        const std::wstring stale = dest + L"\\Drivers";
+        if (GetFileAttributesW(stale.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            RemoveTree(stale);
+        }
+    }
     // 顺序解析条目并落盘（覆盖写；同名同大小则跳过以加快二次启动）
     pos.QuadPart = (LONGLONG)payload;
     SetFilePointerEx(h, pos, nullptr, FILE_BEGIN);

@@ -163,6 +163,9 @@ private:
     // 导出本机启动关键驱动（2026-10-30）：pnputil 按 Class GUID 过滤，只导
     // 存储/输入类，输出到 <程序目录>\Drivers\boot-<时间>。
     void ExportDriversFlow();
+    // PIT-212：单文件运行时 —— 导出到包内 Drivers 后重新打包成
+    // "<用户名>加驱动.exe"（放在当前单文件旁边）。
+    void ExportDriversPortableFlow();
     // PIT-207：把自己打包成单文件 / 解压到文件夹（「更多功能>>」）
     void PackSelfFlow();
     void ExtractSelfFlow();

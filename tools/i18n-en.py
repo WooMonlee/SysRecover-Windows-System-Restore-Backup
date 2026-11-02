@@ -2,7 +2,7 @@
 # SysRecover 英文词条表（PLAN §14 M2）。键 = 中文源文本（键即原文）。
 # 用法：python tools/i18n-wrap.py --skeleton   # 补齐新键、保留已译值
 #       python tools/i18n-wrap.py --gen-lang   # 生成 lang/en.lang
-# 进度：799/800 已译（value 为空 = 待译，--gen-lang 会拦下）。
+# 进度：800/809 已译（value 为空 = 待译，--gen-lang 会拦下）。
 # 红线：只翻面向用户的文案；日志/契约/救援层屏幕/品牌名不进此表。
 EN = {
     '\n\n已登记为「下次开机自动清除」（重启后会自动删完）。': '\n\nThe remaining files are scheduled for automatic removal at the next boot (they will be gone after a reboot).',
@@ -219,6 +219,7 @@ EN = {
     '加密镜像版本不受支持（请用更新版本的 SysRecover）': 'This encrypted image version is not supported (use a newer SysRecover)',
     '加密镜像被截断或损坏（文件大小不符）': 'Encrypted image is truncated or damaged (size mismatch)',
     '加密镜像被截断（块数据不完整）': 'Encrypted image is truncated (incomplete chunk)',
+    '加驱动': '-WithDrivers',
     '单文件程序': 'Single-file program',
     '即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n该分区上的所有数据将丢失！%ls\n目标分区当前未被占用，将立即就地还原，不需要重启。': 'The image will be restored to drive %ls: (disk %u partition %u).\nAll data on this partition will be LOST!%ls\nThe target partition is not in use; restore will start in place with no reboot.',
     '即将把镜像还原到 %ls: 盘（磁盘%u 分区%u）。\n还原后重启，是解压镜像后重启修复引导，可以恢复到现在状态\n重启后还原，是重启格式化%ls: 盘后还原镜像，无法恢复现在状态\n加密镜像：重启后还原需要输入密码': 'About to restore the image to drive %ls: (disk %u partition %u).\nRestore then reboot extracts now and reboots (the current state can be recovered)\nReboot then restore formats %ls: first (the current state cannot be recovered)\nEncrypted image: reboot-then-restore asks for the password',
@@ -352,6 +353,7 @@ EN = {
     '已导出 %d 个启动关键驱动到：%ls\n': 'Exported %d boot-critical driver(s) to: %ls\n',
     '已导出 %d 个硬盘（存储/输入）驱动到：\n%ls\n\n只含存储/输入类驱动，异机还原时将自动调用此驱动。': 'Exported %d hard-disk (storage/input) driver(s) to:\n%ls\n\nOnly storage/input class drivers are included; they are used automatically during a universal restore.',
     '已导出 %d 个硬盘（存储/输入）驱动到：\n%ls\n\n该目录不在自动目录（%ls）内：异机还原时请把「驱动目录」指向它，或把它复制到自动目录。': 'Exported %d hard-disk (storage/input) driver(s) to:\n%ls\n\nThis folder is not inside the automatic folder (%ls): point the "driver folder" at it during a universal restore, or copy it into the automatic folder.',
+    '已导出 %d 个硬盘（存储/输入）驱动，并重新打包成：\n%ls\n\n这个新文件已经带驱动，异机还原时会自动使用。': 'Exported %d storage/input driver(s) and repacked into:\n%ls\n\nThis new file already contains the drivers and will use them automatically for a restore to different hardware.',
     '已导出诊断包（%d 个文件）：%ls\n': 'Diagnostics bundle exported (%d files): %ls\n',
     '已导出诊断包：%s\n': 'Diagnostics bundle exported: %s\n',
     '已打包 %d 个文件 -> %ls\n': 'Packed %d file(s) -> %ls\n',
@@ -485,6 +487,7 @@ EN = {
     '无法打开服务「': 'Could not open service "',
     '无法打开服务控制管理器（错误 ': 'Could not open the Service Control Manager (error ',
     '无法确保下次启动进入恢复环境（启动项没有生效：': 'Cannot guarantee that the next boot enters the recovery environment (the boot entry did not take effect: ',
+    '无法确定单文件所在目录': 'Cannot determine the folder of the single file',
     '无法纠正扇区': 'Uncorrectable sectors',
     '无法设置 CPU 限制（err=%lu）': 'Failed to set the CPU limit (err=%lu)',
     '无法读取镜像内系统版本': 'Cannot read the OS version inside the image',
@@ -554,6 +557,7 @@ EN = {
     '正在备份...': 'Backing up...',
     '正在安装启动还原菜单（写入契约 + 部署救援环境）...': 'Installing the boot restore menu (writing the task contract + deploying the rescue environment)...',
     '正在导出本机启动驱动...': "Exporting this PC's boot drivers...",
+    '正在导出驱动...': 'Exporting drivers...',
     '正在打包成单文件...': 'Packing into a single file...',
     '正在收集日志与诊断信息…': 'Collecting logs and diagnostics...',
     '正在校验分区': 'Verifying partitions',
@@ -567,6 +571,7 @@ EN = {
     '正在读取分区信息……': 'Reading partition information...',
     '正在转换分区表': 'Converting partition table',
     '正在追加时间点...': 'Appending time point...',
+    '正在重新打包...': 'Repacking...',
     '正在重试...': 'Retrying...',
     '此操作不可恢复。\n确定继续吗？': 'this cannot be undone.\nContinue?',
     '没有可用的系统分区。\n若磁盘已经分区，请先用磁盘管理调整分区。': 'No usable system partition.\nIf the disk is already partitioned, adjust it in Disk Management first.',
@@ -729,6 +734,8 @@ EN = {
     '重启后还原': 'Reboot & Restore',
     '重启后还原：先格式化目标分区': 'Reboot then restore: format target first',
     '重启进安全模式再测': 'Safe Mode + Retest',
+    '重新打包失败': 'Repack failed',
+    '重新打包失败：': 'Repack failed: ',
     '重映射扇区': 'Reallocated sectors',
     '重试': 'Retry',
     '重试失败': 'Retry failed',
@@ -774,7 +781,9 @@ EN = {
     '随机数生成失败（salt）': 'Random number generation failed (salt)',
     '静默': 'Silent',
     '非交互式运行：请加 --yes 确认「返回旧系统」并重启。\n': 'Non-interactive run: add --yes to confirm "Return to old system" and reboot.\n',
+    '驱动会先导出到临时文件夹，然后重新打包成本软件，放到：\n%ls\n\n原程序不受影响，可以继续使用。': 'The drivers will be exported to a temporary folder, then the whole program will be repacked into:\n%ls\n\nThe original program is unaffected and can still be used.',
     '驱动导出全部失败（权限不足或驱动被占用）': 'All driver exports failed (insufficient permission or drivers in use)',
+    '驱动已导出并重新打包': 'Drivers exported and repacked',
     '驱动文件夹不存在': 'The driver folder does not exist',
     '驱动文件夹里没有 .inf 文件': 'The driver folder contains no .inf files',
     '驱动注入全部失败（': 'All driver injections failed (',
