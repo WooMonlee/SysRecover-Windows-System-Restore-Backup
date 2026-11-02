@@ -91,6 +91,7 @@ std::string TrimCopy(const std::string& s) {
 struct LogicalLine {
     std::string key;    // 已小写
     std::string value;
+    bool sep = false;   // "--------" 分隔线：一个对象块从这里开始
 };
 
 std::vector<LogicalLine> ToLogicalLines(const std::string& text) {
@@ -108,8 +109,12 @@ std::vector<LogicalLine> ToLogicalLines(const std::string& text) {
         // "Windows Boot Manager" 下面的那行 ----- 是分隔线，不是字段
         const bool dashes =
             !blank && raw.find_first_not_of(" -\t") == std::string::npos;
-        if (!blank && !dashes) {
-            if (first > 0 && !out.empty()) {
+        if (dashes) {
+            LogicalLine ll;
+            ll.sep = true;
+            out.push_back(ll);
+        } else if (!blank) {
+            if (first > 0 && !out.empty() && !out.back().sep) {
                 if (!out.back().value.empty())
                     out.back().value += ' ';
                 out.back().value += raw.substr(first);
@@ -160,12 +165,27 @@ std::vector<std::string> GuidsIn(const std::string& v) {
 
 std::vector<BcdRecord> ParseRecords(const std::string& text) {
     std::vector<BcdRecord> recs;
+    // 块的**第一行永远是 identifier**（bcdedit 的固定排版），但字段名本身
+    // 会本地化（中文 Windows 上是"标识符"）——所以这里不看字段名，直接取
+    // 这一行里的第一个 {…}。2026-11-02 实验室实测：只认英文 "identifier"
+    // 会在中文系统上一个记录都解析不出来（等于校验形同虚设）。
+    bool atBlockStart = false;
     for (const auto& ll : ToLogicalLines(text)) {
-        if (KeyIs(ll.key, "identifier",
-                  "\xe6\xa0\x87\xe8\xaf\x86\xe7\xac\xa6")) {  // 标识符
-            if (!ll.value.empty()) {
+        if (ll.sep) {
+            atBlockStart = true;
+            continue;
+        }
+        // 两种起点都认：分隔线后的第一行（语言无关），或直接认出 identifier 字段
+        // （测试/精简输出里可能没有分隔线）。
+        const bool idKey =
+            KeyIs(ll.key, "identifier",
+                  "\xe6\xa0\x87\xe8\xaf\x86\xe7\xac\xa6");  // 标识符
+        if (atBlockStart || idKey) {
+            atBlockStart = false;
+            const std::vector<std::string> ids = GuidsIn(ll.value);
+            if (!ids.empty()) {
                 BcdRecord r;
-                r.id = ll.value;
+                r.id = ids.front();
                 recs.push_back(r);
             }
             continue;
@@ -173,24 +193,21 @@ std::vector<BcdRecord> ParseRecords(const std::string& text) {
         if (recs.empty())
             continue;
         BcdRecord& r = recs.back();
-        if (KeyIs(ll.key, "device", "\xe8\xae\xbe\xe5\xa4\x87") ||      // 设备
-            KeyIs(ll.key, "osdevice",
-                  "\xe6\x93\x8d\xe4\xbd\x9c\xe7\xb3\xbb\xe7\xbb\x9f"
-                  "\xe8\xae\xbe\xe5\xa4\x87")) {                       // 操作系统设备
+        // device / osdevice / filedevice 的值都长这样，与字段名语言无关
+        if (ll.value.find("partition=") != std::string::npos)
             r.devices.push_back(ll.value);
-        } else if (KeyIs(ll.key, "displayorder",
-                         "\xe6\x98\xbe\xe7\xa4\xba\xe9\xa1\xba\xe5\xba\x8f")) {  // 显示顺序
+        if (KeyIs(ll.key, "displayorder",
+                  "\xe6\x98\xbe\xe7\xa4\xba\xe9\xa1\xba\xe5\xba\x8f")) {  // 显示顺序
             for (const auto& g : GuidsIn(ll.value))
                 r.order.push_back(g);
-        } else if (KeyIs(ll.key, "default",
-                         "\xe9\xbb\x98\xe8\xae\xa4")) {  // 默认
+        } else if (KeyIs(ll.key, "default", "\xe9\xbb\x98\xe8\xae\xa4")) {  // 默认
             for (const auto& g : GuidsIn(ll.value)) {
                 r.order.push_back(g);
                 if (r.def.empty())
                     r.def = g;
             }
         }
-        // 路径值不本地化：直接按内容认（path / 路径 / 其它都行）
+        // 路径值不本地化：直接按内容认
         const std::string lowv = Lower(ll.value);
         if (lowv.find("winload.") != std::string::npos) {
             r.isLoader = true;

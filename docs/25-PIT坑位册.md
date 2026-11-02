@@ -2003,6 +2003,12 @@
     - `diag` 新增 `uefi bootorder:` 快照（按 BootOrder 顺序列出 `Boot####` 描述 +
       设备路径）—— 以后再遇到"开机先启谁"的问题，日志里就有答案；
     - 顺手修 `history.jsonl` 的 `restore-inplace` 记录：`target` 曾误写成镜像路径。
+  · 解析坑（同轮踩到）：`bcdedit` 把**字段名 `identifier` 本地化成"标识符"**
+    （中文 Windows），而 `device`/`path`/`displayorder` 仍是英文；`>` 重定向到文件
+    时还是 UTF-16LE+BOM，走管道时是 OEM 代码页（`RunProcess` 会转 UTF-8）。
+    所以解析**不能依赖英文字段名**：改为按"分隔线后第一行 = identifier"切块
+    （块首行的 `{…}`），值按内容认（`partition=`、`winload.`）；`identifier`
+    字段名只作为无分隔线时的兜底。
   · 现场修复口径（给用户）：PE 里跑 `SysRecover.exe repair-boot`（会重建/校验 BCD +
     把 Windows Boot Manager 置顶），再到固件里删掉多余启动项。**不要**只重装系统 ——
     数据面本来就没错。
