@@ -341,11 +341,20 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     // 附着失败（从资源管理器带参数启动等）→ 退回开 GUI，不静默。
     // 控制台子系统进程本身就有控制台；没有才附着。**附着失败也继续跑** ——
     // 绝不能退回开 GUI（那会让 `xxx.exe version` 变成弹窗口，脚本拿不到输出）。
-    if (GetConsoleWindow() == nullptr)
-        AttachConsole(ATTACH_PARENT_PROCESS);
-    // 先看调用者是不是已经给了 stdout（cmd 的 `> file` 重定向就是这种）——
-    // 有就沿用，别用 CONOUT$ 覆盖掉，否则脚本取不到输出（实测踩过）。
+    // 控制台版 stub 天生有控制台；GUI 版（PIT-215）没有，要附着到调用者控制台。
+    // ⚠️ 顺序很重要：**先看调用者有没有给 stdout**（cmd 的 `> file` 重定向）。
+    //    有就不能 AttachConsole —— 附着会把 std 句柄换成控制台，重定向的文件就空了
+    //    （2026-11-03 实测：`SysRecover-Portable.exe version > x.txt` 得到空文件）。
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    const bool haveStdOut = (hOut != nullptr && hOut != INVALID_HANDLE_VALUE);
+    if (GetConsoleWindow() == nullptr && !haveStdOut) {
+        if (!AttachConsole(ATTACH_PARENT_PROCESS)) {
+            if (AllocConsole()) {
+                SetConsoleOutputCP(GetACP());
+            }
+        }
+        hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    }
     if (hOut == nullptr || hOut == INVALID_HANDLE_VALUE) {
         hOut = CreateFileW(L"CONOUT$", GENERIC_READ | GENERIC_WRITE,
                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,

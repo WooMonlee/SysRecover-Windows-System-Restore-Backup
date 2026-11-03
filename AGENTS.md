@@ -333,6 +333,8 @@ GUI（Phase 5）：工作线程跑 wimlib，严禁在回调线程直接 `SetText
 - PIT-211 · 还原交互五项：静默重启/格式化勾选/改机器名/黑框/1px 边框 · [正文](docs/25-PIT坑位册.md#pit-211)
 - PIT-212 · 单文件"导出驱动"=打进包内再重新打包（`<用户>加驱动.exe`） · [正文](docs/25-PIT坑位册.md#pit-212)
 - PIT-213 · 单文件载荷压缩（50.4→39.2MB）：XPRESS-Huffman + 打包器收敛 · [正文](docs/25-PIT坑位册.md#pit-213)
+- PIT-214 · WinPE 重启要 `wpeutil`；完成/失败必须可见；格式化可选 · [正文](docs/25-PIT坑位册.md#pit-214)
+- PIT-215 · 单文件拆 GUI/CLI 两版（黑框根治）；help 主列表补全 · [正文](docs/25-PIT坑位册.md#pit-215)
 
 ### 13.2 未闭环（正文带 🚧，别当"已经好了"）
 

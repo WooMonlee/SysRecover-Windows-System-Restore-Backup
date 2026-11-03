@@ -262,7 +262,7 @@ check: $(TEST_BIN)
 # 递归调用 make 时**必须把 $(MAKE) 的正斜杠换成反斜杠**：mingw32-make 把 $(MAKE) 展开成
 # `D:/Prog/.../mingw32-make.exe`，而 shell 是 cmd，正斜杠路径会被判为"系统找不到指定的路径"。
 SELF = $(subst /,\,$(MAKE))
-package: ea-apply boot-cleanup launchers build/portable_stub.exe
+package: ea-apply boot-cleanup launchers build/portable_stub.exe build/portable_stub_gui.exe
 	@echo === [1/3] 构建 x64 -^> dist/x64 ===
 	$(SELF) -f Makefile ARCH=x64 all
 	@echo === [2/3] 构建 x86 -^> dist（根，入口）===
@@ -289,6 +289,7 @@ package: ea-apply boot-cleanup launchers build/portable_stub.exe
 	@copy /Y bootfiles\zj-restore-boot.exe dist\bootfiles\ >nul
 # 单文件封装 stub（PIT-207）：GUI「更多功能>> 打包成单文件」与 `pack-self` 都用它
 	@copy /Y build\portable_stub.exe dist\bootfiles\portable-stub.exe >nul
+	@copy /Y build\portable_stub_gui.exe dist\bootfiles\portable-stub-gui.exe >nul
 # 异机还原：随包放一个 Drivers\ 说明（用户把启动驱动放这里；无 .inf 时仅内置）
 	@if not exist dist\Drivers mkdir dist\Drivers
 	@copy /Y bootfiles\Drivers-README.txt dist\Drivers\README.txt >nul
@@ -337,6 +338,7 @@ PORTABLE_GUI = dist\SysRecover-Portable.exe
 PORTABLE_CLI = dist\SysRecover-Portable-CLI.exe
 
 PORTABLE_STUB = build/portable_stub.exe
+PORTABLE_STUB_GUI = build/portable_stub_gui.exe
 PORTABLE_RC = build/portable_rc.o
 PORTABLE_OUT = dist/SysRecover-Portable.exe
 
@@ -350,10 +352,19 @@ $(PORTABLE_STUB): src/tools/portable_main.cpp src/common/xpress.h $(PORTABLE_RC)
 	@if not exist build mkdir build
 	$(MINGW32)/bin/i686-w64-mingw32-g++ -O2 -std=c++17 -DUNICODE -D_UNICODE -D_WIN32_WINNT=0x0601 $< $(PORTABLE_RC) -o $@ -static -municode -mconsole -s -lshell32 -luser32
 
+# PIT-215（用户 2026-11-03）：**GUI 子系统版 stub** —— 双击时 Windows 根本不会
+# 创建控制台（控制台子系统的进程在进门之前就已经有一个黑框了，只能"藏"不能"没有"）。
+# 代价：cmd/PowerShell 不会等 GUI 程序，**退出码拿不到** → 所以另出一个 CLI 版。
+$(PORTABLE_STUB_GUI): src/tools/portable_main.cpp src/common/xpress.h $(PORTABLE_RC)
+	@if not exist build mkdir build
+	$(MINGW32)/bin/i686-w64-mingw32-g++ -O2 -std=c++17 -DUNICODE -D_UNICODE -D_WIN32_WINNT=0x0601 $< $(PORTABLE_RC) -o $@ -static -municode -mwindows -s -lshell32 -luser32
 
-portable: package $(PORTABLE_STUB)
-	@echo === portable: single-file pack ===
-	$(PYTHON) tools/portable-pack.py "$(PORTABLE_STUB)" "$(PORTABLE_OUT)" dist D:\\
+
+portable: package $(PORTABLE_STUB) $(PORTABLE_STUB_GUI)
+	@echo === portable: single-file pack (GUI=no console flash) ===
+	$(PYTHON) tools/portable-pack.py "$(PORTABLE_STUB_GUI)" "$(PORTABLE_OUT)" dist D:/
+	@echo === portable: single-file pack (CLI=exit codes) ===
+	$(PYTHON) tools/portable-pack.py "$(PORTABLE_STUB)" "$(PORTABLE_CLI)" dist
 
 # ---- 制品/CLI 冒烟（需先 package/all；不碰磁盘）----
 dist-check:

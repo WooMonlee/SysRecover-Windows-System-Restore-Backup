@@ -2147,3 +2147,42 @@
     - initramfs 从 gzip 换 xz（≈-2~3MB，要 QEMU 验证内核支持）；
     - btrfs/xfs/ext4 模块（≈1.9MB，会丢掉"镜像放在 Linux 分区"这种极端场景）；
     - libcrypto/openssl（≈1.9MB）—— 加密镜像 ZJENC2 在救援层要用，不能删。
+
+### PIT-214
+
+- PIT-214 **WinPE 里"显示正在重启"却不重启；还原完成后既没弹窗也没重启；格式化被强制**
+  （`0.9.95`，用户 2026-11-03 实测）
+  · 根因：
+    ① `RebootNow()` 只会 `ExitWindowsEx`，**WinPE 里它经常返回成功但根本不重启**
+       （PE 没有完整的会话/关机链）→ 界面停在"正在重启..."，机器不动；
+    ② 暂存路径（`m_needReboot`）是**直接调 RebootNow、不弹任何框** —— 它一失败就
+       变成"既没弹窗也没重启"，用户完全不知道发生了什么；
+    ③ 就地还原的「格式化目标分区」被我写成了**勾选且禁用**（"必须格式化"），
+       用户无法取消。
+  · 修复：
+    - `RebootNow()` 改成 `bool`，**PE 优先 `wpeutil reboot`**；再退 `ExitWindowsEx`；
+      再退 `shutdown /r /t 0 /f`。**全部失败必须弹框**（"自动重启没有成功，请手动重启"），
+      不再静默；
+    - 暂存完成同样走这个函数 → 失败时用户能看见；
+    - 就地还原的格式化改成**可选项**（默认勾选）。取消勾选 = **保留文件系统、清空
+      根目录内容**再写入（`WipeVolumeContents`，与救援层 `target_mode=keep` 同语义）；
+      对话框文案写明"取消则保留文件系统、仅清空内容"，避免误解成"保留旧文件"。
+  · 注：PE 里 `wpeutil.exe` 是官方重启命令；没有它才退 `shutdown.exe`（极简 PE 可能没有）。
+
+### PIT-215
+
+- PIT-215 **单文件黑框的根治：拆成 GUI / CLI 两个单文件**（`0.9.95`，用户 2026-11-03）
+  · 为什么之前去不掉：单文件 stub 是 **console 子系统**（这样 cmd/PowerShell 才会
+    等它、能拿到退出码）。控制台窗口是 **Windows 在进程进门之前就创建好的**，
+    我们只能在入口 `ShowWindow`/`FreeConsole` —— 最多"闪一下"。
+  · 实测确认：GUI 子系统进程从 cmd 启动时 **cmd 不会等**、`%ERRORLEVEL%` 直接是 0
+    （PowerShell 也不等）→ 只换成 GUI 会把"退出码"这条契约弄坏。
+  · 所以改成**两个 stub、同一份载荷**：
+    - `SysRecover-Portable.exe` → **GUI 子系统 stub**：双击完全不创建控制台（零黑框）；
+      带参数时会 `AttachConsole` 到调用者控制台，输出照样能看到（但没有退出码）；
+    - `SysRecover-Portable-CLI.exe` → 控制台 stub：退出码照旧（脚本/批量用这个）。
+  · `pack-self` 新增 `--stub <path>`：GUI 里「打包成单文件 / 加驱动」默认用
+    `bootfiles\portable-stub-gui.exe`（双击不闪），CLI 默认用控制台版。
+  · 同一轮还把 `SysRecover.exe help` 补全：之前在**主列表**里漏了
+    `pack-self / unpack-self / check-staged / scan-ea`，`restore` 那行也没写
+    `--keep-old/--reboot/--universal`（`help restore` 里是全的，主列表没同步）。

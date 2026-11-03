@@ -15,7 +15,8 @@ struct Hit {
     unsigned long long mtime = 0;  // ftLastWriteTime 转 64 位后比较用
 };
 
-constexpr size_t kCap = 500;  // 结果上限（列表过长没有意义，防误扫）
+constexpr size_t kCap = 500;
+const int kDirCap = 20000;  // 单次搜索最多看这么多个目录（防卡死）  // 结果上限（列表过长没有意义，防误扫）
 
 unsigned long long ToUll(const FILETIME& ft) {
     return (static_cast<unsigned long long>(ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
@@ -114,7 +115,30 @@ bool ExeUnderProgramFiles(std::wstring dir) {
     return has(L"\\program files (x86)") || has(L"\\program files");
 }
 
-// 规则 2：所有非系统分区，盘根一层 + 每个一级子目录内一层（不再往下）。
+// 规则 2：所有非系统分区，盘根 + 三级子目录（用户 2026-11-03：二级→三级）。
+// 目录遍历有上限（kDirCap），避免半个盘的目录树把界面卡住。
+void AppendSubdirs(const std::wstring& dir, int depth, std::vector<Hit>& out,
+                   int* visited) {
+    if (depth <= 0 || out.size() >= kCap || *visited >= kDirCap) return;
+    WIN32_FIND_DATAW fd;
+    HANDLE h = ::FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (out.size() >= kCap || *visited >= kDirCap) break;
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+        if (fd.dwFileAttributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM))
+            continue;
+        if (wcscmp(fd.cFileName, L".") == 0 ||
+            wcscmp(fd.cFileName, L"..") == 0)
+            continue;
+        ++(*visited);
+        const std::wstring sub = dir + L"\\" + fd.cFileName;
+        AppendDir(sub, out);
+        AppendSubdirs(sub, depth - 1, out, visited);
+    } while (::FindNextFileW(h, &fd));
+    ::FindClose(h);
+}
+
 void AppendNonSystemDrives(std::vector<Hit>& out) {
     wchar_t win[MAX_PATH] = {};
     ::GetWindowsDirectoryW(win, MAX_PATH);
@@ -127,37 +151,8 @@ void AppendNonSystemDrives(std::vector<Hit>& out) {
         UINT type = ::GetDriveTypeW(root.c_str());
         if (type != DRIVE_FIXED && type != DRIVE_REMOVABLE) continue;
         AppendDir(root, out);
-        WIN32_FIND_DATAW fd;
-        HANDLE h = ::FindFirstFileW((root + L'*').c_str(), &fd);
-        if (h == INVALID_HANDLE_VALUE) continue;
-        do {
-            if (out.size() >= kCap) break;
-            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
-            if (fd.dwFileAttributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM))
-                continue;
-            if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0)
-                continue;
-            const std::wstring lv1 = root + fd.cFileName;
-            AppendDir(lv1, out);
-            // PIT-203（用户 2026-11-01 需求）：再往下**一级**（二级目录）。
-            // 用户习惯把镜像放 `D:\系统镜像\Win11\xx.esd`，只扫一级会漏。
-            // 只多扫一层：再深会明显拖慢（每个分区多几千次 FindFirstFile）。
-            WIN32_FIND_DATAW fd2;
-            HANDLE h2 = ::FindFirstFileW((lv1 + L'\\*').c_str(), &fd2);
-            if (h2 == INVALID_HANDLE_VALUE) continue;
-            do {
-                if (out.size() >= kCap) break;
-                if (!(fd2.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
-                if (fd2.dwFileAttributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM))
-                    continue;
-                if (wcscmp(fd2.cFileName, L".") == 0 ||
-                    wcscmp(fd2.cFileName, L"..") == 0)
-                    continue;
-                AppendDir(lv1 + L"\\" + fd2.cFileName, out);
-            } while (::FindNextFileW(h2, &fd2));
-            ::FindClose(h2);
-        } while (::FindNextFileW(h, &fd));
-        ::FindClose(h);
+        int visited = 0;
+        AppendSubdirs(root, 3, out, &visited);  // 盘根下三级
     }
 }
 

@@ -269,7 +269,7 @@ bool ValidateCommandArgs(const std::vector<std::string>& a) {
         flags = {"--all"};
         values = {"--file", "--image", "--path", "--dest", "--index", "--password"};
     } else if (cmd == "pack-self") {
-        values = {"--out"};
+        values = {"--out", "--stub"};
     } else if (cmd == "unpack-self") {
         values = {"--dest"};
     } else if (cmd == "check-staged") {
@@ -1154,11 +1154,41 @@ const CmdHelp* CmdHelpTable(size_t* n) {
 
 void PrintAllUsage() {
     std::printf(
-        Tr("SysRecover 九转还原 · 命令行\n" "\n" "用法: SysRecover.exe <命令> [选项]      （`SysRecover.exe help <命令>` 看单项）\n" "\n" "命令:\n"         "  list                        列出磁盘/分区/文件系统/盘符/ESP/系统标记\n" "  diag [--zip [--out <zip>]]  自检（固件/Secure Boot/启动项/wimlib）；--zip 导出诊断包\n" "  support [--out <zip>]       一键收集诊断资料（各盘日志+explorer转储+事件日志）打包\n" "  images --file <镜像>        列出镜像里的子镜像（含大小/描述）\n"         "  backup --dest <文件> [--source <目录>] [--compress fast|maximum|recovery]\n" "         [--name <名>] [--append] [--verify] [--esp] [--no-snapshot] [--password <pwd>] [--yes]\n"          "  restore --image <文件> --disk N --part M [--index N] [--no-repair-boot] [--engine block|swap] [--yes]\n" "  verify --image <文件>       校验镜像完整性\n"
-        "  repair-boot [--disk N --part M]   修复引导（ESP 的 BCD/bootmgfw；引导坏了不用重装）\n"
-        "  returnold [--disk N --part M] [--yes]  返回旧系统（把 ~old 搬回根，重启进救援层执行）\n"
-        "  extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]\n" "                              从镜像里取单个/一组文件（支持通配符）\n" "  history                     列出操作历史（logs/history.jsonl）\n"
-        "  export-drivers [--dest <目录>]  导出本机硬盘驱动（供异机还原；不是 1.8GB 全量）\n" "  shortcut --target <exe> [--args <...>] [--name <名>]   建快捷方式\n" "  version                     显示版本\n" "  help [命令]                 本帮助\n" "  --password <pwd>            加密镜像口令（.zje 文件的备份/还原/校验/提取）\n" "  --lang <zh|en>              指定界面语言（如: SysRecover.exe --lang en help 用英文）\n" "\n" "退出码: 0 成功 / 1 通用失败 / 2 参数错 / 3 需管理员 / 4 危险目标被拒 / 5 镜像校验失败 / 6 取消\n" "注意: 还原系统盘会重启进救援层，镜像必须放在**本地分区**（救援层访问不到网络）。\n"));
+        Tr("SysRecover 九转还原 · 命令行\n"
+           "\n"
+           "用法: SysRecover.exe <命令> [选项]      （`SysRecover.exe help <命令>` 看单项）\n"
+           "\n"
+           "命令:\n"
+           "  list                         列出磁盘/分区/文件系统/盘符/ESP/系统标记\n"
+           "  diag [--zip [--out <zip>]]   自检（固件/Secure Boot/启动项/wimlib）；--zip 导出诊断包\n"
+           "  support [--out <zip>]        一键收集诊断资料（各盘日志+转储+事件日志）打包\n"
+           "  images --file <镜像>         列出镜像里的子镜像（含大小/描述）\n"
+           "  backup --dest <文件> [--source <目录>] [--compress fast|maximum|recovery]\n"
+           "         [--name <名>] [--append] [--verify] [--esp] [--no-snapshot] [--password <pwd>] [--yes]\n"
+           "  restore --image <文件> --disk N --part M [--index N] [--keep-old|--no-keep-old]\n"
+           "          [--reboot] [--no-repair-boot] [--engine block|swap] [--universal [--drivers <目录>]] [--yes]\n"
+           "  verify --image <文件>        校验镜像完整性\n"
+           "  repair-boot [--disk N --part M]   修复引导（BCD/启动项；引导坏了不用重装）\n"
+           "  returnold [--disk N --part M] [--yes]  返回旧系统（需上次还原保留了旧系统）\n"
+           "  extract --file <镜像> --path <路径> [--path ...] --dest <目录> [--index N]\n"
+           "                               从镜像里取单个/一组文件（支持通配符）\n"
+           "  history [--last N]           列出操作历史（logs/history.jsonl）\n"
+           "  export-drivers [--dest <目录>]  导出本机启动关键驱动（供异机还原）\n"
+           "  check-staged                 检查“暂存待重启”的数据是否完整（契约/~new/启动项）\n"
+           "  scan-ea                      扫描本机 EFS 加密文件（异机还原前的预检）\n"
+           "  pack-self --out <文件>       把当前程序目录打包成自解压单文件\n"
+           "  unpack-self --dest <目录>    把当前程序目录解压成绿色版文件夹\n"
+           "  shortcut --target <exe> [--args <...>] [--name <名>] [--startmenu]   建快捷方式\n"
+           "  version                      显示版本\n"
+           "  help [命令]                  本帮助（`help restore` 等看单项的全部参数）\n"
+           "\n"
+           "全局选项:\n"
+           "  --password <pwd>             加密镜像口令（.zje 的备份/还原/校验/提取）\n"
+           "  --lang <zh|en>               界面语言（如: SysRecover.exe --lang en help）\n"
+           "  --yes                        跳过确认（危险操作仍受安全门禁约束）\n"
+           "\n"
+           "退出码: 0 成功 / 1 通用失败 / 2 参数错 / 3 需管理员 / 4 危险目标被拒 / 5 镜像校验失败 / 6 取消\n"
+           "注意: 还原系统盘会自动重启进救援层；镜像必须放在**本地分区**（救援层访问不到网络）。\n"));
 }
 
 // 返回 true = 找到了该命令的说明。
@@ -1273,10 +1303,12 @@ int main() {
                 PrintCmdUsage("pack-self");
                 return 2;
             }
-            ok = sysrecover::PackSelfToSingleFile(
-                sysrecover::AppDir(), out,
-                sysrecover::AppDir() + L"\\bootfiles\\portable-stub.exe", err,
-                &n);
+            std::wstring stubPath =
+                sysrecover::AppDir() + L"\\bootfiles\\portable-stub.exe";
+            const std::string stubOpt = Opt(args, "--stub");
+            if (!stubOpt.empty()) stubPath = ToWide(stubOpt);
+            ok = sysrecover::PackSelfToSingleFile(sysrecover::AppDir(), out,
+                                                  stubPath, err, &n);
             if (ok)
                 std::printf(Tr("已打包 %d 个文件 -> %ls\n"), n, out.c_str());
         } else {

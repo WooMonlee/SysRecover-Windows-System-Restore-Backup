@@ -133,6 +133,7 @@ private:
     // PIT-211：确认框里的选项（A 引擎先格式化 / B 引擎 format|keep / 改机器名）
     bool        m_formatSwap = false;
     std::string m_targetMode = "format";
+    bool        m_formatTarget = true;  // 就地还原是否格式化（false=只清空内容）
     std::wstring m_computerName;
     bool        m_restoreKeepOld = false;  // swap 时 true=保留 ~old 可返回；block 恒 false
     void ApplyModeUi();
@@ -188,7 +189,7 @@ private:
     // 规格 2）：有未报告的失败 → 弹 3 行提示，「打开日志文件夹」直达 collected。
     void ShowRescueFailureNotice();  // P3（PIT-148）：A/B 类失败 → Ask3 + 一键重试
     void StartRetryStagedRestore();  // 一键重试 worker 入口（读 conf → StageRestore）
-    void RebootNow();
+    bool RebootNow();  // true = 已发起重启（PE 走 wpeutil）
     bool AskBusyClose();          // 忙时关闭：true = 用户选了「终止并退出」
     // BitLocker 提醒（有加密卷时提醒"没密钥则数据无法恢复"）：true = 继续
     bool AskBitLockerWarning(const std::vector<std::wstring>& vols);

@@ -55,6 +55,8 @@ struct RestoreRequest {
     // ── PIT-211（用户 2026-11-02）──
     // A 引擎：解压前先格式化目标分区（仅目标未被占用/PE 里可用）。
     bool formatSwap = false;
+    // 就地还原：是否格式化目标分区。false = 保留文件系统、只清空内容（PIT-214）。
+    bool formatTarget = true;
     // B 引擎：Linux 侧 "format"（默认，mkntfs）或 "keep"（保留文件系统、清空内容）。
     std::string targetMode = "format";
     // 非空 = 还原后把计算机名改成它（离线改 SYSTEM 库；B 引擎交给首启助手）。

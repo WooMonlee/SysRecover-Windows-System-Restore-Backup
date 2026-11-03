@@ -26,6 +26,7 @@
 #include "common/relocate.h"
 #include "common/pathutil.h"  // DriversRoot()
 #include "common/selfarch.h"
+#include "disk/disk.h"  // IsWinPE()（PIT-214：PE 重启要靠 wpeutil）
 #include "common/bioskey.h"   // 厂家名（PIT-211 改机器名）
 #include "common/compname.h"  // MakeComputerName / WindowsMajorOfDir  // AppDir()（导出驱动目录用）
 #include "common/sysinfo.h"
@@ -2006,7 +2007,11 @@ void CMainForm::ExportDriversPortableFlow() {
     SetStatus(Tr(L"正在重新打包..."));
     std::string perr;
     int files = 0;
-    const std::wstring stub = AppDir() + L"\\bootfiles\\portable-stub.exe";
+    // 用户 2026-11-03：GUI 里打出来的单文件要能直接双击 —— 用 GUI 子系统 stub
+    //（没有控制台黑框）；没有就退回控制台版。
+    std::wstring stub = AppDir() + L"\\bootfiles\\portable-stub-gui.exe";
+    if (GetFileAttributesW(stub.c_str()) == INVALID_FILE_ATTRIBUTES)
+        stub = AppDir() + L"\\bootfiles\\portable-stub.exe";
     if (!sysrecover::PackSelfToSingleFile(AppDir(), outPath, stub, perr, &files)) {
         SetStatus(Tr(L"重新打包失败"));
         MessageBoxW(m_hWnd, (Tr(L"重新打包失败：") + U2W(perr)).c_str(),
@@ -2628,6 +2633,7 @@ void CMainForm::StartRestore() {
     m_restoreEngine  = "swap";
     m_restoreKeepOld = false;
     m_formatSwap     = false;
+    m_formatTarget   = true;
     m_targetMode     = "format";
     m_computerName.clear();
     // 非静默模式：需重启时弹三选（取消/还原后重启/重启后还原）；就地还原仍二选。
@@ -2814,9 +2820,12 @@ void CMainForm::StartRestore() {
                 vendor2, major2, nowSt2.wYear, nowSt2.wMonth, nowSt2.wDay,
                 nowSt2.wHour, nowSt2.wMinute, nowSt2.wSecond);
             ConfirmOptions opt2;
-            opt2.showFormatBlock = true;      // 就地还原必须格式化：显示但不可取消
-            opt2.formatBlockLabel = Tr(L"格式化目标分区");
-            opt2.formatBlockEnabled = false;
+            // PIT-214（用户 2026-11-03）：格式化是**可选项**，默认勾选；
+            // 取消后保留文件系统、只清空内容（不是"保留旧文件"）。
+            opt2.showFormatBlock = true;
+            opt2.formatBlockLabel =
+                Tr(L"格式化目标分区（取消则保留文件系统、仅清空内容）");
+            opt2.formatBlockEnabled = true;
             opt2.formatBlock = true;
             opt2.showRename = true;
             opt2.rename = false;
@@ -2825,7 +2834,8 @@ void CMainForm::StartRestore() {
                                   Tr(L"开始还原"), /*defaultIsRight=*/true,
                                   Tr(L"丢失！"), &opt2) != 1)
                 return;
-            m_formatSwap = false;  // 就地还原本身就是"格式化后再写"
+            m_formatSwap = false;
+            m_formatTarget = opt2.formatBlock;
             m_computerName = opt2.rename ? newName2 : std::wstring();
             // 就地还原不走交换，引擎无意义但保持默认 swap（StageRestore 内部按需处理）
             m_restoreEngine  = "swap";
@@ -2868,6 +2878,7 @@ void CMainForm::StartRestoreAsync() {
     req.keepOld = m_restoreKeepOld;     // swap 时 true=保留 ~old 可返回；block 恒 false
     req.universal = IsUniversalChecked();  // 异机还原（2026-10-21）
     req.formatSwap = m_formatSwap;               // PIT-211
+    req.formatTarget = m_formatTarget;           // PIT-214
     req.targetMode = m_targetMode;               // "format" | "keep"
     req.computerName = m_computerName;           // 空 = 不改名
     // 加密镜像：口令来自本次运行输入（LoadWimImages 里问过并记在 imgsrc 表里）。
@@ -3390,48 +3401,57 @@ void CMainForm::SyncImagePathFromUi() {
     UpdateMainAction();
 }
 
-void CMainForm::RebootNow() {
-    // 不用 shutdown.exe：带 /t 时它会弹「Windows 将在一分钟后关闭」对话框
-    // （用户要求关机前不要再有任何提示）。改用 ExitWindowsEx 直接触发重启，
-    // 需先启用 SE_SHUTDOWN_NAME 特权（管理员进程本就有）。
-    // R4（用户 2026-10-04）：两条路都**记返回码**——"说重启却没动"必须有账可查。
-    HANDLE hToken = nullptr;
-    if (::OpenProcessToken(::GetCurrentProcess(),
-                           TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
-        TOKEN_PRIVILEGES tp = {};
-        tp.PrivilegeCount = 1;
-        if (::LookupPrivilegeValueW(nullptr, SE_SHUTDOWN_NAME,
-                                    &tp.Privileges[0].Luid)) {
-            tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-            ::SetLastError(0);
-            if (!::AdjustTokenPrivileges(hToken, FALSE, &tp, 0, nullptr,
-                                         nullptr) ||
-                ::GetLastError() == ERROR_NOT_ALL_ASSIGNED)
-                LogWarn("reboot: enable SeShutdownPrivilege failed err=" +
-                        std::to_string(::GetLastError()));
-        } else {
-            LogWarn("reboot: LookupPrivilegeValue(SE_SHUTDOWN_NAME) failed err=" +
-                    std::to_string(::GetLastError()));
-        }
-        ::CloseHandle(hToken);
-    } else {
-        LogWarn("reboot: OpenProcessToken failed err=" +
-                std::to_string(::GetLastError()));
-    }
-    if (!::ExitWindowsEx(EWX_REBOOT | EWX_FORCEIFHUNG,
-                         SHTDN_REASON_MAJOR_APPLICATION |
-                             SHTDN_REASON_MINOR_MAINTENANCE |
-                             SHTDN_REASON_FLAG_PLANNED)) {
-        // 兜底：ExitWindowsEx 因会话/策略失败时，用 /t 0 立即重启
-        // （无延迟则 shutdown.exe 不弹「一分钟后关闭」对话框）
-        DWORD e1 = ::GetLastError();
+bool CMainForm::RebootNow() {
+    // PIT-214（用户 2026-11-03 实测）：**WinPE 里 ExitWindowsEx 经常"返回成功但不重启"**。
+    // PE 优先 wpeutil reboot（官方命令）；正常系统仍走 ExitWindowsEx（不弹"一分钟"提示）；
+    // 都不行再 shutdown /r /t 0 /f。全失败时**必须让用户看见**，不能像以前那样静默。
+    bool ok = false;
+    std::string detail;
+    if (sysrecover::IsWinPE()) {
         std::string out;
-        int rc = RunProcess(SysToolPath(L"shutdown.exe"), L"/r /t 0", out);
-        LogWarn("reboot: ExitWindowsEx failed err=" + std::to_string(e1) +
-                "; shutdown.exe rc=" + std::to_string(rc) + " out=" + out);
-    } else {
-        LogInfo("reboot: ExitWindowsEx ok");
+        const int rc = RunProcess(SysToolPath(L"wpeutil.exe"), L"reboot", out);
+        detail += "wpeutil rc=" + std::to_string(rc) + " (" + out + "); ";
+        ok = (rc == 0);
     }
+    if (!ok) {
+        // 正常系统（或 PE 里 wpeutil 不可用）：ExitWindowsEx
+        HANDLE hToken = nullptr;
+        if (::OpenProcessToken(::GetCurrentProcess(),
+                               TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
+            TOKEN_PRIVILEGES tp = {};
+            tp.PrivilegeCount = 1;
+            if (::LookupPrivilegeValueW(nullptr, SE_SHUTDOWN_NAME,
+                                        &tp.Privileges[0].Luid)) {
+                tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+                ::AdjustTokenPrivileges(hToken, FALSE, &tp, 0, nullptr, nullptr);
+            }
+            ::CloseHandle(hToken);
+        }
+        ::SetLastError(0);
+        const BOOL ewe = ::ExitWindowsEx(EWX_REBOOT | EWX_FORCEIFHUNG,
+                                         SHTDN_REASON_MAJOR_APPLICATION |
+                                             SHTDN_REASON_MINOR_MAINTENANCE |
+                                             SHTDN_REASON_FLAG_PLANNED);
+        detail += "ExitWindowsEx=" + std::to_string((int)ewe) +
+                  " err=" + std::to_string(::GetLastError()) + "; ";
+        ok = ewe != FALSE;
+    }
+    if (!ok) {
+        std::string out;
+        const int rc = RunProcess(SysToolPath(L"shutdown.exe"),
+                                  L"/r /t 0 /f", out);
+        detail += "shutdown rc=" + std::to_string(rc) + " (" + out + ")";
+        ok = (rc == 0);
+    }
+    if (ok) {
+        LogInfo("reboot: initiated; " + detail);
+        return true;
+    }
+    LogError("reboot: ALL METHODS FAILED; " + detail);
+    MessageBoxW(m_hWnd,
+                Tr(L"自动重启没有成功。\n请手动重启电脑（开始菜单 → 重启）。"),
+                Tr(L"需要重启"), MB_OK | MB_ICONWARNING);
+    return false;
 }
 
 bool CMainForm::IsSilent() {

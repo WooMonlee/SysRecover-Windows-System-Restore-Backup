@@ -167,6 +167,34 @@ bool FormatTargetVolume(wchar_t letter, std::string& log) {
     return rc == 0;
 }
 
+// PIT-214：「不格式化」= 保留文件系统/卷标，只清空根目录内容（wimlib 卷模式
+// 要求空卷；这也正是救援层 target_mode=keep 的语义）。
+// 返回 0 = 干净；>0 = 有 N 项删不掉（SVI/$RECYCLE.BIN 正常，不阻断）。
+int WipeVolumeContents(const std::wstring& root, std::string& log) {
+    int failed = 0, removed = 0;
+    WIN32_FIND_DATAW fd = {};
+    HANDLE h = FindFirstFileW((root + L"*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) {
+        log = "wipe: cannot list " + W2U(root) + " err=" +
+              std::to_string(GetLastError());
+        return -1;
+    }
+    do {
+        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L".."))
+            continue;
+        const std::wstring p = root + fd.cFileName;
+        DeleteTreeRec(p);
+        if (GetFileAttributesW(p.c_str()) == INVALID_FILE_ATTRIBUTES)
+            ++removed;
+        else
+            ++failed;
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    log = "wipe: removed=" + std::to_string(removed) +
+          " left=" + std::to_string(failed);
+    return failed;
+}
+
 // ── PIT-211：离线改计算机名（目标盘的 SYSTEM 库，不需要目标系统在运行）──
 // 与在线 Rename-Computer 等价：ComputerName + ActiveComputerName +
 // Tcpip\Parameters(Hostname / NV Hostname)；每个 ControlSet 都写。
@@ -599,8 +627,10 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
     std::wstring letter(1, target.letter[0]);
     LogInfo("in-place restore -> " + W2U(letter) + ": (" + W2U(imagePath) +
             ", index=" + std::to_string(req.index) + ")");
-    // 1) 快速格式化（不传 /V：保留原卷标）
-    {
+    // 1) 目标分区准备（PIT-214）：
+    //    默认快速格式化（不传 /V：保留原卷标）；
+    //    用户在确认框里**取消勾选**时 → 保留文件系统、只清空内容。
+    if (req.formatTarget) {
         std::string out;
         int rc = RunProcess(SysToolPath(L"format.com"),
                             letter + L": /FS:NTFS /Q /Y", out);
@@ -611,6 +641,19 @@ int RunDirectRestore(const RestoreRequest& req, const PartitionInfo& target,
             ProgressDone("restore", "failed");
             return 1;
         }
+    } else {
+        std::string wlog;
+        const int left = WipeVolumeContents(letter + L":\\", wlog);
+        LogInfo("no-format restore: " + wlog);
+        if (left < 0) {
+            err = Tr("就地还原：无法清空目标分区（") + wlog + Tr("）");
+            LogError(err);
+            ProgressDone("restore", "failed");
+            return 1;
+        }
+        if (left > 0)
+            LogWarn("no-format restore: " + std::to_string(left) +
+                    " item(s) could not be removed (usually SVI/$RECYCLE.BIN)");
     }
     // 2) 应用镜像（目录模式）
     WimEngine wim;
